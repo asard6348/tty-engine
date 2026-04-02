@@ -2,7 +2,7 @@
 The TTY (ASCII terminal) Engine can be used as project template for any kind of applications, games, styled consoles and anything else in TTY terminal program.
 It uses internal module scripts for *rendering*, *physics*, *input* and *ASCII styling* system. For other purposes they can be used as independent modules/libraries (except the game_engine.py which is the main engine script, that imports and uses most of each other).
 # Building a project
-This project template repository is structured with the main [engine](./engine) folder and two simple scripts for easy interaction.
+This project template repository is structured with the main [engine](./engine) folder and two simple scripts for easy interaction. There can be also anything else that is not related to the engine, for example *resources* where would be maybe some another module scripts, images, audio etc.
 ## Editing
 Right in the project folder is script **EDIT.pyw** which will request an [IDLE](https://docs.python.org/3/library/idle.html) (normally should be installed automatically with python) to open the main project module script. There you can start programming your project. Basic knowledge is that the built-in class *main* has got three important functions:
 - `def __init__(self)` - this is the basic initialization def used to declare all public variables via `self.something = something`
