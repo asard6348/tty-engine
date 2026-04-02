@@ -1,5 +1,5 @@
 # TTY Engine
-The TTY (ASCII terminal) Engine can be used as project template for any kind of applications, games or styled consoles and anything else.
+The TTY (ASCII terminal) Engine can be used as project template for any kind of applications, games or styled consoles and anything else in TTY terminal program.
 It uses internal module scripts for *rendering*, *physics*, *input* and *ASCII styling* system. You can get them from the [engine](./engine) folder and use independently (except the game_engine.py which is the main engine script, that imports and uses most of these).
 # Instructions
 ## Editing
