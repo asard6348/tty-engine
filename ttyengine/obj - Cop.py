@@ -1,17 +1,19 @@
-import os, sys, math, threading, time, keyboard, random, traceback, statistics
-global e, solids, framerate, gravity, friction, precision, camx, camy, dimx, dimy
+import os, sys, math, threading, time, keyboard, random, traceback, statistics, re
+global e, solids, bgcolor, framerate, gravity, friction, precision, camx, camy, dimx, dimy
+error = False
+e=0
 
 framerate = 60
 gravity = [0, -0.05]
 friction = 0.97
 precision = 0.1
-e=0
 
 camx = int(0)
 camy = int(0)
 dimx = 120
 dimy = 30
 solids = []
+bgcolor = (0, 0, 0)
 
 class obj():
     def __init__(self):
@@ -22,6 +24,8 @@ class obj():
         self.py = 0
         self.vx = 0
         self.vy = 0
+        self.vtext = ""
+        self.recomp = re.compile(r'(\x1b\[[0-9;]*[a-zA-Z])')
         self.ptext = ""
         self.xvel = 0
         self.yvel = 0
@@ -96,8 +100,10 @@ class obj():
         return self._text
     @text.setter
     def text(self, value):
-        self._htext = value
-        self._rtext = value
+        ctext = self.recomp.sub('', value)
+        self.vtext = value
+        self._htext = ctext
+        self._rtext = ctext
         self.rotate(self._rotation)
     @property
     def rotation(self):
@@ -111,15 +117,19 @@ class obj():
         return self._rtext
     @rtext.setter
     def rtext(self, value):
-        self._rtext = value
+        ctext = self.recomp.sub('', value)
+        self.vtext = value
+        self._rtext = ctext
         self.rotate(self._rotation)
     @property
     def htext(self):
         return self._htext
     @htext.setter
     def htext(self, value):
-        self._htext = value
-        self._rtext = value
+        ctext = self.recomp.sub('', value)
+        self.vtext = value
+        self._htext = ctext
+        self._rtext = ctext
         self.rotate(self._rotation)
     @property
     def solid(self):
@@ -137,57 +147,79 @@ class obj():
         angle = math.radians(angle_degrees)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
-        rows = self._rtext.splitlines()
-        if not rows: return
-        new_pixels = {}
-        height = len(rows)
-        width = max(len(r) for r in rows) if rows else 0
-        cx, cy = (width-0) / 2, (height-0) / 2
-        for y, row in enumerate(rows):
-            for x, char in enumerate(row):
-                rel_x, rel_y = x - cx, y - cy
-                rx = rel_x * cos_a - (rel_y * 2.0) * sin_a
-                ry = (rel_x / 2.0) * sin_a + rel_y * cos_a
-                nx, ny = int(round(rx + cx)), int(round(ry + cy))
-                if (nx, ny) not in new_pixels or new_pixels[(nx, ny)] == " ":
-                    new_pixels[(nx, ny)] = char
-                fillsize = 0.3
-                '''
-                for dx, dy in [(fillsize, 0), (-fillsize, 0), (0, fillsize/2), (0, -fillsize/2)]:
-                    snx, sny = int(round(rx + cx + dx)), int(round(ry + cy + dy))
-                    if (snx, sny) not in new_pixels:
-                        new_pixels[(snx, sny)] = "\u2800"
-                '''
-        if not new_pixels: return
-        min_x = min(p[0] for p in new_pixels)
-        max_x = max(p[0] for p in new_pixels)
-        min_y = min(p[1] for p in new_pixels)
-        max_y = max(p[1] for p in new_pixels)
-        res = []
-        for y in range(min_y, max_y + 1):
-            line = ""
-            for x in range(min_x, max_x + 1):
-                line += new_pixels.get((x, y), " ")
-            res.append(line)
-        self._text = "\n".join(res)
+        def cal(txt, vtxt=None):
+            parts = self.recomp.split(txt)
+            codes = self.recomp.findall(txt)
+            fparts = []
+            current_style = ""
+            for i, part in enumerate(parts):
+                if self.recomp.match(part) or part in codes:
+                    current_style = part
+                else:
+                    for char in part:
+                        fparts.append((char, current_style))
+            ctxt = self.recomp.sub('', ''.join((txt if vtxt is None else vtxt)))
+            result = []
+            for i,part in enumerate(self.recomp.split(fparts)):
+                if(part=="" or self.recomp.match(part)):
+                    result.append(part)
+                else:
+                    rows = ctxt.splitlines()
+                    if not rows: return
+                    new_pixels = {}
+                    height = len(rows)
+                    width = max(len(r) for r in rows) if rows else 0
+                    cx, cy = (width-0) / 2, (height-0) / 2
+                    for y, row in enumerate(rows):
+                        for x, char in enumerate(row):
+                            rel_x, rel_y = x - cx, y - cy
+                            rx = rel_x * cos_a - (rel_y * 2.0) * sin_a
+                            ry = (rel_x / 2.0) * sin_a + rel_y * cos_a
+                            nx, ny = int(round(rx + cx)), int(round(ry + cy))
+                            if (nx, ny) not in new_pixels or new_pixels[(nx, ny)] == " ":
+                                new_pixels[(nx, ny)] = char
+                            fillsize = 0.3
+                            '''
+                            for dx, dy in [(fillsize, 0), (-fillsize, 0), (0, fillsize/2), (0, -fillsize/2)]:
+                                snx, sny = int(round(rx + cx + dx)), int(round(ry + cy + dy))
+                                if (snx, sny) not in new_pixels:
+                                    new_pixels[(snx, sny)] = "\u2800"
+                            '''
+                    if not new_pixels: return
+                    min_x = min(p[0] for p in new_pixels)
+                    max_x = max(p[0] for p in new_pixels)
+                    min_y = min(p[1] for p in new_pixels)
+                    max_y = max(p[1] for p in new_pixels)
+                    res = []
+                    for y in range(min_y, max_y + 1):
+                        line = ""
+                        for x in range(min_x, max_x + 1):
+                            line += new_pixels.get((x, y), " ")
+                        res.append(line)
+                    result.append("\n".join(res))
+            return "".join(result)
+        #self.vtext = cal(self.vtext, self._rtext)
+        self._text = self.recomp.sub('', self.vtext)
         self.vx = (self.xc(self._rtext) - self.xc())
         self.vy = -(self.yc(self._rtext) - self.yc())
     #def resize(self, scale):
         
         
-    def create(self, text="", sx=0, sy=0, dynamic=False, solid=True, rotation=0, hitbox=False, bounciness=0, mass=None, xvel=0, yvel=0, avel=0):
+    def create(self, text="", x=0, y=0, dynamic=False, solid=True, rotation=0, hitbox=False, bounciness=0, mass=None, xvel=0, yvel=0, avel=0):
         global solids
-        self.x = sx
-        self.y = sy
-        self._htext = text
-        self._rtext = text
-        self._text = text
+        self.x = x
+        self.y = y
+        ctext = self.recomp.sub('', text)
+        self.vtext = text
+        self._htext = ctext
+        self._rtext = ctext
+        self._text = ctext
         self.xvel = xvel
         self.yvel = yvel
         self.avel = avel
         self.bounciness = bounciness
         size = 0
-        for row in text.splitlines():
+        for row in ctext.splitlines():
             for char in row:
                 if(char != " " and char != "\n"):
                     size+=1
@@ -197,49 +229,60 @@ class obj():
         self.solid = solid
         self.rotation = rotation
         def render():
+            global bgcolor,e
             def remove():
+                global bgcolor
                 px = self.px
                 py = self.py
                 ptext = self.ptext
-                if(px!=round((self.x+self.vx)-round(camx)) or py!=-round((self.y+self.vy)-round(camy)) or ptext!=self._text):
+                if(px!=round((self.x+self.vx)-round(camx)) or py!=-round((self.y+self.vy)-round(camy)) or ptext!=self.vtext):
                     rem = (f"\033[{int(py) + 1}d" if py > 0 else "\033[H")
-                    for i, row in enumerate(ptext.splitlines()):
-                        rem += f"\033[{int(py)+1 + i}d"
-                        arow = ""
-                        crop = row[abs(min(0, int(px))) : abs(max(0,(dimx)-int(px)))]
-                        for j, char in enumerate(crop):
-                            if(char == " "):
-                                arow += "\033[C"
-                            elif(char == "\n"):
-                                arow += "\n"
-                            else:
-                                arow += " "
-                        final = f"\033[{max(0,int(px)) + 1}G{arow}"
-                        rem += final if 1<=int(py)+1+i<=dimy else ""
-                    print(rem, end="", flush=True)
+                    for part in self.recomp.split(ptext):
+                        if(part == "" or self.recomp.match(part)):
+                            rem += part
+                        else:
+                            for i, row in enumerate(part.splitlines()):
+                                rem += f"\033[{int(py)+1 + i}d"
+                                arow = ""
+                                crop = row[abs(min(0, int(px))) : abs(max(0,(dimx)-int(px)))]
+                                for j, char in enumerate(crop):
+                                    if(char == " "):
+                                        arow += "\033[C"
+                                    elif(char == "\n"):
+                                        arow += "\n"
+                                    else:
+                                        arow += " "
+                                final = f"\033[{max(0,int(px)) + 1}G{arow}"
+                                rem += final if 1<=int(py)+1+i<=dimy else ""
+                    sys.stdout.write(f"\033[48;2;{bgcolor[0]};{bgcolor[1]};{bgcolor[2]}m{rem}")
             remove()
             acx = round((self.x+self.vx)-round(camx))
             acy = -round((self.y+self.vy)-round(camy))
+            actext = self.vtext
             out = (f"\033[{acy + 1}d" if acy > 0 else "\033[H")
-            for i, row in enumerate(self.text.splitlines()):
-                out += f"\033[{acy+1 + i}d"
-                arow = ""
-                crop = row[abs(min(0, acx)) : abs(max(0,(dimx)-acx))]
-                for j, char in enumerate(crop):
-                    if(char == " "):
-                        arow += "\033[C"
-                    else:
-                        arow += char
-                final = f"\033[{max(0,acx) + 1}G{arow}"
-                out += final if 1<=acy+1+i<=dimy else ""
+            for part in self.recomp.split(actext):
+                if(part == "" or self.recomp.match(part)):
+                    out += part
+                else:
+                    for i, row in enumerate(part.splitlines()):
+                        out += f"\033[{acy+1 + i}d"
+                        arow = ""
+                        crop = row[abs(min(0, acx)) : abs(max(0,(dimx)-acx))]
+                        for j, char in enumerate(crop):
+                            if(char == " "):
+                                arow += "\033[C"
+                            else:
+                                arow += char
+                        final = f"\033[{max(0,acx) + 1}G{arow}"
+                        out += final if 1<=acy+1+i<=dimy else ""
             self.px = acx
             self.py = acy
-            self.ptext = self.text
-            print(out, end="", flush=True)
+            self.ptext = actext
+            e=out if self.hitbox else e
+            sys.stdout.write(f"\033[48;2;{bgcolor[0]};{bgcolor[1]};{bgcolor[2]}m{out}")
         def physics(axises):
             global e
             def armratio(points, obj, pos=None):
-                global e
                 xi = []; yi = []
                 for ax in points:
                     xi.append(ax[0]); yi.append(ax[1])
@@ -294,7 +337,7 @@ class obj():
                             obj2.avel += torque * (((otd[opp_ia]) if ia == 0 else (otd[opp_ia])) * (-relvel if ia == 1 else relvel))
                         if(self.hitbox==False):
                             self.avel += (actualmass if not obj2.dynamic else abs(self.mass) * (1-obj2.bounciness) + 1) * torque * (((td[opp_ia]) if ia == 0 else (td[opp_ia])) * (relvel if ia == 1 else -relvel))
-                            e=((round(td[0]*10)/10,round(td[1]*10)/10),self.avel,relvel) if not self.hitbox and self.dynamic else e
+                            #e=((round(td[0]*10)/10,round(td[1]*10)/10),self.avel,relvel) if not self.hitbox and self.dynamic else e
                         if(obj2.dynamic):
                             brelvel = ((self[a+'vel']+0*(abs(self[a+'vel'])/self[a+'vel']))-obj2[a+'vel'])
                             power = (actualmass / totalmass)*(1-abs(touchdelta))
@@ -357,7 +400,10 @@ class obj():
                     break
                 ch -= step
         def behave():
+            global error
             while True:
+                if(error):
+                    sys.exit()
                 if(self.dynamic == True):
                     physics(['x', 'y'])
                 render()
