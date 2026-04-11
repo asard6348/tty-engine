@@ -2,9 +2,6 @@ import os, sys, threading, time, traceback, subprocess, ctypes, queue, inspect
 from pygments import highlight
 from pygments.lexers.python import PythonConsoleLexer as PythonTracebackLexer
 from pygments.formatters.terminal import TerminalFormatter
-from .input_handler import inp #input module
-inp = inp() #input class instance
-from .ascii_styler import style #ascii styler callable function
 global ex, gobj, term, error
 ex=False
 error=queue.Queue()
@@ -12,11 +9,14 @@ error=queue.Queue()
 def launch(main):
     global ex, gobj, term, error
     try:
-        # TERMINAL AND OBJECT CLASS
+        # TERMINAL AND MODULES
         global gobj, term, acbg, error
         from . import obj; gobj = obj
-        from blessed import Terminal
+        from ._vendor.blessed import Terminal
         term = Terminal()
+        from .input_handler import inp #input module
+        inp = inp(term, gobj.derror) #input class instance
+        from .ascii_styler import style #ascii styler callable function
         os.system('cls' if os.name=='nt' else 'clear') # console clear wait
         acbg = None
         def updcolor(de=False): # terminal recolor

@@ -17,12 +17,8 @@ SIZE_MAP = {
 
 
 
-from blessed import Terminal
-term = Terminal()
-bg = term.get_bgcolor(bits=8)
-bg = (0,0,0) if bg[0]<0 or bg[0]>255 else bg
-fg = term.get_fgcolor(bits=8)
-fg = (255,255,255) if fg[0]<0 or fg[0]>255 else fg
+bg = (0,0,0)
+fg = (255,255,255)
 recomp = re.compile(r'(\x1b\[[0-9;]*[a-zA-Z])')
 
 def rgb(color):
@@ -32,7 +28,7 @@ def rgb(color):
         return RGB_MAP.get(color.lower(), (255, 255, 255))
     return None
 
-def style(text:str,color=None,alpha=1.0,size=None,bgcolor=None,bgalpha=1.0):
+def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=1.0):
     bgcolor = rgb(bgcolor)
     if not bgcolor is None:
         rb = int(bg[0] * (1 - bgalpha) + bgcolor[0] * bgalpha)
@@ -57,7 +53,7 @@ def style(text:str,color=None,alpha=1.0,size=None,bgcolor=None,bgalpha=1.0):
     if(not size is None):
         ascii_font = SIZE_MAP[max(1,min(5,size))] if isinstance(size, int) else size
         if(size>=1):
-            fig = Figlet(font=ascii_font, width=term.width)
+            fig = Figlet(font=ascii_font, width=width)
             ascii_art = fig.renderText(text)
         else:
             ascii_art = text

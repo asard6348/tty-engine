@@ -18,15 +18,15 @@ class main():
             server.bind(('127.0.0.1', 0))
             port = server.getsockname()[1]
             server.listen(1)
-            reset = "\033[?1049l\033[?25l\033[2J\033[H"
+            reset = "\033[?1049l\033[?1049h\033[?25l\033[2J\033[H"
             script = textwrap.dedent(f"""
                 import sys, socket, ctypes
                 if sys.platform == "win32":
                     kernel32 = ctypes.windll.kernel32
                     handle = kernel32.GetStdHandle(-11)
                     kernel32.SetConsoleMode(handle, 7)
-                    sys.stdout.write("{reset}")
-                    sys.stdout.flush()
+                sys.stdout.write("{reset}")
+                sys.stdout.flush()
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.connect(('127.0.0.1', {port}))
                 f = sock.makefile('r', buffering=1)
@@ -95,7 +95,7 @@ class main():
                     pass
                 input()
                 proc.kill()
-        threading.Thread(target=debug, daemon=True, args=(self.debugger, self.dinfo)).start()
+        #threading.Thread(target=debug, daemon=True, args=(self.debugger, self.dinfo)).start()
     
     def start(self, gobj, inp, style):    #START
         gobj.bgcolor = (30,0,0)
@@ -121,12 +121,12 @@ class main():
             ip+=20
 
         def onpress(gobj): # key press events
-            def w(e):
+            def w():
                 self.plr.yvel += self.plrjumppower if self.plr.touch[1] else 0
-            def q(e):
+            def q():
                 inp.reset()
                 os._exit(0)
-            def f(e):
+            def f():
                 self.enemy.x = self.plr.x - self.plr.xlen()*2
                 self.enemy.y = self.plr.y + self.plr.ylen()+1
                 self.enemy.rotation = -90
