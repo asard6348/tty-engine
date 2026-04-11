@@ -15,7 +15,7 @@ def launch(main):
         from ._vendor.blessed import Terminal
         term = Terminal()
         from .input_handler import inp #input module
-        inp = inp(term, gobj.derror) #input class instance
+        inp = inp(term, gobj) #input class instance
         from .ascii_styler import style #ascii styler callable function
         os.system('cls' if os.name=='nt' else 'clear') # console clear wait
         acbg = None

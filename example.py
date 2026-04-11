@@ -95,7 +95,7 @@ class main():
                     pass
                 input()
                 proc.kill()
-        #threading.Thread(target=debug, daemon=True, args=(self.debugger, self.dinfo)).start()
+        threading.Thread(target=debug, daemon=True, args=(self.debugger, self.dinfo)).start()
     
     def start(self, gobj, inp, style):    #START
         gobj.bgcolor = (30,0,0)

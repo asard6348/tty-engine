@@ -2,9 +2,9 @@ import time, threading
 from ._vendor.pynput import keyboard
 
 class inp():
-    def __init__(self, term, derror=None):
+    def __init__(self, term, gobj=None):
         self.term = term
-        self.derror = derror
+        self.gobj = gobj
         self.hids = []
         self.pressed_keys = set()
         self.focused = True
@@ -23,10 +23,10 @@ class inp():
             if not val:
                 continue
             seq = str(val)
-            if seq == "\x1b[I":
+            if seq == "I":
                 with self.lock:
                     self.focused = True
-            elif seq == "\x1b[O":
+            elif seq == "O":
                 with self.lock:
                     self.focused = False
                     self.pressed_keys.clear()
