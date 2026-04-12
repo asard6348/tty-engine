@@ -1,72 +1,52 @@
-import time, threading
-from ._vendor.pynput import keyboard
+import threading, sys
+from ._vendor import keyboard
 
 class inp():
-    def __init__(self, term, gobj=None):
-        self.term = term
-        self.gobj = gobj
-        self.hids = []
-        self.pressed_keys = set()
-        self.focused = True
+    def __init__(self, term=None, watchfocus=True):
+        self.keyboard = keyboard
         self.lock = threading.Lock()
-        print("\033[?1004h", end="", flush=True)
-        self.listener = keyboard.Listener(
-            on_press=self._on_press,
-            on_release=self._on_release
-        )
-        self.listener.start()
-        self.focus_monitor = threading.Thread(target=self._watch_focus, daemon=True)
-        self.focus_monitor.start()
+        self.wf = watchfocus
+        self.focused = True
+        self.term = term
+    def _enable_focus_reporting(self):
+        sys.stdout.write("\x1b[?1004h")
+        sys.stdout.flush()
+    def _disable_focus_reporting(self):
+        sys.stdout.write("\x1b[?1004l")
+        sys.stdout.flush()
     def _watch_focus(self):
-        while True:
-            val = self.term.inkey(timeout=1)
+        while self._term and self.wf:
+            val = self._term.inkey(timeout=1)
             if not val:
                 continue
             seq = str(val)
-            if seq == "I":
+            if seq == "\x1b[I" or seq == "I":
                 with self.lock:
                     self.focused = True
-            elif seq == "O":
+            elif seq == "\x1b[O" or seq == "O":
                 with self.lock:
                     self.focused = False
-                    self.pressed_keys.clear()
-    def _normalize(self, key):
-        try:
-            return key.char
-        except AttributeError:
-            return str(key)
-    def _on_press(self, key):
-        with self.lock:
-            if not self.focused:
-                return
-            key_str = self._normalize(key)
-            self.pressed_keys.add(key_str)
-            for hid in self.hids:
-                if self._normalize(hid.key) == key_str:
-                    hid.func()
-    def _on_release(self, key):
-        with self.lock:
-            self.pressed_keys.discard(self._normalize(key))
+    @property
+    def term(self):
+        return self._term
+    @term.setter
+    def term(self, value):
+        self._term = value
+        if value and self.wf:
+            self._enable_focus_reporting()
+            self.focus_monitor = threading.Thread(
+                target=self._watch_focus, daemon=True
+            )
+            self.focus_monitor.start()
+    def onpress(self, key, callback):
+        def _guarded(event):
+            with self.lock:
+                is_focused = self.focused
+            if is_focused:
+                callback(event)
+        self.keyboard.on_press_key(key, _guarded)
     def held(self, key):
-        with self.lock:
-            return self._normalize(key) in self.pressed_keys
-    def hook(self, key, func):
-        hid = self.handlerid(key, func)
-        with self.lock:
-            self.hids.append(hid)
-        return hid
-    def unhook(self, hid):
-        with self.lock:
-            if hid in self.hids:
-                self.hids.remove(hid)
-                return True
-        return False
-    def reset(self):
-        self.hids.clear()
+        return self.keyboard.is_pressed(key) and self.focused
     def stop(self):
-        print("\033[?1004l", end="", flush=True)
-        self.listener.stop()
-    class handlerid():
-        def __init__(self, key, func):
-            self.key = key
-            self.func = func
+        self._disable_focus_reporting()
+        self.keyboard.unhook_all()
