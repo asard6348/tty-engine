@@ -44,7 +44,7 @@ class main():
             def w():
                 self.plr.yvel += self.plrjumppower if self.plr.touch[1] else 0
             def q():
-                inp.stop()
+                inp.stop_all()
                 os._exit(0)
             def f():
                 self.enemy.x = self.plr.x - self.plr.xlen()*2
@@ -86,8 +86,10 @@ class main():
         gobj.camy += (self.plr.y-self.plr.yc(self.plr.htext)+(gobj.dimy/2)-gobj.camy)/self.camrange#; gobj.camy = round(gobj.camy)
         self.info.x = gobj.camx
         self.info.y = gobj.camy
-        self.dinfo.clear()
-        self.dinfo.extend([gobj.recomp.sub('', x) for x in gobj.dinfo])
+        try: self.dinfo.clear()
+        except: pass
+        try: self.dinfo.extend([gobj.recomp.sub('', x) for x in gobj.dinfo])
+        except: pass
         
 #ENGINE LAUNCHER
 from ttyengine import launcher

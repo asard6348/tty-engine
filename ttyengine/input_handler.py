@@ -1,6 +1,18 @@
-import threading, sys
-from ._vendor import keyboard
+import threading, sys, time, os, subprocess
+def setup_linux_permissions():
+    rule = 'KERNEL=="event*", NAME="input/%k", MODE="0660", GROUP="input"'
+    rule_path = "/etc/udev/rules.d/99-keyboard-input.rules"
+    try:
+        subprocess.run(['sudo', 'sh', '-c', f'echo \'{rule}\' > {rule_path}'], check=True)
+        user = os.getlogin()
+        subprocess.run(['sudo', 'usermod', '-aG', 'input', user], check=True)
+        subprocess.run(['sudo', 'udevadm', 'control', '--reload-rules'], check=True)
+        subprocess.run(['sudo', 'udevadm', 'trigger'], check=True)
+    except Exception as e:
+        pass
+if sys.platform.startswith('linux'): setup_linux_permissions()
 
+from ._vendor import keyboard
 class inp():
     def __init__(self, term=None, watchfocus=True):
         self.keyboard = keyboard
@@ -44,9 +56,14 @@ class inp():
                 is_focused = self.focused
             if is_focused:
                 callback(event)
-        self.keyboard.on_press_key(key, _guarded)
+        return self.keyboard.on_press_key(key, _guarded)
     def held(self, key):
-        return self.keyboard.is_pressed(key) and self.focused
-    def stop(self):
-        self._disable_focus_reporting()
+        return self.focused and (self.keyboard.is_pressed(key))
+    def stop(self, handler):
+        self.keyboard.unhook(handler)
+    def stop_all(self):
         self.keyboard.unhook_all()
+    def pausefocus(self):
+        self._disable_focus_reporting()
+    def resumefocus(self):
+        self._enable_focus_reporting()
