@@ -1,18 +1,6 @@
-import threading, sys, time, os, subprocess
-def setup_linux_permissions():
-    rule = 'KERNEL=="event*", NAME="input/%k", MODE="0660", GROUP="input"'
-    rule_path = "/etc/udev/rules.d/99-keyboard-input.rules"
-    try:
-        subprocess.run(['sudo', 'sh', '-c', f'echo \'{rule}\' > {rule_path}'], check=True)
-        user = os.getlogin()
-        subprocess.run(['sudo', 'usermod', '-aG', 'input', user], check=True)
-        subprocess.run(['sudo', 'udevadm', 'control', '--reload-rules'], check=True)
-        subprocess.run(['sudo', 'udevadm', 'trigger'], check=True)
-    except Exception as e:
-        pass
-if sys.platform.startswith('linux'): setup_linux_permissions()
-
+import threading, sys
 from ._vendor import keyboard
+
 class inp():
     def __init__(self, term=None, watchfocus=True):
         self.keyboard = keyboard
