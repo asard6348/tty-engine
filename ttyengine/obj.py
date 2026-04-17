@@ -213,56 +213,64 @@ class obj():
     #def resize(self, scale):
         
         
-    def render(self):
+    def render(self, write=True, split=False):
         bgcolor = f"\033[48;2;{self.scene.bgcolor[0]};{self.scene.bgcolor[1]};{self.scene.bgcolor[2]}m"
-        def remove(bgcolor=bgcolor):
-            px = self.px
-            py = self.py
-            ptext = self.ptext
-            if(px!=round((self.x+self.vx)-round(self.scene.camx)) or py!=-round((self.y+self.vy)-round(self.scene.camy)) or ptext!=self.vtext):
-                rem = (f"\033[{int(py) + 1}d" if py > 0 else "\033[H")
-                for part in self.scene.recomp.split(ptext):
-                    if(part == "" or self.scene.recomp.match(part)):
-                        rem += part
-                    else:
-                        for i, row in enumerate(part.splitlines()):
-                            rem += f"\033[{int(py)+1 + i}d"
-                            arow = ""
-                            crop = row[abs(min(0, int(px))) : abs(max(0,(self.scene.dimx)-int(px)))]
-                            for j, char in enumerate(crop):
-                                if(char == " "):
-                                    arow += "\033[C"
-                                elif(char == "\n"):
-                                    arow += "\n"
-                                else:
-                                    arow += " "
-                            final = f"\033[{max(0,int(px)) + 1}G{arow}"
-                            rem += final if 1<=int(py)+1+i<=self.scene.dimy else ""
-                sys.stdout.write(f"{bgcolor}{rem}\033[0m")
-        remove()
-        acx = round((self.x+self.vx)-round(self.scene.camx))
-        acy = -round((self.y+self.vy)-round(self.scene.camy))
+        remove_output = ""
+        draw_output = ""
+        acx = round((self.x+self.vx) - round(self.scene.camx))
+        acy = -round((self.y+self.vy) - round(self.scene.camy))
         actext = self.vtext
+
+        # --- remove ---
+        px = self.px
+        py = self.py
+        ptext = self.ptext
+        if px != acx or py != acy or ptext != actext:
+            rem = (f"\033[{int(py) + 1}d" if py > 0 else "\033[H")
+            for part in self.scene.recomp.split(ptext):
+                if part == "" or self.scene.recomp.match(part):
+                    rem += part
+                else:
+                    for i, row in enumerate(part.splitlines()):
+                        rem += f"\033[{int(py)+1 + i}d"
+                        arow = ""
+                        crop = row[abs(min(0, int(px))) : abs(max(0, (self.scene.dimx) - int(px)))]
+                        for j, char in enumerate(crop):
+                            if char == " ":
+                                arow += "\033[C"
+                            elif char == "\n":
+                                arow += "\n"
+                            else:
+                                arow += " "
+                        final = f"\033[{max(0, int(px)) + 1}G{arow}"
+                        rem += final if 1 <= int(py)+1+i <= self.scene.dimy else ""
+            remove_output += f"{bgcolor}{rem}\033[0m"
+
+        # --- draw ---
         out = (f"\033[{acy + 1}d" if acy > 0 else "\033[H")
         for part in self.scene.recomp.split(actext):
-            if(part == "" or self.scene.recomp.match(part)):
+            if part == "" or self.scene.recomp.match(part):
                 out += part
             else:
                 for i, row in enumerate(part.splitlines()):
                     out += f"\033[{acy+1 + i}d"
                     arow = ""
-                    crop = row[abs(min(0, acx)) : abs(max(0,(self.scene.dimx)-acx))]
+                    crop = row[abs(min(0, acx)) : abs(max(0, (self.scene.dimx) - acx))]
                     for j, char in enumerate(crop):
-                        if(char == " "):
+                        if char == " ":
                             arow += "\033[C"
                         else:
                             arow += char
-                    final = f"\033[{max(0,acx) + 1}G{arow}"
-                    out += final if 1<=acy+1+i<=self.scene.dimy else ""
+                    final = f"\033[{max(0, acx) + 1}G{arow}"
+                    out += final if 1 <= acy+1+i <= self.scene.dimy else ""
+        draw_output += f"{bgcolor}{out}\033[0m"
+
         self.px = acx
         self.py = acy
         self.ptext = actext
-        sys.stdout.write(f"{bgcolor}{out}\033[0m")
+        if write:
+            sys.stdout.write(remove_output+draw_output)
+        return (remove_output, draw_output) if split else remove_output+draw_output
 
     def physics(self, axises=('x', 'y')):
         def armratio(points, obj, pos=None):

@@ -43,11 +43,11 @@ def getargs(func, args): # list of passable arguments to a function
 
 #MODULES
 def attemptimports():
-    global obj, Terminal, inp, style
+    global obj, Terminal, inp, style, fill
     from . import obj #scene objects module
     from ._vendor.blessed import Terminal #blessed terminal
     from .input_handler import inp #input module
-    from .ascii_styler import style #ascii styler callable function
+    from .ascii_styler import style, fill #ascii styler callable function
 attempt(attemptimports)
     
 #WORLD CLASS
@@ -111,10 +111,12 @@ class Session():
         self.term = Terminal() #term instance
         self.inp = inp(self.term) #input class instance
         self.style = style #ascii styler function
+        self.fill = fill #ascii background fill function
         self.running = False #set False to stop the Session loop
         self._pause = False
         self.pausephysics = False
         self._resume = threading.Condition()
+        self.optimize = True
 
     @property
     def pause(self):
@@ -126,26 +128,37 @@ class Session():
             with self._resume:
                 self._resume.notify_all()
 
-    def run_attempt(self, optimize: bool = True, autodim: bool = True, autobg: bool = True, clearonstop: bool = True):
+    def run_attempt(self, optimize = None, autodim: bool = True, autobg: bool = True, clearonstop: bool = True):
         if(not self.running):
             self.running = True
-            with contextlib.ExitStack() as stack:
-                if optimize: # terminal optimalization context
-                    stack.enter_context(self.term.fullscreen())
-                    stack.enter_context(self.term.cbreak())
-                    stack.enter_context(self.term.hidden_cursor())
-                    
+            self.optimize = optimize if optimize is not None else self.optimize
+            with contextlib.ExitStack() as main_stack:
+                opt_stack = main_stack.enter_context(contextlib.ExitStack())
+                is_optimized = False
+                
                 while self.running: # the central loop
+                    if self.optimize and not is_optimized: # terminal optimalization context
+                        opt_stack.enter_context(self.term.fullscreen())
+                        opt_stack.enter_context(self.term.cbreak())
+                        opt_stack.enter_context(self.term.hidden_cursor())
+                        is_optimized = True
+                    elif not self.optimize and is_optimized:
+                        opt_stack.close()
+                        opt_stack = main_stack.enter_context(contextlib.ExitStack())
+                        is_optimized = False
+                        
                     if(not self._pause):
-                        #-------------TODO: THE CENTRAL LOOP
+                        framebuffer = "" # rendering central buffer
                         for world in list(self.worlds): # worlds loop
                             if world.pause or not world.tick_ready():
                                 continue
                             if(autodim): # dimx, dimy adaptation to terminal
                                 world.scene.dimx = self.term.width
                                 world.scene.dimy = self.term.height
-                            #if(autobg): # TODO: terminal background color fill
-                                
+                            if(autobg): # terminal background color fill
+                                framebuffer += self.fill(world.scene.bgcolor, self.term.width, self.term.height)
+                            elif(optimize): # terminal clear for resizing
+                                framebuffer += "\033[2J"
                             for handle in list(world.handles): # handles loop
                                 if handle.pause: continue
                                 update = getattr(handle.handle, 'update', None)
@@ -154,8 +167,9 @@ class Session():
                             for o in world.scene.objs: # objects loop
                                 if not world.pausephysics and not self.pausephysics and o.dynamic:
                                     o.physics()
-                                o.render() # TODO: framebuffer compositor
-                            sys.stdout.flush() # TODO: framebuffer flush
+                                framebuffer += o.render(False, False)
+                        sys.stdout.write(framebuffer) # framebuffer flush
+                        sys.stdout.flush()
                     now = time.perf_counter()
                     next_tick = min(
                         (w.last_tick + 1.0 / w.scene.framerate for w in self.worlds if not w.pause),
@@ -171,6 +185,6 @@ class Session():
                 if optimize: self.term.reset() # terminal optimalization reset
                 if clearonstop: os.system('cls' if os.name=='nt' else 'clear') # console clear wait
 
-    def run(self, optimize: bool = True, autodim: bool = True, autobg: bool = True, clearonstop: bool = True):
+    def run(self, optimize = None, autodim: bool = True, autobg: bool = True, clearonstop: bool = True):
         attempt(lambda: self.run_attempt(optimize=optimize, autodim=autodim, autobg=autobg, clearonstop=clearonstop), self.term.reset)
 

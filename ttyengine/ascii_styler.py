@@ -1,7 +1,6 @@
-import colorama, re
+import re, shutil
 from pyfiglet import Figlet
 from typing import Optional, Union
-colorama.init(autoreset=True)
 RGB_MAP = {
     "black": (0, 0, 0), "red": (255, 0, 0), "green": (0, 255, 0),
     "yellow": (255, 255, 0), "blue": (0, 0, 255), "magenta": (255, 0, 255),
@@ -61,3 +60,16 @@ def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=
         ascii_art = text
     styled_text = ansi_bgcolor + ansi_color + ascii_art + "\033[0m"
     return styled_text
+
+def fill(color=None, width=None, height=None):
+    color = rgb(color) if color is not None else None
+    if color is None:
+        return ""
+    r, g, b = int(color[0]), int(color[1]), int(color[2])
+    ansi_color = f"\033[48;2;{r};{g};{b}m"
+    if width is None or height is None:
+        w, h = shutil.get_terminal_size()
+        width  = width  or w
+        height = height or h
+    row_str = ansi_color + " " * width
+    return "".join(f"\033[{row+1};1H{row_str}" for row in range(height))
