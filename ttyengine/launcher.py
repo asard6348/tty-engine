@@ -150,7 +150,7 @@ class Session():
                                 if update: # update function
                                     update(**getargs(update, handle.handleargs))
                             for o in world.scene.objs: # objects loop
-                                if not world.pausephysics and not self.pausephysics:
+                                if not world.pausephysics and not self.pausephysics and o.dynamic:
                                     o.physics()
                                 o.render() # framebuffer compositor
                             sys.stdout.flush() # framebuffer flush

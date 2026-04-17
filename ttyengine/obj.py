@@ -361,7 +361,7 @@ class obj():
                         c = 1 if self[a+'vel'] > 0 else -1 if self[a+'vel'] < 0 else 0
                         ch = abs(self[a+'vel']) / actualmass
                         while ch > 0:
-                            step = min(precision, ch)
+                            step = min(self.scene.precision, ch)
                             t = {a: self[a] + (c * step)}
                             col = self.collides(self.scene.solids, **t)
                             if(col[0] and self.solid):
