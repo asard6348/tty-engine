@@ -1,33 +1,50 @@
+#ENGINE LAUNCHER
+from ttyengine.launcher import Session
+main_session = Session() # the terminal session handler
+main_world = main_session.World() # new world instance
+
 #MODULES
 import os, sys
 
-class main():
-    def __init__(self):   #VARIABLES
+#TITLE
+sys.stdout.write(f"\033]0;Test\007") # title
+sys.stdout.flush()
+#DEBUGGER
+#from ttyengine.debugger import debug
+#debugger, dinfo = debug(title='Debugger')
+
+
+#SCENE BEHAVIOURS
+class scene1(): # example scene1
+    def __init__(self, scene, world, session):   #INITIALIZATION (OPTIONAL)
+        self.scene = scene
+        self.session = session
+        self.world = world
+        #VARIABLES
         self.plrspeed = 1
         self.plrmaxspeed = 10
         self.plrspeedfriction = 0.9
         self.plrjumppower = 10
         self.camrange = 10
         self.void = -100
-
-        #DEBUGGER
-        from ttyengine.debugger import debug
-        self.debugger, self.dinfo = debug(title='Debugger')
     
-    def start(self, gobj, inp, style, term):    #START
-        sys.stdout.write(f"\033]0;Test\007") # title
-        sys.stdout.flush()
-        gobj.bgcolor = (30,0,0) # terminal background color
-        obj = gobj.obj # obj class
+    def start(self):    #START
+        sc = self.scene
+        world = self.world
+        term = self.session.term
+        inp = self.session.input
+        style = self.session.style
+        sc.bgcolor = (30,0,0) # terminal background color
+        obj = sc.obj # obj class
         
         self.info = obj().create('Press "q" to quit. Hold "e" to rotate.',0,0, False, False)
         self.plr = obj().create(style(" O \n(|)\n | \n[ ]", color='blue'),0,0,True,True,0,True)
         #self.plr.text = "OOOOOOO\n OOOOOO\n OOOOOO\n OOOOOOOOOOO"
         #self.plr.text += "\n[ ]"*5
-        self.enemy = obj().create("OOOOOO\n"*4,25,-(gobj.dimy+1), bounciness=1)
+        self.enemy = obj().create("OOOOOO\n"*4,25,-(sc.dimy+1), bounciness=1)
         self.enemy.y += self.enemy.ylen()
         self.enemy.dynamic = True; self.enemy.hitbox = False
-        self.ground = obj().create("██████████████████████████████████████████████████████████████████████████████", -15, -(gobj.dimy+1))
+        self.ground = obj().create("██████████████████████████████████████████████████████████████████████████████", -15, -(sc.dimy+1))
         self.floor = obj().create("OOOOOO\n OOOOO",self.enemy.x,self.enemy.y+6)
         self.peak = obj().create("O\n"*20,self.ground.x-55,self.ground.y-6)
         def p(txt,x=0,y=0):
@@ -44,8 +61,10 @@ class main():
             def w():
                 self.plr.yvel += self.plrjumppower if self.plr.touch[1] else 0
             def q():
-                inp.stop_all()
-                os._exit(0)
+                term.reset()
+                world.cancel(self)
+                #inp.stop_all()
+                #self.session.running = False
             def f():
                 self.enemy.x = self.plr.x - self.plr.xlen()*2
                 self.enemy.y = self.plr.y + self.plr.ylen()+1
@@ -56,7 +75,13 @@ class main():
                 inp.onpress(but.__name__, lambda e, func=but: run(func))
         onpress()
 
-    def update(self, gobj, inp, style):   #UPDATE
+    def update(self):   #UPDATE
+        sc = self.scene
+        world = self.world
+        term = self.session.term
+        inp = self.session.input
+        style = self.session.style
+        
         def whilepressed(): # key hold events
             def k(but):
                 return inp.held(but)
@@ -82,15 +107,16 @@ class main():
             self.enemy.y=0;self.enemy.x=0
         self.plr.xvel *= self.plrspeedfriction
         #self.plr.yvel *= self.plrspeedfriction
-        gobj.camx += (self.plr.x+self.plr.xc(self.plr.htext)-(gobj.dimx/2)-gobj.camx)/self.camrange#; gobj.camx = round(gobj.camx)
-        gobj.camy += (self.plr.y-self.plr.yc(self.plr.htext)+(gobj.dimy/2)-gobj.camy)/self.camrange#; gobj.camy = round(gobj.camy)
-        self.info.x = gobj.camx
-        self.info.y = gobj.camy
-        try: self.dinfo.clear()
+        sc.camx += (self.plr.x+self.plr.xc(self.plr.htext)-(sc.dimx/2)-sc.camx)/self.camrange#; sc.camx = round(sc.camx)
+        sc.camy += (self.plr.y-self.plr.yc(self.plr.htext)+(sc.dimy/2)-sc.camy)/self.camrange#; sc.camy = round(sc.camy)
+        self.info.x = sc.camx
+        self.info.y = sc.camy
+        try:
+            dinfo.clear()
+            dinfo.extend([sc.recomp.sub('', x) for x in sc.dinfo])
         except: pass
-        try: self.dinfo.extend([gobj.recomp.sub('', x) for x in gobj.dinfo])
-        except: pass
-        
-#ENGINE LAUNCHER
-from ttyengine import launcher
-launcher.launch(main)
+
+#LAUNCH THE SCENES
+scene1_handle = main_world.launch(scene1)
+#RUN THE SESSION MAIN LOOP (SYNCHRONOUSLY)
+main_session.run()

@@ -1,24 +1,8 @@
-import os, sys, math, threading, time, keyboard, random, traceback, statistics, re
-global dinfo, derror, solids, bgcolor, framerate, gravity, friction, precision, camx, camy, dimx, dimy
-dinfo = []
-derror = [False]
-recomp = re.compile(r'(\x1b\[[0-9;]*[a-zA-Z])')
+import os, sys, math, random, statistics, re
 
-framerate = 60
-gravity = [0, -0.05]
-friction = 0.97
-precision = 0.1
-
-camx = int(0)
-camy = int(0)
-dimx = 120
-dimy = 30
-solids = []
-bgcolor = (0, 0, 0)
-
-class obj():
-    def __init__(self):
-        global solids
+class obj(): 
+    def __init__(self, scene):
+        self.scene = scene #-------- APPPLY TO PHYSICS AND RENDER
         self.x = 0
         self.y = 0
         self.px = 0
@@ -39,7 +23,7 @@ class obj():
         self.mass = 0
         self.dynamic = False
         self._solid = False
-        self.touch = [False, False]
+        self.touch = (False, False)
         self.hitbox = False
     def __getitem__(self, key):
         return getattr(self, key)
@@ -101,7 +85,7 @@ class obj():
         return self._text
     @text.setter
     def text(self, value):
-        ctext = recomp.sub('', value)
+        ctext = self.scene.recomp.sub('', value)
         self.vrtext = value
         self._htext = ctext
         self._rtext = ctext
@@ -118,7 +102,7 @@ class obj():
         return self._rtext
     @rtext.setter
     def rtext(self, value):
-        ctext = recomp.sub('', value)
+        ctext = self.scene.recomp.sub('', value)
         self.vrtext = value
         self._rtext = ctext
         self.rotate(self._rotation)
@@ -127,7 +111,7 @@ class obj():
         return self._htext
     @htext.setter
     def htext(self, value):
-        ctext = recomp.sub('', value)
+        ctext = self.scene.recomp.sub('', value)
         self.vrtext = value
         self._htext = ctext
         self._rtext = ctext
@@ -137,22 +121,21 @@ class obj():
         return self._solid
     @solid.setter
     def solid(self, value):
-        global solids
         self._solid = value
         if(value == True):
-            if(not any(obj is self for obj in solids)):
-                solids.append(self)
+            if(not any(obj is self for obj in self.scene.solids)):
+                self.scene.solids.append(self)
         else:
-            solids = [obj for obj in solids if obj is not self]
+            self.scene.solids = [obj for obj in self.scene.solids if obj is not self]
     def rotate(self, angle_degrees):
-        if self.hitbox: dinfo.clear()
+        if self.hitbox: self.scene.dinfo.clear()
         
         angle = math.radians(angle_degrees)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
         def cal(txt):
             rows = txt.splitlines()
-            crows = recomp.sub('', txt).splitlines()
+            crows = self.scene.recomp.sub('', txt).splitlines()
             if not rows or not crows: return ""
             new_pixels = {}
             height = len(crows)
@@ -162,8 +145,8 @@ class obj():
             current_style = ""
             for line in rows:
                 newline = []
-                for part in recomp.split(line):
-                    if recomp.match(part):
+                for part in self.scene.recomp.split(line):
+                    if self.scene.recomp.match(part):
                         current_style += part
                     elif part:
                         for char in part:
@@ -171,13 +154,13 @@ class obj():
                 newrows.append(newline)
 
             if(self.hitbox):
-                dinfo.extend(f"angle={math.degrees(angle):.0f} txt_lines={len(crows)} pixels={len(new_pixels)}\n")
-                dinfo.extend(f"  crows: {crows}\n")
+                self.scene.dinfo.extend(f"angle={math.degrees(angle):.0f} txt_lines={len(crows)} pixels={len(new_pixels)}\n")
+                self.scene.dinfo.extend(f"  crows: {crows}\n")
                 for y, crow in enumerate(crows):
                     for x, char in enumerate(crow):
                         if char != ' ':
-                            dinfo.extend(f"  src ({x},{y}) '{char}' -> stored? {any(v[0]==char for v in new_pixels.values())}\n")
-                dinfo.extend(f"  pixel keys sample: {list(new_pixels.keys())[:10]}\n")
+                            self.scene.dinfo.extend(f"  src ({x},{y}) '{char}' -> stored? {any(v[0]==char for v in new_pixels.values())}\n")
+                self.scene.dinfo.extend(f"  pixel keys sample: {list(new_pixels.keys())[:10]}\n")
             
             for y, crow in enumerate(crows):
                 for x, char in enumerate(crow):
@@ -222,19 +205,175 @@ class obj():
         self._text = cal(self._rtext)
 
         if(self.hitbox):
-            dinfo.extend(f"{repr(self._rtext)}\n")
-            dinfo.extend(f"{repr(self.vrtext)}\n")
+            self.scene.dinfo.extend(f"{repr(self._rtext)}\n")
+            self.scene.dinfo.extend(f"{repr(self.vrtext)}\n")
         
         self.vx = (self.xc(self._rtext) - self.xc(self._text))
         self.vy = -(self.yc(self._rtext) - self.yc(self._text))
     #def resize(self, scale):
         
         
+    def render(self):
+        bgcolor = f"\033[48;2;{self.scene.bgcolor[0]};{self.scene.bgcolor[1]};{self.scene.bgcolor[2]}m"
+        def remove(bgcolor=bgcolor):
+            px = self.px
+            py = self.py
+            ptext = self.ptext
+            if(px!=round((self.x+self.vx)-round(self.scene.camx)) or py!=-round((self.y+self.vy)-round(self.scene.camy)) or ptext!=self.vtext):
+                rem = (f"\033[{int(py) + 1}d" if py > 0 else "\033[H")
+                for part in self.scene.recomp.split(ptext):
+                    if(part == "" or self.scene.recomp.match(part)):
+                        rem += part
+                    else:
+                        for i, row in enumerate(part.splitlines()):
+                            rem += f"\033[{int(py)+1 + i}d"
+                            arow = ""
+                            crop = row[abs(min(0, int(px))) : abs(max(0,(self.scene.dimx)-int(px)))]
+                            for j, char in enumerate(crop):
+                                if(char == " "):
+                                    arow += "\033[C"
+                                elif(char == "\n"):
+                                    arow += "\n"
+                                else:
+                                    arow += " "
+                            final = f"\033[{max(0,int(px)) + 1}G{arow}"
+                            rem += final if 1<=int(py)+1+i<=self.scene.dimy else ""
+                sys.stdout.write(f"{bgcolor}{rem}\033[0m")
+        remove()
+        acx = round((self.x+self.vx)-round(self.scene.camx))
+        acy = -round((self.y+self.vy)-round(self.scene.camy))
+        actext = self.vtext
+        out = (f"\033[{acy + 1}d" if acy > 0 else "\033[H")
+        for part in self.scene.recomp.split(actext):
+            if(part == "" or self.scene.recomp.match(part)):
+                out += part
+            else:
+                for i, row in enumerate(part.splitlines()):
+                    out += f"\033[{acy+1 + i}d"
+                    arow = ""
+                    crop = row[abs(min(0, acx)) : abs(max(0,(self.scene.dimx)-acx))]
+                    for j, char in enumerate(crop):
+                        if(char == " "):
+                            arow += "\033[C"
+                        else:
+                            arow += char
+                    final = f"\033[{max(0,acx) + 1}G{arow}"
+                    out += final if 1<=acy+1+i<=self.scene.dimy else ""
+        self.px = acx
+        self.py = acy
+        self.ptext = actext
+        sys.stdout.write(f"{bgcolor}{out}\033[0m")
+
+    def physics(self, axises=('x', 'y')):
+        def armratio(points, obj, pos=None):
+            xi = []; yi = []
+            for ax in points:
+                xi.append(ax[0]); yi.append(ax[1])
+            touchcenter = (statistics.mean(xi), statistics.mean(yi))
+            arms = []
+            for ia, a in enumerate(axises):
+                poss = obj[a] if pos is None else (pos[ia] if isinstance(pos,list) else pos)
+                ratio = ((touchcenter[ia])-(poss+obj[a+'c']() if ia!=1 else poss-obj[a+'c']()))/((obj[a+'c']()))
+                arms.insert(ia,ratio)
+            '''exceeds=False
+            for ar in arms:
+                if(abs(ar)>1):
+                    exceeds = True
+            if(exceeds):
+                array = arms.copy()
+                for i in range(len(array)):
+                    if array[i] < 0:
+                         array[i] = array[i] * (-1)
+                m = max(array)
+                for i,ar in enumerate(arms):
+                    arms[i]=ar#/m'''
+            return arms
+        actualmass = (abs(self.mass)+1)
+        for ia, a in enumerate(axises):
+            opp_ia = 1 - ia; direction_sign = 1 if a == 'x' else -1
+            self[a+'vel'] *= self.scene.drag
+            self[a+'vel'] += self.scene.gravity[ia]*actualmass
+            c = 1 if self[a+'vel'] > 0 else -1 if self[a+'vel'] < 0 else 0
+            ch = abs(self[a+'vel']) / actualmass
+            tch = list(self.touch); tch[ia] = False
+            self.touch = tuple(tch)
+            while ch > 0:
+                step = min(self.scene.precision, ch)
+                t = {a: self[a] + (c * step)}
+                col = self.collides(self.scene.solids, **t)
+                if(col[0] and self.solid):
+                    obj2 = col[1]
+                    othermass = (abs(obj2.mass)+1)
+                    totalmass = actualmass + othermass
+                    td = armratio(col[2],self,self[a]+(c*step))
+                    otd = armratio(col[2],obj2)
+                    touchdelta = td[ia] if not self.hitbox else 0
+                    othertouchdelta = otd[ia] if not obj2.hitbox else 0
+                    torque = self.mass
+                    #torque
+                    if(obj2.dynamic and not obj2.hitbox):
+                        obj2.avel += torque * (otd[opp_ia] * ((obj2[a+'vel']-self[a+'vel']) if ia == 1 else -(obj2[a+'vel']-self[a+'vel'])))
+                        #self.scene.dinfo=[str(otd[opp_ia])]
+                    if(self.hitbox==False):
+                        self.avel += torque * (td[opp_ia] * ((self[a+'vel']-obj2[a+'vel']) if ia == 1 else -(self[a+'vel']-obj2[a+'vel'])))
+                    if(obj2.dynamic):
+                       power = (actualmass / totalmass)*(1-abs(touchdelta))
+                       obj2[a+'vel'] += self[a+'vel']*power
+                       remain = (actualmass - othermass) / totalmass
+                       self[a+'vel'] *= max(touchdelta, remain)
+                    else:
+                       self[a+'vel'] *= -self.bounciness * (1-abs(touchdelta))
+                    tch = list(self.touch); tch[ia] = True
+                    self.touch = tuple(tch)
+                    break
+                self[a] += c * step
+                ch -= step
+        self.avel *= self.scene.drag
+        self.rotation += self.avel / actualmass
+        colr = self.collides(self.scene.solids)
+        if(colr[0] and self.solid):
+            td = armratio(colr[2],self)
+            self.rotation -= self.avel / actualmass
+            slide_cap = 0.5
+            slide_x = (self.avel * abs(td[0])) / actualmass
+            slide_y = (abs(self.avel) * td[1]) / actualmass
+            orx,ory=self.xvel,self.yvel
+            self.xvel = max(min(self.xvel + slide_x, slide_cap), -slide_cap)
+            self.yvel = max(min(self.yvel + slide_y, slide_cap), -slide_cap)
+            #trymove
+            self.x+=self.xvel
+            self.y+=self.yvel
+            self.rotation += self.avel / actualmass
+            colm = self.collides(self.scene.solids)
+            if((colm[0] and self.solid)):
+                self.x-=self.xvel
+                self.y-=self.yvel
+                self.xvel,self.yvel=orx,ory
+                self.rotation -= self.avel / actualmass
+                self.avel *= -self.bounciness
+                self.rotation += self.avel / actualmass
+                colrr = self.collides(self.scene.solids)
+                if(colrr[0] and self.solid):
+                    self.rotation -= self.avel / actualmass
+                    self.avel *= -1
+                    self.rotation += self.avel / actualmass
+                    for ia,a in enumerate(axises):
+                        c = 1 if self[a+'vel'] > 0 else -1 if self[a+'vel'] < 0 else 0
+                        ch = abs(self[a+'vel']) / actualmass
+                        while ch > 0:
+                            step = min(precision, ch)
+                            t = {a: self[a] + (c * step)}
+                            col = self.collides(self.scene.solids, **t)
+                            if(col[0] and self.solid):
+                                self[a+'vel'] *= -self.bounciness
+                                break
+                            self[a] += c * step
+                            ch -= step
+
     def create(self, text="", x=0, y=0, dynamic=False, solid=True, rotation=0, hitbox=False, bounciness=0, mass=None, xvel=0, yvel=0, avel=0):
-        global solids
         self.x = x
         self.y = y
-        ctext = recomp.sub('', text)
+        ctext = self.scene.recomp.sub('', text)
         self.vrtext = text
         self.vtext = text
         self._htext = ctext
@@ -254,175 +393,26 @@ class obj():
         self.hitbox = hitbox
         self.solid = solid
         self.rotation = rotation
-        def render():
-            global bgcolor
-            def remove():
-                global bgcolor
-                px = self.px
-                py = self.py
-                ptext = self.ptext
-                if(px!=round((self.x+self.vx)-round(camx)) or py!=-round((self.y+self.vy)-round(camy)) or ptext!=self.vtext):
-                    rem = (f"\033[{int(py) + 1}d" if py > 0 else "\033[H")
-                    for part in recomp.split(ptext):
-                        if(part == "" or recomp.match(part)):
-                            rem += part
-                        else:
-                            for i, row in enumerate(part.splitlines()):
-                                rem += f"\033[{int(py)+1 + i}d"
-                                arow = ""
-                                crop = row[abs(min(0, int(px))) : abs(max(0,(dimx)-int(px)))]
-                                for j, char in enumerate(crop):
-                                    if(char == " "):
-                                        arow += "\033[C"
-                                    elif(char == "\n"):
-                                        arow += "\n"
-                                    else:
-                                        arow += " "
-                                final = f"\033[{max(0,int(px)) + 1}G{arow}"
-                                rem += final if 1<=int(py)+1+i<=dimy else ""
-                    sys.stdout.write(f"\033[48;2;{bgcolor[0]};{bgcolor[1]};{bgcolor[2]}m{rem}\033[0m")
-                    sys.stdout.flush()
-            remove()
-            acx = round((self.x+self.vx)-round(camx))
-            acy = -round((self.y+self.vy)-round(camy))
-            actext = self.vtext
-            out = (f"\033[{acy + 1}d" if acy > 0 else "\033[H")
-            for part in recomp.split(actext):
-                if(part == "" or recomp.match(part)):
-                    out += part
-                else:
-                    for i, row in enumerate(part.splitlines()):
-                        out += f"\033[{acy+1 + i}d"
-                        arow = ""
-                        crop = row[abs(min(0, acx)) : abs(max(0,(dimx)-acx))]
-                        for j, char in enumerate(crop):
-                            if(char == " "):
-                                arow += "\033[C"
-                            else:
-                                arow += char
-                        final = f"\033[{max(0,acx) + 1}G{arow}"
-                        out += final if 1<=acy+1+i<=dimy else ""
-            self.px = acx
-            self.py = acy
-            self.ptext = actext
-            sys.stdout.write(f"\033[48;2;{bgcolor[0]};{bgcolor[1]};{bgcolor[2]}m{out}\033[0m")
-            sys.stdout.flush()
-        def physics(axises):
-            global dinfo
-            def armratio(points, obj, pos=None):
-                global dinfo
-                xi = []; yi = []
-                for ax in points:
-                    xi.append(ax[0]); yi.append(ax[1])
-                touchcenter = (statistics.mean(xi), statistics.mean(yi))
-                arms = []
-                for ia, a in enumerate(axises):
-                    poss = obj[a] if pos is None else (pos[ia] if isinstance(pos,list) else pos)
-                    ratio = ((touchcenter[ia])-(poss+obj[a+'c']() if ia!=1 else poss-obj[a+'c']()))/((obj[a+'c']()))
-                    arms.insert(ia,ratio)
-                '''exceeds=False
-                for ar in arms:
-                    if(abs(ar)>1):
-                        exceeds = True
-                if(exceeds):
-                    array = arms.copy()
-                    for i in range(len(array)):
-                        if array[i] < 0:
-                             array[i] = array[i] * (-1)
-                    m = max(array)
-                    for i,ar in enumerate(arms):
-                        arms[i]=ar#/m'''
-                return arms
-            actualmass = (abs(self.mass)+1)
-            for ia, a in enumerate(axises):
-                opp_ia = 1 - ia; direction_sign = 1 if a == 'x' else -1
-                self[a+'vel'] *= friction
-                self[a+'vel'] += gravity[ia]*actualmass
-                c = 1 if self[a+'vel'] > 0 else -1 if self[a+'vel'] < 0 else 0
-                ch = abs(self[a+'vel']) / actualmass
-                self.touch[ia] = False
-                while ch > 0:
-                    step = min(precision, ch)
-                    t = {a: self[a] + (c * step)}
-                    col = self.collides(solids, **t)
-                    if(col[0] and self.solid):
-                        obj2 = col[1]
-                        othermass = (abs(obj2.mass)+1)
-                        totalmass = actualmass + othermass
-                        td = armratio(col[2],self,self[a]+(c*step))
-                        otd = armratio(col[2],obj2)
-                        touchdelta = td[ia] if not self.hitbox else 0
-                        othertouchdelta = otd[ia] if not obj2.hitbox else 0
-                        torque = self.mass
-                        #torque
-                        if(obj2.dynamic and not obj2.hitbox):
-                            obj2.avel += torque * (otd[opp_ia] * ((obj2[a+'vel']-self[a+'vel']) if ia == 1 else -(obj2[a+'vel']-self[a+'vel'])))
-                            #dinfo=[str(otd[opp_ia])]
-                        if(self.hitbox==False):
-                            self.avel += torque * (td[opp_ia] * ((self[a+'vel']-obj2[a+'vel']) if ia == 1 else -(self[a+'vel']-obj2[a+'vel'])))
-                        if(obj2.dynamic):
-                           power = (actualmass / totalmass)*(1-abs(touchdelta))
-                           obj2[a+'vel'] += self[a+'vel']*power
-                           remain = (actualmass - othermass) / totalmass
-                           self[a+'vel'] *= max(touchdelta, remain)
-                        else:
-                           self[a+'vel'] *= -self.bounciness * (1-abs(touchdelta))
-                        self.touch[ia] = True
-                        break
-                    self[a] += c * step
-                    ch -= step
-            self.avel *= friction
-            self.rotation += self.avel / actualmass
-            colr = self.collides(solids)
-            if(colr[0] and self.solid):
-                td = armratio(colr[2],self)
-                self.rotation -= self.avel / actualmass
-                slide_cap = 0.5
-                slide_x = (self.avel * abs(td[0])) / actualmass
-                slide_y = (abs(self.avel) * td[1]) / actualmass
-                orx,ory=self.xvel,self.yvel
-                self.xvel = max(min(self.xvel + slide_x, slide_cap), -slide_cap)
-                self.yvel = max(min(self.yvel + slide_y, slide_cap), -slide_cap)
-                #trymove
-                self.x+=self.xvel
-                self.y+=self.yvel
-                self.rotation += self.avel / actualmass
-                colm = self.collides(solids)
-                if((colm[0] and self.solid)):
-                    self.x-=self.xvel
-                    self.y-=self.yvel
-                    self.xvel,self.yvel=orx,ory
-                    self.rotation -= self.avel / actualmass
-                    self.avel *= -self.bounciness
-                    self.rotation += self.avel / actualmass
-                    colrr = self.collides(solids)
-                    if(colrr[0] and self.solid):
-                        self.rotation -= self.avel / actualmass
-                        self.avel *= -1
-                        self.rotation += self.avel / actualmass
-                        for ia,a in enumerate(axises):
-                            c = 1 if self[a+'vel'] > 0 else -1 if self[a+'vel'] < 0 else 0
-                            ch = abs(self[a+'vel']) / actualmass
-                            while ch > 0:
-                                step = min(precision, ch)
-                                t = {a: self[a] + (c * step)}
-                                col = self.collides(solids, **t)
-                                if(col[0] and self.solid):
-                                    self[a+'vel'] *= -self.bounciness
-                                    break
-                                self[a] += c * step
-                                ch -= step
-        def behave(derror):
-            try:
-                while derror[0]==False:
-                    if(self.dynamic == True):
-                        physics(['x', 'y'])
-                    render()
-                    time.sleep(1/framerate)
-            except Exception as e:
-                derror.append(e)
-                derror[0] = True
-        global derror
-        th = threading.Thread(target=behave, daemon=True, args=(derror,))
-        th.start()
+        
+        self.scene.objs.append(self)
         return self
+
+class Scene():
+    def __init__(self):
+        self.objs = []
+        self.dinfo = []
+        self.framerate = 60
+        
+        self.gravity = (0, -0.05)
+        self.drag = 0.97
+        self.precision = 0.1
+        self.solids = []
+
+        self.camx = 0
+        self.camy = 0
+        self.dimx = 120
+        self.dimy = 30
+        self.bgcolor = (0, 0, 0)
+        self.recomp = re.compile(r'(\x1b\[[0-9;]*[a-zA-Z])')
+    def obj(self):
+        return obj(self)
