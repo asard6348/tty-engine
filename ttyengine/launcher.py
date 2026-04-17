@@ -109,7 +109,7 @@ class Session():
         self.worlds = []
         self.World = lambda: World(self) # world factory
         self.term = Terminal() #term instance
-        self.input = inp(self.term) #input class instance
+        self.inp = inp(self.term) #input class instance
         self.style = style #ascii styler function
         self.running = False #set False to stop the Session loop
         self._pause = False
@@ -144,6 +144,8 @@ class Session():
                             if(autodim): # dimx, dimy adaptation to terminal
                                 world.scene.dimx = self.term.width
                                 world.scene.dimy = self.term.height
+                            #if(autobg): # TODO: terminal background color fill
+                                
                             for handle in list(world.handles): # handles loop
                                 if handle.pause: continue
                                 update = getattr(handle.handle, 'update', None)
@@ -152,8 +154,8 @@ class Session():
                             for o in world.scene.objs: # objects loop
                                 if not world.pausephysics and not self.pausephysics and o.dynamic:
                                     o.physics()
-                                o.render() # framebuffer compositor
-                            sys.stdout.flush() # framebuffer flush
+                                o.render() # TODO: framebuffer compositor
+                            sys.stdout.flush() # TODO: framebuffer flush
                     now = time.perf_counter()
                     next_tick = min(
                         (w.last_tick + 1.0 / w.scene.framerate for w in self.worlds if not w.pause),

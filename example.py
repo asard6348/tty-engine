@@ -31,8 +31,7 @@ class scene1(): # example scene1
     def start(self):    #START
         sc = self.scene
         world = self.world
-        term = self.session.term
-        inp = self.session.input
+        inp = self.session.inp
         style = self.session.style
         sc.bgcolor = (30,0,0) # terminal background color
         obj = sc.obj # obj class
@@ -61,10 +60,8 @@ class scene1(): # example scene1
             def w():
                 self.plr.yvel += self.plrjumppower if self.plr.touch[1] else 0
             def q():
-                term.reset()
-                world.cancel(self)
-                #inp.stop_all()
-                #self.session.running = False
+                inp.stop_all()
+                self.session.running = False
             def f():
                 self.enemy.x = self.plr.x - self.plr.xlen()*2
                 self.enemy.y = self.plr.y + self.plr.ylen()+1
@@ -78,8 +75,7 @@ class scene1(): # example scene1
     def update(self):   #UPDATE
         sc = self.scene
         world = self.world
-        term = self.session.term
-        inp = self.session.input
+        inp = self.session.inp
         style = self.session.style
         
         def whilepressed(): # key hold events
