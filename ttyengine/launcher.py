@@ -116,7 +116,12 @@ class Session():
         self._pause = False
         self.pausephysics = False
         self._resume = threading.Condition()
+        #DEFAULT SETTINGS
         self.optimize = True
+        self.autodim = True
+        self.autobg = True
+        self.rewrite = True
+        self.clearonstop = True
 
     @property
     def pause(self):
@@ -128,10 +133,11 @@ class Session():
             with self._resume:
                 self._resume.notify_all()
 
-    def run_attempt(self, optimize = None, autodim: bool = True, autobg: bool = True, clearonstop: bool = True):
+    def run_attempt(self, **kwargs):
         if(not self.running):
             self.running = True
-            self.optimize = optimize if optimize is not None else self.optimize
+            for setting, val in kwargs:
+                if val is not None: setattr(self, setting, val)
             with contextlib.ExitStack() as main_stack:
                 opt_stack = main_stack.enter_context(contextlib.ExitStack())
                 is_optimized = False
@@ -152,12 +158,12 @@ class Session():
                         for world in list(self.worlds): # worlds loop
                             if world.pause or not world.tick_ready():
                                 continue
-                            if(autodim): # dimx, dimy adaptation to terminal
+                            if(self.autodim): # dimx, dimy adaptation to terminal
                                 world.scene.dimx = self.term.width
                                 world.scene.dimy = self.term.height
-                            if(autobg): # terminal background color fill
+                            if(self.autobg and self.rewrite): # terminal background color fill
                                 framebuffer += self.fill(world.scene.bgcolor, self.term.width, self.term.height)
-                            elif(optimize): # terminal clear for resizing
+                            elif(self.rewrite): # terminal clear for resizing
                                 framebuffer += "\033[2J"
                             for handle in list(world.handles): # handles loop
                                 if handle.pause: continue
@@ -167,7 +173,8 @@ class Session():
                             for o in world.scene.objs: # objects loop
                                 if not world.pausephysics and not self.pausephysics and o.dynamic:
                                     o.physics()
-                                framebuffer += o.render(False, False)
+                                if o.show:
+                                    framebuffer += o.render(False, False)
                         sys.stdout.write(framebuffer) # framebuffer flush
                         sys.stdout.flush()
                     now = time.perf_counter()
@@ -182,9 +189,9 @@ class Session():
                         with self._resume: # contextual wait
                             self._resume.wait_for(lambda: not self._pause and len(self.worlds) > 0)
 
-                if optimize: self.term.reset() # terminal optimalization reset
-                if clearonstop: os.system('cls' if os.name=='nt' else 'clear') # console clear wait
+                if self.optimize: self.term.reset() # terminal optimalization reset
+                if self.clearonstop: os.system('cls' if os.name=='nt' else 'clear') # console clear wait
 
-    def run(self, optimize = None, autodim: bool = True, autobg: bool = True, clearonstop: bool = True):
-        attempt(lambda: self.run_attempt(optimize=optimize, autodim=autodim, autobg=autobg, clearonstop=clearonstop), self.term.reset)
+    def run(self, **kwargs):
+        attempt(lambda: self.run_attempt(**kwargs), self.term.reset)
 

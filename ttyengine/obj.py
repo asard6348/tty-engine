@@ -2,13 +2,14 @@ import os, sys, math, random, statistics, re
 
 class obj(): 
     def __init__(self, scene):
-        self.scene = scene #-------- APPPLY TO PHYSICS AND RENDER
+        self.scene = scene
         self.x = 0
         self.y = 0
         self.px = 0
         self.py = 0
         self.vx = 0
         self.vy = 0
+        self.show = True
         self.vtext = ""
         self.vrtext = ""
         self.ptext = ""
@@ -268,7 +269,7 @@ class obj():
         self.px = acx
         self.py = acy
         self.ptext = actext
-        if write:
+        if write and self.show:
             sys.stdout.write(remove_output+draw_output)
         return (remove_output, draw_output) if split else remove_output+draw_output
 

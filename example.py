@@ -70,7 +70,9 @@ def dev(Session=Session): #DEBUG
                     self.enemy.rotation = -90
                 def r():
                     self.session.optimize = not self.session.optimize
-                for but in [w,q,f,r]:
+                def t():
+                    self.plr.show = not self.plr.show
+                for but in [w,q,f,r,t]:
                     def run(func):
                         func()
                     inp.onpress(but.__name__, lambda e, func=but: run(func))
