@@ -43,8 +43,8 @@ def getargs(func, args): # list of passable arguments to a function
 
 #MODULES
 def attemptimports():
-    global obj, Terminal, inp, style, fill
-    from . import obj #scene objects module
+    global scene, Terminal, inp, style, fill
+    from . import scene #scene objects module
     from ._vendor.blessed import Terminal #blessed terminal
     from .input_handler import inp #input module
     from .ascii_styler import style, fill #ascii styler callable function
@@ -55,10 +55,11 @@ class World():
     def __init__(self, session=None, autoreg=True):
         self.session = session
         self.handles = []
-        self.scene = obj.Scene() # new object Scene instance
+        self.scene = scene.Scene() # new object Scene instance
         self.last_tick = time.perf_counter()
         self.pause = False
         self.pausephysics = False
+        self.pauserendering = False
         if autoreg: attempt(self.register)
 
     class Handle(): # scene behaviour handle
@@ -109,12 +110,13 @@ class Session():
         self.worlds = []
         self.World = lambda: World(self) # world factory
         self.term = Terminal() #term instance
-        self.inp = inp(self.term) #input class instance
+        self.inp = inp(term=self.term,watchfocus=True,trackmotion=True) #input class instance
         self.style = style #ascii styler function
         self.fill = fill #ascii background fill function
         self.running = False #set False to stop the Session loop
         self._pause = False
         self.pausephysics = False
+        self.pauserendering = False
         self._resume = threading.Condition()
         #DEFAULT SETTINGS
         self.optimize = True
@@ -136,7 +138,7 @@ class Session():
     def run_attempt(self, **kwargs):
         if(not self.running):
             self.running = True
-            for setting, val in kwargs:
+            for setting, val in kwargs.items():
                 if val is not None: setattr(self, setting, val)
             with contextlib.ExitStack() as main_stack:
                 opt_stack = main_stack.enter_context(contextlib.ExitStack())
@@ -147,6 +149,7 @@ class Session():
                         opt_stack.enter_context(self.term.fullscreen())
                         opt_stack.enter_context(self.term.cbreak())
                         opt_stack.enter_context(self.term.hidden_cursor())
+                        opt_stack.enter_context(self.term.mouse_enabled(report_drag=True, report_motion=True))
                         is_optimized = True
                     elif not self.optimize and is_optimized:
                         opt_stack.close()
@@ -154,6 +157,7 @@ class Session():
                         is_optimized = False
                         
                     if(not self._pause):
+                        self.inp.update() # update input handling instance
                         framebuffer = "" # rendering central buffer
                         for world in list(self.worlds): # worlds loop
                             if world.pause or not world.tick_ready():
@@ -171,10 +175,12 @@ class Session():
                                 if update: # update function
                                     update(**getargs(update, handle.handleargs))
                             for o in world.scene.objs: # objects loop
-                                if not world.pausephysics and not self.pausephysics and o.dynamic:
-                                    o.physics()
-                                if o.show:
-                                    framebuffer += o.render(False, False)
+                                if hasattr(o, 'physics'):
+                                    if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
+                                        o.physics.physics()
+                                if hasattr(o, 'rendering'):
+                                    if not world.pauserendering and not self.pauserendering and o.rendering.show:
+                                        framebuffer += o.rendering.render(False, False)
                         sys.stdout.write(framebuffer) # framebuffer flush
                         sys.stdout.flush()
                     now = time.perf_counter()
@@ -189,6 +195,8 @@ class Session():
                         with self._resume: # contextual wait
                             self._resume.wait_for(lambda: not self._pause and len(self.worlds) > 0)
 
+                self.inp.stop_all() # stop all input hooks
+                self.inp.cleanup() # reset the input handling instance
                 if self.optimize: self.term.reset() # terminal optimalization reset
                 if self.clearonstop: os.system('cls' if os.name=='nt' else 'clear') # console clear wait
 

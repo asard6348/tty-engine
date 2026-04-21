@@ -3,8 +3,8 @@ from pyfiglet import Figlet
 from typing import Optional, Union
 RGB_MAP = {
     "black": (0, 0, 0), "red": (255, 0, 0), "green": (0, 255, 0),
-    "yellow": (255, 255, 0), "blue": (0, 0, 255), "magenta": (255, 0, 255),
-    "cyan": (0, 255, 255), "white": (255, 255, 255),
+    "yellow": (255, 255, 0), "brown": (150, 75, 0), "blue": (0, 0, 255), "magenta": (255, 0, 255),
+    "cyan": (0, 255, 255), "pink": (255, 192, 203), "white": (255, 255, 255),
     "brightblack": (128, 128, 128), "brightred": (255, 100, 100),
     "brightgreen": (100, 255, 100), "brightyellow": (255, 255, 100),
     "brightblue": (100, 100, 255), "brightmagenta": (255, 100, 255),
@@ -27,7 +27,7 @@ def rgb(color):
         return RGB_MAP.get(color.lower(), (255, 255, 255))
     return None
 
-def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=1.0):
+def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=1.0,bg=bg):
     bgcolor = rgb(bgcolor)
     if not bgcolor is None:
         rb = int(bg[0] * (1 - bgalpha) + bgcolor[0] * bgalpha)
