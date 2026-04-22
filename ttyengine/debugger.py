@@ -13,9 +13,13 @@ def debug(debugger=[], dinfo=[], title=None):
     script = textwrap.dedent(f"""
         import sys, socket, ctypes
         if sys.platform == "win32":
+            user32 = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.GetStdHandle(-11)
             kernel32.SetConsoleMode(handle, 7)
+            hwnd = kernel32.GetConsoleWindow()
+            if hwnd:
+                user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 19)
         if(not {title_repr} is None):
             sys.stdout.write("\033]0;{title}\007")
         sys.stdout.write("{reset}")
