@@ -1,4 +1,4 @@
-import os, sys, time, threading, traceback, contextlib, inspect
+import os, sys, time, threading, traceback, contextlib, inspect, ctypes
 from pygments import highlight
 from pygments.lexers.python import PythonConsoleLexer as TracebackLexer
 from pygments.formatters.terminal import TerminalFormatter
@@ -49,6 +49,16 @@ def attemptimports():
     from .input_handler import inp #input module
     from .ascii_styler import style, fill #ascii styler callable function
 attempt(attemptimports)
+
+#WINDOWS INTIALIZATION
+def universal_init():
+    if os.name == 'nt':
+        hOut = ctypes.windll.kernel32.GetStdHandle(-11) # STD_OUTPUT_HANDLE
+        dwMode = ctypes.c_uint32()
+        ctypes.windll.kernel32.GetConsoleMode(hOut, ctypes.byref(dwMode))
+        # 0x0004 is ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        ctypes.windll.kernel32.SetConsoleMode(hOut, dwMode.value | 0x0004)
+attempt(universal_init)
     
 #WORLD CLASS
 class World():
@@ -174,13 +184,18 @@ class Session():
                                 update = getattr(handle.handle, 'update', None)
                                 if update: # update function
                                     update(**getargs(update, handle.handleargs))
+                            removes = ""
+                            draws = ""
                             for o in world.scene.objs: # objects loop
                                 if hasattr(o, 'physics'):
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
-                                if hasattr(o, 'rendering'):
-                                    if not world.pauserendering and not self.pauserendering and o.rendering.show:
-                                        framebuffer += o.rendering.render(False, False)
+                                if hasattr(o, 'rendering') and o.rendering.show:
+                                    if not world.pauserendering and not self.pauserendering:
+                                        rem, draw = o.rendering.render(False, True)
+                                        removes += rem
+                                        draws += draw
+                            framebuffer += removes + draws
                         sys.stdout.write(framebuffer) # framebuffer flush
                         sys.stdout.flush()
                     now = time.perf_counter()

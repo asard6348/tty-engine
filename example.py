@@ -6,7 +6,7 @@ def dev(Session=Session): #DEBUG
     main_world = main_session.World() # new world instance
 
     #MODULES
-    import os, sys
+    import os, sys, time
 
     #TITLE
     sys.stdout.write(f"\033]0;Test\007") # title
@@ -39,8 +39,6 @@ def dev(Session=Session): #DEBUG
             
             self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True)
             self.plr = obj().create(style(" O \n(|)\n | \n[ ]", color='white', bgcolor='blue', bgalpha=0.5, bg=sc.bgcolor),0,0,hitbox=True)
-            #self.plr.transform.text = "OOOOOOO\n OOOOOO\n OOOOOO\n OOOOOOOOOOO"
-            #self.plr.transform.text += "\n[ ]"*5
             self.enemy = obj().create("OOOOOO\n"*4,25,-(sc.dimy+1), bounciness=1)
             self.enemy.transform.y += self.enemy.transform.ylen()
             self.enemy.physics.dynamic = True; self.enemy.physics.hitbox = False
@@ -56,6 +54,17 @@ def dev(Session=Session): #DEBUG
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
                 ip+=20
+            
+            self.pen = obj().create(penchar='█') # pen
+            def on_click_pen(mx, my, data):
+                self.pen.pen._x = mx + sc.camx
+                self.pen.pen._y = sc.camy - my
+                self.pen.pen.down()
+            def on_release_pen(mx, my, data):
+                if self.pen.pen.current_obj: self.pen.pen.current_obj.add('physics')
+                self.pen.pen.up()
+            inp.onmouse('click', on_click_pen)
+            inp.onmouse('release', on_release_pen)
 
             def onpress(): # key press events
                 def w():
@@ -103,22 +112,25 @@ def dev(Session=Session): #DEBUG
                     self.plr.physics.xvel += -self.plrspeed if abs(self.plr.physics.xvel) < self.plrmaxspeed else 0
             whilepressed()
             
-            if(self.plr.transform.y<self.void):
-                self.plr.transform.y=0;self.plr.transform.x=0
-            if(self.enemy.transform.y<self.void):
-                self.enemy.transform.y=0;self.enemy.transform.x=0
+            for o in self.scene.objs:
+                if(o.transform.y<self.void):
+                    o.transform.y=0;o.transform.x=0
             self.plr.physics.xvel *= self.plrspeedfriction
             #self.plr.physics.yvel *= self.plrspeedfriction
-            
-            camtarx = (inp._mouse_x-sc.dimx/2) + self.plr.transform.x+self.plr.transform.xc(self.plr.transform.htext)
-            camtary = (-inp._mouse_y+sc.dimy/2) + self.plr.transform.y-self.plr.transform.yc(self.plr.transform.htext)
+
+            # camera follow
+            camtarx = (inp._mouse_x-sc.dimx/2)*1 + self.plr.transform.x+self.plr.transform.xc(self.plr.transform.htext)
+            camtary = (-inp._mouse_y+sc.dimy/2)*1 + self.plr.transform.y-self.plr.transform.yc(self.plr.transform.htext)
             sc.camx += ((camtarx-sc.dimx/2)-sc.camx)/self.camrange#; sc.camx = round(sc.camx)
             sc.camy += ((camtary+sc.dimy/2)-sc.camy)/self.camrange#; sc.camy = round(sc.camy)
 
             self.info.transform.x = sc.camx
             self.info.transform.y = sc.camy
+            if self.pen.pen.active:
+                self.pen.pen.x = inp._mouse_x + sc.camx
+                self.pen.pen.y = sc.camy - inp._mouse_y
             
-            try:
+            try: # debug info register
                 dinfo.clear()
                 #dinfo.extend([sc.recomp.sub('', x) for x in sc.dinfo])
                 dinfo.extend(str((inp.focused, inp.mouse, inp.mouseheld())))

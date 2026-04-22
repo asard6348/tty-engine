@@ -196,7 +196,7 @@ class rendering():
             rem = f'\033[{int(py)+1}d' if py > 0 else '\033[H'
             for part in self.scene.recomp.split(ptext):
                 if not part or self.scene.recomp.match(part):
-                    rem += part
+                    continue
                 else:
                     for i, row in enumerate(part.splitlines()):
                         rem += f'\033[{int(py)+1+i}d'
@@ -379,3 +379,122 @@ class physics():
                 self.t.rotation -= self.avel / actualmass
                 self.avel *= -self.bounciness
                 self.t.rotation += self.avel / actualmass
+
+class pen():
+    _owned = ['penchar', 'penx', 'peny']
+    _required = [transform]
+
+    def __init__(self, obj, **kwargs):
+        self.obj = obj
+        self.scene = obj.scene
+        self._x = kwargs.get('penx', 0)
+        self._y = kwargs.get('peny', 0)
+        self._px = self._x
+        self._py = self._y
+        self.char = kwargs.get('penchar', '█')
+        self.active = False
+        self.current_obj = None
+        self._pixels = {}
+        self._ox = 0
+        self._oy = 0
+
+    @property
+    def x(self):
+        return self._x
+    @x.setter
+    def x(self, value):
+        self._x = value
+        if self.active:
+            self._plot()
+
+    @property
+    def y(self):
+        return self._y
+    @y.setter
+    def y(self, value):
+        self._y = value
+        if self.active:
+            self._plot()
+
+    def down(self):
+        if self.active:
+            return
+        self.active = True
+        self._pixels = {}
+        self._ox = round(self._x)
+        self._oy = round(self._y)
+        self._px = self._ox
+        self._py = self._oy
+        self._pixels[(0, 0)] = self.char
+        self.current_obj = self.scene.obj().create(
+            x=self._ox,
+            y=self._oy,
+            text=self.char,
+            dynamic=False,
+            solid=False,
+        )
+
+    def up(self):
+        self.active = False
+        self.current_obj = None
+        self._pixels = {}
+
+    def stamp(self, char=None):
+        c = char if char is not None else self.char
+        return self.scene.obj().create(
+            x=round(self._x),
+            y=round(self._y),
+            text=c,
+            dynamic=False,
+            solid=False,
+        )
+
+    def _plot(self):
+        nx = round(self._x)
+        ny = round(self._y)
+        for (ix, iy) in self._line(self._px, self._py, nx, ny):
+            self._pixels[(ix - self._ox, iy - self._oy)] = self.char
+        self._px = nx
+        self._py = ny
+        self._rebuild()
+
+    def _line(self, x0, y0, x1, y1):
+        points = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        while True:
+            points.append((x0, y0))
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+        return points
+
+    def _rebuild(self):
+        if not self._pixels or self.current_obj is None:
+            return
+
+        xs = [p[0] for p in self._pixels]
+        ys = [p[1] for p in self._pixels]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        rows = []
+        for row_y in range(max_y, min_y - 1, -1):
+            row = ''
+            for col_x in range(min_x, max_x + 1):
+                row += self._pixels.get((col_x, row_y), ' ')
+            rows.append(row)
+
+        self.current_obj.transform.x = self._ox + min_x
+        self.current_obj.transform.y = self._oy + max_y
+
+        self.current_obj.transform.rtext = '\n'.join(rows)

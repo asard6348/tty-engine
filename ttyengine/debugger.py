@@ -1,4 +1,4 @@
-import os, sys, time, subprocess, threading, textwrap, traceback, socket
+import os, sys, time, subprocess, threading, textwrap, traceback, socket, ctypes
 from pygments import highlight
 from pygments.lexers.python import PythonConsoleLexer as PythonTracebackLexer
 from pygments.formatters.terminal import TerminalFormatter
