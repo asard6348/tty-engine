@@ -164,7 +164,7 @@ class main():
                     return
                 def vn(parts, vd=vanish_data):
                     for p in parts:
-                        self.info['text'] = session.style(str(parts), color='black', bgcolor='white')
+                        #self.info['text'] = session.style(str(parts), color='black', bgcolor='white')
                         p.forvanish = vd
                         world.launch(lambda p=p, v=vd: vanish(p, **v))
                 res = obj2.transform.split(vn)
