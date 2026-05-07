@@ -66,6 +66,10 @@ def dev(Session=Session): #DEBUG
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
                             )
             self.plr = obj().create(plrtext,0,0,hitbox=True,renderspaces=False)
+            def plref(parts):
+                if 0 < len(parts): self.plr = parts[0]
+                else: self.plr = None
+            self.plr.transform.onsplit(plref)
             self.enemy = obj().create("OOOOOO\n"*4,25,-(sc.dimy+1), bounciness=1)
             self.enemy.transform.y += self.enemy.transform.ylen()
             self.enemy.physics.dynamic = True; self.enemy.physics.hitbox = False
@@ -95,11 +99,7 @@ def dev(Session=Session): #DEBUG
             def on_release_pen(mx, my, data):
                 if data == 2:
                     if self.pen.pen.current_obj: self.pen.pen.current_obj.discard()
-                    cuts = self.pen.pen.commit(r=0, hitbox=False)
-                    for o, parts in cuts.items():
-                        if o == self.plr:
-                            if 0 < len(parts): self.plr = parts[0]
-                            else: self.plr = None
+                    self.pen.pen.commit(r=0, hitbox=False)
                 self.pen.pen.up(dynamic=True)
             inp.onmouse('click', on_click_pen)
             inp.onmouse('release', on_release_pen)

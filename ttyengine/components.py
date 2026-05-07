@@ -492,11 +492,13 @@ class transform(_change_callback):
                 parts.append(obj_ref.scene.obj().create(**kw))
             if callable(cb):
                 l = _argslen(cb)
-                if l > 0: cb(parts)
+                if l > 1: cb(parts, obj_ref)
+                elif l > 0: cb(parts)
                 else: cb()
             for calb in self._onsplit:
                 cl = _argslen(calb)
-                if cl > 0: calb(parts)
+                if cl > 1: calb(parts, obj_ref)
+                elif cl > 0: calb(parts)
                 else: calb()
             obj_ref.discard()
         self.scene.pending.append(do_split)
@@ -510,7 +512,8 @@ class transform(_change_callback):
         if not coords and not self.obj.discard in self.scene.pending:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 0: self.scene.pending.append(lambda: callback([self.obj]))
+                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
+                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
                 else: self.scene.pending.append(callback)
             self.scene.pending.append(self.obj.discard)
             return
@@ -536,7 +539,8 @@ class transform(_change_callback):
         if len(components) < 2:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 0: self.scene.pending.append(lambda: callback([self.obj]))
+                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
+                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
                 else: self.scene.pending.append(callback)
             return
 
@@ -553,7 +557,8 @@ class transform(_change_callback):
         if not valid_walls:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 0: self.scene.pending.append(lambda: callback([self.obj]))
+                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
+                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
                 else: self.scene.pending.append(callback)
             return
 
@@ -578,7 +583,8 @@ class transform(_change_callback):
         if len(components) < 2:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 0: self.scene.pending.append(lambda: callback([self.obj]))
+                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
+                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
                 else: self.scene.pending.append(callback)
             return
 
@@ -1319,17 +1325,17 @@ class pen():
         self._pcut_x = round(wx)
         self._pcut_y = round(wy)
 
-    def commit(self, r=0, **kwargs):
-        cut_objs = {}
+    def commit(self, r=0, callback=None, **kwargs):
+        cut_objs = []
         for o, wall_pixels in self._cut_walls.values():
             if o not in self.scene.objs:
                 continue
             o.create(**kwargs)
             if r == 0:
-                cuts = o.transform.split_at(wall_pixels)
+                o.transform.split_at(wall_pixels, callback=callback)
             else:
-                cuts = o.transform.split()
-            cut_objs[o] = cuts if not cuts is None else []
+                o.transform.split(callback=callback)
+            cut_objs.append(o)
         self._cut_walls = {}
         return cut_objs
 
