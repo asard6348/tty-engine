@@ -14,7 +14,7 @@ def trace(exception, lexer=TracebackLexer, clear=True): # custom traceback for t
     except:
         raise exception
     
-def attempt(func, catch=None, lexer=TracebackLexer, fatal=True, clear=True):
+def attempt(func, catch=None, lexer=TracebackLexer, fatal=True, clear=True): # traceback support for terminal relation
     try:
         return func()
     except Exception as e:
@@ -33,12 +33,22 @@ def attempt(func, catch=None, lexer=TracebackLexer, fatal=True, clear=True):
             except: exit()
         
 def getargs(func, args): # list of passable arguments to a function
+    if not callable(func): return {}
     sig = inspect.signature(func)
     par = sig.parameters
     if any(p.kind == p.VAR_KEYWORD for p in par.values()):
         return args
     resargs = {k: v for k, v in args.items() if k in par}
     return resargs
+
+def latency(samples=1000): # os task latency statistic
+    latencies = []
+    for _ in range(samples):
+        start = time.perf_counter()
+        time.sleep(0)
+        end = time.perf_counter()
+        latencies.append(end - start)
+    return latencies
 
 
 #MODULES
@@ -62,15 +72,26 @@ attempt(universal_init)
     
 #WORLD CLASS
 class World():
-    def __init__(self, session=None, autoreg=True):
+    def __init__(self, session=None, autoreg=True, front=True, **kwargs):
         self.session = session
         self.handles = []
         self.scene = scene.Scene() # new object Scene instance
+        self.layer = 0
         self.last_tick = time.perf_counter()
         self.pause = False
         self.pausephysics = False
         self.pauserendering = False
+        self.autoterm = True
+        self.autodim = True
+        self.autobg = True
+        self.autofps = True if session is None else session.autofps
+        for setting, val in kwargs.items():
+            if val is not None: setattr(self, setting, val)
+        if not session is None: self.scene.bgcolor = self.session.bgcolor
         if autoreg: attempt(self.register)
+        if front: self.front()
+        else: self.back()
+        if self.autofps: self.scene.maxframerate = 1/max(latency())
 
     class Handle(): # scene behaviour handle
         def __init__(self, handle, world):
@@ -82,7 +103,7 @@ class World():
                 'world': self.world,
                 'session': self.world.session,
             }
-            self.handle = handle(**getargs(handle.__init__, self.handleargs))
+            self.handle = handle(**getargs(handle, self.handleargs))
             start = getattr(self.handle, 'start', None)
             if start: start(**getargs(start, self.handleargs))
             self.world.handles.append(self)
@@ -98,19 +119,44 @@ class World():
 
     def register(self):
         if self.session is not None:
-            if self not in self.session.worlds: self.session.worlds.append(self)
-            with self.session._resume:
-                self.session._resume.notify_all()
+            if self not in self.session.worlds:
+                self.session.worlds.append(self)
+                with self.session._resume:
+                    self.session._resume.notify_all()
 
     def unregister(self):
         if self.session is not None:
             self.session.worlds = [w for w in self.session.worlds if w is not self]
 
+    def front(self):
+        if self.session is not None:
+            ll = None
+            l = 0
+            for w in self.session.worlds:
+                if ll is None:
+                    ll = w.layer
+                    l = w.layer
+                    continue
+                if w.layer > ll: l = w.layer
+            self.layer = l + 1
+
+    def back(self):
+        if self.session is not None:
+            ll = None
+            l = 0
+            for w in self.session.worlds:
+                if ll is None:
+                    ll = w.layer
+                    l = w.layer
+                    continue
+                if w.layer < ll: l = w.layer
+            self.layer = l - 1
+
     def tick_ready(self):
         now = time.perf_counter()
         interval = 1.0 / self.scene.framerate
         if now - self.last_tick >= interval:
-            self.last_tick += interval
+            self.last_tick = max(self.last_tick + interval, now - interval)
             return True
         return False
 
@@ -118,22 +164,29 @@ class World():
 class Session():
     def __init__(self):
         self.worlds = []
-        self.World = lambda: World(self) # world factory
-        self.term = Terminal() #term instance
-        self.inp = inp(term=self.term,watchfocus=True,trackmotion=True) #input class instance
-        self.style = style #ascii styler function
-        self.fill = fill #ascii background fill function
-        self.running = False #set False to stop the Session loop
+        self.World = lambda front=True, **kwargs: World(session=self, autoreg=True, front=front, **kwargs)
+        self.term = Terminal()
+        self.inp = inp(term=self.term, watchfocus=True, trackmotion=True)
+        self.fill = fill
+        self.running = False
         self._pause = False
         self.pausephysics = False
         self.pauserendering = False
+        self._termxoffset = 0
+        self._termyoffset = 0
+        bg = self.term.get_bgcolor(bits=8)
+        self.bgcolor = bg if bg != (-1, -1, -1) else (0, 0, 0)
         self._resume = threading.Condition()
-        #DEFAULT SETTINGS
+        # DEFAULT SETTINGS
         self.optimize = True
+        self.mouse = True
+        self.vsync = True
+        self.autoterm = True
         self.autodim = True
         self.autobg = True
-        self.rewrite = True
+        self.outerbg = True
         self.clearonstop = True
+        self.autofps = True
 
     @property
     def pause(self):
@@ -145,6 +198,39 @@ class Session():
             with self._resume:
                 self._resume.notify_all()
 
+    @property
+    def termxoffset(self):
+        return self._termxoffset
+    @termxoffset.setter
+    def termxoffset(self, value):
+        delta = value - self._termxoffset
+        for w in self.worlds:
+            w.scene.dimxoffset += delta
+        self._termxoffset = value
+
+    @property
+    def termyoffset(self):
+        return self._termyoffset
+    @termyoffset.setter
+    def termyoffset(self, value):
+        delta = value - self._termyoffset
+        for w in self.worlds:
+            w.scene.dimyoffset += delta
+        self._termyoffset = value
+
+    def style(self, *args, **kwargs):
+        args = list(args)
+        fg = kwargs.pop('color', None)
+        if fg is None and len(args) > 1:
+            fg = args.pop(1)
+        bg = kwargs.pop('bg', self.bgcolor)
+        if fg is None:
+            fg = kwargs.pop('fg', None)
+            if fg is None:
+                fg = self.term.get_fgcolor(bits=8)
+        fg = fg if fg != (-1, -1, -1) else (204, 204, 204)
+        return style(*args, bg=bg, fg=fg, **kwargs)
+
     def run_attempt(self, **kwargs):
         if(not self.running):
             self.running = True
@@ -153,67 +239,148 @@ class Session():
             with contextlib.ExitStack() as main_stack:
                 opt_stack = main_stack.enter_context(contextlib.ExitStack())
                 is_optimized = False
-                
-                while self.running: # the central loop
-                    if self.optimize and not is_optimized: # terminal optimalization context
+                changed_optimized = False
+                optt_stack = main_stack.enter_context(contextlib.ExitStack())
+                is_mouse = False
+
+                while self.running:
+                    if changed_optimized: changed_optimized = False
+                    if self.optimize and not is_optimized:
                         opt_stack.enter_context(self.term.fullscreen())
                         opt_stack.enter_context(self.term.cbreak())
                         opt_stack.enter_context(self.term.hidden_cursor())
-                        opt_stack.enter_context(self.term.mouse_enabled(report_drag=True, report_motion=True))
+                        opt_stack.enter_context(self.term.no_line_wrap())
+                        opt_stack.enter_context(self.term.synchronized_output())
                         is_optimized = True
+                        changed_optimized = True
+                        if is_mouse:
+                            optt_stack.close()
+                            optt_stack = main_stack.enter_context(contextlib.ExitStack())
+                            optt_stack.enter_context(
+                                self.term.mouse_enabled(report_drag=True, report_motion=True)
+                            )
                     elif not self.optimize and is_optimized:
                         opt_stack.close()
                         opt_stack = main_stack.enter_context(contextlib.ExitStack())
                         is_optimized = False
-                        
+                    if self.mouse and not is_mouse:
+                        optt_stack.enter_context(self.term.mouse_enabled(report_drag=True, report_motion=True))
+                        is_mouse = True
+                    elif not self.mouse and is_mouse:
+                        optt_stack.close()
+                        optt_stack = main_stack.enter_context(contextlib.ExitStack())
+                        is_mouse = False
+
+                    tickdelta = 0
                     if(not self._pause):
-                        self.inp.update() # update input handling instance
-                        framebuffer = "" # rendering central buffer
-                        for world in list(self.worlds): # worlds loop
-                            if world.pause or not world.tick_ready():
-                                continue
-                            if(self.autodim): # dimx, dimy adaptation to terminal
-                                world.scene.dimx = self.term.width
-                                world.scene.dimy = self.term.height
-                            if(self.autobg and self.rewrite): # terminal background color fill
-                                framebuffer += self.fill(world.scene.bgcolor, self.term.width, self.term.height)
-                            elif(self.rewrite): # terminal clear for resizing
-                                framebuffer += "\033[2J"
-                            for handle in list(world.handles): # handles loop
+                        bef = time.perf_counter()
+                        self.inp.update()
+                        fillbuffer = ""
+                        removebuffer = ""
+                        drawbuffer = ""
+
+                        dim_changed = any([w.scene.checkres() for w in self.worlds]) or changed_optimized
+                        if self.outerbg and dim_changed:
+                            fillbuffer += self.fill(
+                                self.bgcolor,
+                                self.term.width,
+                                self.term.height,
+                            )
+
+                        sorted_worlds = sorted(list(self.worlds), key=lambda w: getattr(w, 'layer', 0))
+                        framerate_groups = {}
+                        for w in sorted_worlds:
+                            if w.pause: continue
+                            fps = w.scene.framerate
+                            if fps not in framerate_groups:
+                                framerate_groups[fps] = []
+                            framerate_groups[fps].append(w)
+                        ready_fps = set()
+                        for fps, group in framerate_groups.items():
+                            now = time.perf_counter()
+                            if any(now - w.last_tick >= 1.0 / fps for w in group):
+                                ready_fps.add(fps)
+
+                        for idx, world in enumerate(sorted_worlds):
+                            if world.pause: continue
+                            
+                            termx = self.term.width
+                            termy = self.term.height
+                            if self.autoterm and world.autoterm:
+                                world.scene.termx = termx
+                                world.scene.termy = termy
+                            if self.autodim and world.autodim:
+                                world.scene.dimx = world.scene.termx
+                                world.scene.dimy = world.scene.termy
+
+                            if self.autobg and world.autobg and dim_changed:
+                                fillbuffer += self.fill(
+                                    world.scene.bgcolor,
+                                    world.scene.dimx,
+                                    world.scene.dimy,
+                                    world.scene.dimxoffset,
+                                    -world.scene.dimyoffset,
+                                    world.scene.termx,
+                                    world.scene.termy,
+                                )
+
+                            should_tick = world.scene.framerate in ready_fps and world.tick_ready()
+                            if not should_tick: continue
+
+                            for handle in list(world.handles):
                                 if handle.pause: continue
                                 update = getattr(handle.handle, 'update', None)
-                                if update: # update function
+                                if update:
                                     update(**getargs(update, handle.handleargs))
-                            removes = ""
-                            draws = ""
-                            for o in world.scene.objs: # objects loop
+
+                            for o in world.scene.objs:
                                 if hasattr(o, 'physics'):
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
-                                if hasattr(o, 'rendering') and o.rendering.show:
+                                if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:
-                                        rem, draw = o.rendering.render(False, True)
-                                        removes += rem
-                                        draws += draw
-                            framebuffer += removes + draws
-                        sys.stdout.write(framebuffer) # framebuffer flush
+                                        o.rendering._markdirty()
+                                        world_layer = getattr(world, 'layer', 0)
+                                        exclude_rects = [
+                                            (
+                                                w.scene.dimxoffset + 1,
+                                                -w.scene.dimyoffset + 1,
+                                                w.scene.dimxoffset + w.scene.dimx,
+                                                -w.scene.dimyoffset + w.scene.dimy,
+                                            )
+                                            for w in sorted_worlds
+                                            if not w.pause and getattr(w, 'layer', 0) > world_layer
+                                        ]
+                                        rem, draw = o.rendering.render(False, True, exclude_rects)
+                                        removebuffer += rem
+                                        if o.rendering.show: drawbuffer += draw
+                            world.scene.flush()
+
+                        framebuffer = '\033[?2026h' if self.vsync else ''
+                        framebuffer += removebuffer + fillbuffer + drawbuffer
+                        framebuffer += '\033[?2026l' if self.vsync else ''
+                        sys.stdout.write(framebuffer)
                         sys.stdout.flush()
+                        tickdelta = -(time.perf_counter() - bef)
+
                     now = time.perf_counter()
                     next_tick = min(
-                        (w.last_tick + 1.0 / w.scene.framerate for w in self.worlds if not w.pause),
+                        (min(w.last_tick for w in group) + 1.0 / fps
+                         for fps, group in framerate_groups.items()),
                         default=now
                     )
-                    sleep = next_tick - now
-                    if sleep > 0 and not self._pause:
-                        time.sleep(sleep) # loop tick
-                    else:
-                        with self._resume: # contextual wait
+                    sleep = next_tick - now - tickdelta
+                    if sleep > max(latency()) and not self._pause:
+                        tar = time.perf_counter() + sleep
+                        while time.perf_counter() < tar: pass
+                    elif self._pause or len(self.worlds) == 0:
+                        with self._resume:
                             self._resume.wait_for(lambda: not self._pause and len(self.worlds) > 0)
 
-                self.inp.stop_all() # stop all input hooks
-                self.inp.cleanup() # reset the input handling instance
-                if self.optimize: self.term.reset() # terminal optimalization reset
-                if self.clearonstop: os.system('cls' if os.name=='nt' else 'clear') # console clear wait
+                self.inp.stop_all()
+                self.inp.cleanup()
+                if self.optimize: self.term.reset()
+                if self.clearonstop: os.system('cls' if os.name == 'nt' else 'clear')
 
     def run(self, **kwargs):
         attempt(lambda: self.run_attempt(**kwargs), self.term.reset)

@@ -1,4 +1,4 @@
-import sys, re, os, threading
+import sys, re, os, threading, time
 from collections import defaultdict
 from ._vendor import keyboard
 
@@ -31,6 +31,7 @@ class inp():
         self._release_cbs   = defaultdict(list)
         self._press_queue   = []
         self._release_queue = []
+        self._pressed_keys  = set()
         self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
 
         # ── mouse (raw VT sequence parser) ────────────────────────────────
@@ -211,6 +212,10 @@ class inp():
             release_q = self._release_queue[:]
             self._press_queue.clear()
             self._release_queue.clear()
+            for key_name, _ in press_q:
+                self._pressed_keys.add(key_name)
+            for key_name, _ in release_q:
+                self._pressed_keys.discard(key_name)
             focused = self.focused
 
         if focused:
@@ -227,16 +232,34 @@ class inp():
         self._parse_mouse()
 
     #KEYBOARD API
-    def held(self, key):
-        return self.focused and self.keyboard.is_pressed(key)
+    def held(self, key=None, caps=False):
+        if not self.focused:
+            return False
+        if isinstance(key, str) and key:
+            if caps:
+                return key.upper() in self._pressed_keys or key.lower() in self._pressed_keys
+            return key in self._pressed_keys
+        if isinstance(key, (list, tuple)) and key:
+            if caps:
+                return any(k.upper() in self._pressed_keys or k.lower() in self._pressed_keys for k in key)
+            return any(k in self._pressed_keys for k in key)
+        return list(self._pressed_keys)
 
-    def onpress(self, key, callback):
-        self._press_cbs[key.lower()].append(callback)
-        return (key.lower(), callback, 'press')
+    def onpress(self, key, callback, caps=False):
+        if caps:
+            self._press_cbs[key.lower()].append(callback)
+            self._press_cbs[key.upper()].append(callback)
+            return (key.lower(), callback, 'press'), (key.upper(), callback, 'press')
+        self._press_cbs[key].append(callback)
+        return (key, callback, 'press')
 
     def onrelease(self, key, callback):
-        self._release_cbs[key.lower()].append(callback)
-        return (key.lower(), callback, 'release')
+        if caps:
+            self._release_cbs[key.lower()].append(callback)
+            self._release_cbs[key.upper()].append(callback)
+            return (key.lower(), callback, 'release'), (key.upper(), callback, 'release')
+        self._release_cbs[key].append(callback)
+        return (key, callback, 'release')
 
     def stop(self, handle):
         key, cb, kind = handle
