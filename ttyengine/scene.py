@@ -39,10 +39,10 @@ class obj:
         self.scene = scene
 
     def __getitem__(self, key):
-        return getattr(getattr(self, [c for c in _comps if hasattr(c, '_owned') and key in c._owned][0].__name__), key)
+        return getattr(getattr(self, _attrs[key].__name__), key)
 
     def __setitem__(self, key, value):
-        setattr(getattr(self, [c for c in _comps if hasattr(c, '_owned') and key in c._owned][0].__name__), key, value)
+        setattr(getattr(self, _attrs[key].__name__), key, value)
 
     def add(self, com, **kwargs):
         if isinstance(com, str):
@@ -89,8 +89,6 @@ class obj:
     def create(self, text=None, x=None, y=None, **kwargs):
         kwargs.update({k: v for k,v in {'text': text, 'x': x, 'y': y}.items() if v is not None})
         
-        instance_cls = type(self.__class__.__name__, (self.__class__,), {})
-        self.__class__ = instance_cls
         for com in _defls:
             if not hasattr(self, com.__name__):
                 if hasattr(com, '_required'):
@@ -116,16 +114,15 @@ class obj:
         return self
 
     def discard(self, clean=True):
-        for com_name in list(vars(self)):
-            com = getattr(self, com_name)
-            if hasattr(com, '_owned') and hasattr(com, 'on_discard'):
+        owned = [(n, getattr(self, n)) for n in list(vars(self))
+                 if hasattr(getattr(self, n), '_owned')]
+        for _, com in owned:
+            if hasattr(com, 'on_discard'):
                 com.on_discard()
         if self in self.scene.objs:
             self.scene.objs.remove(self)
-        for com_name in list(vars(self)):
-            com = getattr(self, com_name)
-            if hasattr(com, '_owned'):
-                delattr(self, com_name)
+        for name, _ in owned:
+            delattr(self, name)
         self.scene._getlast(True)
 
 
@@ -162,28 +159,28 @@ class Scene:
         return self._dimx
     @dimx.setter
     def dimx(self, value):
-        self._dimx = round(value)
+        self._dimx = self.iround(value)
 
     @property
     def dimy(self):
         return self._dimy
     @dimy.setter
     def dimy(self, value):
-        self._dimy = round(value)
+        self._dimy = self.iround(value)
 
     @property
     def dimxoffset(self):
         return self._dimxoffset
     @dimxoffset.setter
     def dimxoffset(self, value):
-        self._dimxoffset = round(value)
+        self._dimxoffset = self.iround(value)
 
     @property
     def dimyoffset(self):
         return self._dimyoffset
     @dimyoffset.setter
     def dimyoffset(self, value):
-        self._dimyoffset = round(value)
+        self._dimyoffset = self.iround(value)
 
     @property
     def framerate(self):
@@ -207,6 +204,9 @@ class Scene:
     def bgcolor(self, value):
         self._bgcolor = (int(value),int(value),int(value)) if isinstance(value, (int,float)) else value
         self._getlast(True)
+
+    def iround(self, x):
+        return int((x + 0.5) // 1)
 
     def obj(self):
         return obj(self)

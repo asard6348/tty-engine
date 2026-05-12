@@ -3,29 +3,33 @@ from pygments import highlight
 from pygments.lexers.python import PythonConsoleLexer as TracebackLexer
 from pygments.formatters.terminal import TerminalFormatter
 
-def trace(exception, lexer=TracebackLexer, clear=True): # custom traceback for terminal
+def trace(exception, lexer=TracebackLexer, clear=True, out=sys.stdout.write, flush=sys.stdout.flush): # custom traceback for terminal
     try:
         if(clear):
             os.system('cls' if os.name=='nt' else 'clear')
-            sys.stdout.write("\033[H\033[2J")
-        exc = highlight("".join(traceback.format_exc())+'\n', lexer(), TerminalFormatter())
-        sys.stdout.write(exc)
-        sys.stdout.flush()
+            if out: out("\033[H\033[2J")
+        if out:
+            exc = highlight("".join(traceback.format_exc())+'\n', lexer(), TerminalFormatter())
+            out(exc)
+            if flush: flush()
     except:
         raise exception
     
-def attempt(func, catch=None, lexer=TracebackLexer, fatal=True, clear=True): # traceback support for terminal relation
+def attempt(func, catch=None, lexer=TracebackLexer, fatal=True, clear=True, reset=True, out=sys.stdout.write, flush=sys.stdout.flush): # traceback support for terminal relation
     try:
         return func()
     except Exception as e:
+        if reset and fatal:
+            try: out('\033c')
+            except: pass
         catchexc = None
         if callable(catch):
             try:
                 catch()
             except Exception as ce:
                 catchexc = ce
-        trace(e, lexer, clear)
-        if catchexc: trace(catchexc, lexer, False)
+        trace(e, lexer, clear, out, flush)
+        if catchexc: trace(catchexc, lexer, False, out, flush)
         if fatal:
             try: input()
             except: pass
@@ -105,7 +109,10 @@ class World():
             }
             self.handle = handle(**getargs(handle, self.handleargs))
             start = getattr(self.handle, 'start', None)
-            if start: start(**getargs(start, self.handleargs))
+            self.startargs = getargs(start, self.handleargs)
+            if start: start(**self.startargs)
+            self.updateargs = getargs(getattr(self.handle, 'update', None), self.handleargs)
+            self.finalargs = getargs(getattr(self.handle, 'final', None), self.handleargs)
             self.world.handles.append(self)
         def cancel(self):
             self.world.handles = [h for h in self.world.handles if h is not self]
@@ -121,6 +128,7 @@ class World():
         if self.session is not None:
             if self not in self.session.worlds:
                 self.session.worlds.append(self)
+                self.session.worlds = sorted(list(self.session.worlds), key=lambda w: getattr(w, 'layer', 0))
                 with self.session._resume:
                     self.session._resume.notify_all()
 
@@ -162,11 +170,11 @@ class World():
 
 #SESSION CLASS
 class Session():
-    def __init__(self):
+    def __init__(self, watchfocus=True, trackmotion=True):
         self.worlds = []
         self.World = lambda front=True, **kwargs: World(session=self, autoreg=True, front=front, **kwargs)
         self.term = Terminal()
-        self.inp = inp(term=self.term, watchfocus=True, trackmotion=True)
+        self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion)
         self.fill = fill
         self.running = False
         self._pause = False
@@ -176,6 +184,8 @@ class Session():
         self._termyoffset = 0
         bg = self.term.get_bgcolor(bits=8)
         self.bgcolor = bg if bg != (-1, -1, -1) else (0, 0, 0)
+        fg = self.term.get_fgcolor(bits=8)
+        self.fgcolor = fg if fg != (-1, -1, -1) else (204, 204, 204)
         self._resume = threading.Condition()
         # DEFAULT SETTINGS
         self.optimize = True
@@ -220,15 +230,14 @@ class Session():
 
     def style(self, *args, **kwargs):
         args = list(args)
-        fg = kwargs.pop('color', None)
-        if fg is None and len(args) > 1:
-            fg = args.pop(1)
-        bg = kwargs.pop('bg', self.bgcolor)
-        if fg is None:
-            fg = kwargs.pop('fg', None)
-            if fg is None:
-                fg = self.term.get_fgcolor(bits=8)
-        fg = fg if fg != (-1, -1, -1) else (204, 204, 204)
+        if 'bg' not in kwargs:
+            bg = args.pop(7) if len(args) > 7 else self.bgcolor
+        else:
+            bg = kwargs.pop('bg')
+        if 'fg' not in kwargs:
+            fg = args.pop(8) if len(args) > 8 else self.fgcolor
+        else:
+            fg = kwargs.pop('fg')
         return style(*args, bg=bg, fg=fg, **kwargs)
 
     def run_attempt(self, **kwargs):
@@ -287,9 +296,8 @@ class Session():
                                 self.term.height,
                             )
 
-                        sorted_worlds = sorted(list(self.worlds), key=lambda w: getattr(w, 'layer', 0))
                         framerate_groups = {}
-                        for w in sorted_worlds:
+                        for w in self.worlds:
                             if w.pause: continue
                             fps = w.scene.framerate
                             if fps not in framerate_groups:
@@ -301,7 +309,7 @@ class Session():
                             if any(now - w.last_tick >= 1.0 / fps for w in group):
                                 ready_fps.add(fps)
 
-                        for idx, world in enumerate(sorted_worlds):
+                        for idx, world in enumerate(self.worlds):
                             if world.pause: continue
                             
                             termx = self.term.width
@@ -331,12 +339,20 @@ class Session():
                                 if handle.pause: continue
                                 update = getattr(handle.handle, 'update', None)
                                 if update:
-                                    update(**getargs(update, handle.handleargs))
+                                    update(**handle.updateargs)
 
                             for o in world.scene.objs:
                                 if hasattr(o, 'physics'):
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
+
+                            for handle in list(world.handles):
+                                if handle.pause: continue
+                                final = getattr(handle.handle, 'final', None)
+                                if final:
+                                    final(**handle.finalargs)
+                            
+                            for o in world.scene.objs:
                                 if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:
                                         o.rendering._markdirty()
@@ -348,7 +364,7 @@ class Session():
                                                 w.scene.dimxoffset + w.scene.dimx,
                                                 -w.scene.dimyoffset + w.scene.dimy,
                                             )
-                                            for w in sorted_worlds
+                                            for w in self.worlds
                                             if not w.pause and getattr(w, 'layer', 0) > world_layer
                                         ]
                                         rem, draw = o.rendering.render(False, True, exclude_rects)
@@ -383,5 +399,5 @@ class Session():
                 if self.clearonstop: os.system('cls' if os.name == 'nt' else 'clear')
 
     def run(self, **kwargs):
-        attempt(lambda: self.run_attempt(**kwargs), self.term.reset)
+        attempt(lambda: self.run_attempt(**kwargs), lambda: contextlib.ExitStack().close())
 

@@ -47,7 +47,7 @@ def dev(Session=Session): #DEBUG
             self.plrmaxspeed = 10
             self.plrspeedfriction = 0.9
             self.plrjumppower = 10
-            self.camrange = 10
+            self.camrange = 1
             self.camspeed = 5
             self.void = -100
         
@@ -135,9 +135,7 @@ def dev(Session=Session): #DEBUG
 
         def update(self):   #UPDATE
             sc = self.scene
-            world = self.world
             inp = self.session.inp
-            style = self.session.style
             
             def whilepressed(): # key hold events
                 def k(but):
@@ -179,6 +177,10 @@ def dev(Session=Session): #DEBUG
                 self.plr.physics.xvel *= self.plrspeedfriction
                 #self.plr.physics.yvel *= self.plrspeedfriction
 
+        def final(self):    #FINAL
+            sc = self.scene
+            inp = self.session.inp
+            
             # camera follow
             camtarx = (inp._mouse_x-sc.dimx/2)*0 
             camtary = (-inp._mouse_y+sc.dimy/2)*0

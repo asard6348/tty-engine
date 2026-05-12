@@ -841,10 +841,12 @@ class rendering():
         return rem
 
     def render(self, write=True, split=False, exclude_rects=None):
+        if not self.t.rtext:
+            return ('', '') if split else ''
         bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
                    f'{self.scene.bgcolor[1]};{self.scene.bgcolor[2]}m')
-        acx = round((self.t.x + self.t.vx) - round(self.scene.camx))
-        acy = -round((self.t.y + self.t.vy) - round(self.scene.camy))
+        acx = self.scene.iround((self.t.x + self.t.vx) - (self.scene.camx))
+        acy = -self.scene.iround((self.t.y + self.t.vy) - (self.scene.camy))
         actext = self.t.vtext
         acxoff = self.scene.dimxoffset
         acyoff = self.scene.dimyoffset

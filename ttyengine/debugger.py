@@ -3,7 +3,9 @@ from pygments import highlight
 from pygments.lexers.python import PythonConsoleLexer as PythonTracebackLexer
 from pygments.formatters.terminal import TerminalFormatter
 
-def debug(debugger=[], dinfo=[], title=None):
+def debug(debugger=None, dinfo=None, title=None, back=False):
+    if debugger is None: debugger = []
+    if dinfo is None: dinfo = []
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(('127.0.0.1', 0))
     port = server.getsockname()[1]
@@ -17,9 +19,9 @@ def debug(debugger=[], dinfo=[], title=None):
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.GetStdHandle(-11)
             kernel32.SetConsoleMode(handle, 7)
-            hwnd = kernel32.GetConsoleWindow()
-            if hwnd:
-                user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 19)
+            if {back}:
+                hwnd = kernel32.GetConsoleWindow()
+                if hwnd: user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 19)
         if(not {title_repr} is None):
             sys.stdout.write("\033]0;{title}\007")
         sys.stdout.write("{reset}")

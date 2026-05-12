@@ -1,6 +1,8 @@
 import re, shutil
 from pyfiglet import Figlet
 from typing import Optional, Union
+from functools import lru_cache
+
 RGB_MAP = {
     "red": (205, 49, 49),
     "orange": (255, 165, 0),
@@ -59,8 +61,18 @@ SIZE_MAP = {
 
 bg = (0,0,0)
 fg = RGB_MAP["default"]
-recomp = re.compile(r'(\x1b\[[0-9;]*[a-zA-Z])')
+bgrecomp = re.compile(r'\033\[48;2;(\d+);(\d+);(\d+)m')
+fgrecomp = re.compile(r'\033\[38;2;(\d+);(\d+);(\d+)m')
+recomp = re.compile(r'\x1b\[[0-9;]*m')
+_figlet_cache = {}
 
+def getfiglet(font, width):
+    key = (font, width)
+    if key not in _figlet_cache:
+        _figlet_cache[key] = Figlet(font=font, width=width)
+    return _figlet_cache[key]
+
+@lru_cache(maxsize=512)
 def rgb(color):
     if isinstance(color, (tuple, list)):
         if len(color) == 3:
@@ -85,7 +97,17 @@ def rgb(color):
         return RGB_MAP.get(color.lower(), None)
     return None
 
-def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=1.0,bg=bg,fg=fg,reset=True):
+def getcolor(text:str, back=False):
+    matches = list(bgrecomp.finditer(text) if back else fgrecomp.finditer(text))
+    tupl = tuple(int(x) for x in matches[-1].groups()) if matches else (bg if back else fg)
+    color = matches[-1].group(0) if matches else ""
+    return tupl, color
+
+def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=1.0,bg=bg,fg=fg,reset=True,onbg=False,clean=None):
+    bg = rgb(bg) or bg
+    fg = rgb(fg) or fg
+    match_bgcolor = ""
+    match_color = ""
     bgcolor = rgb(bgcolor)
     if not bgcolor is None:
         rb = int(bg[0] * (1 - bgalpha) + bgcolor[0] * bgalpha)
@@ -93,15 +115,13 @@ def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=
         bb = int(bg[2] * (1 - bgalpha) + bgcolor[2] * bgalpha)
         ansi_bgcolor = f"\033[48;2;{rb};{gb};{bb}m"
     else:
-        for part in recomp.split(text):
-            if(part.startswith("\033[48;2")):
-                components = part[2:-1].split(';')
-                bgcolor = tuple(int(x) for x in components[2:])
-                break
-        bgcolor = bg if not isinstance(bgcolor, tuple) else bgcolor
+        bgcolor, match_bgcolor = getcolor(text, True)
         ansi_bgcolor = ""
-    if color is None and alpha is not None: color = fg
+    bgcolor = bg if onbg else bgcolor
     color = rgb(color)
+    if color is None and alpha is not None:
+        color, match_color = getcolor(text)
+        if clean is None: clean = True
     if not color is None:
         r = int(bgcolor[0] * (1 - alpha) + color[0] * alpha)
         g = int(bgcolor[1] * (1 - alpha) + color[1] * alpha)
@@ -109,15 +129,19 @@ def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=
         ansi_color = f"\033[38;2;{r};{g};{b}m"
     else:
         ansi_color = ""
+    if clean:
+        ascii_art = recomp.sub('', text)
+        if not ansi_bgcolor:
+            ansi_bgcolor = match_bgcolor
+        if not ansi_color:
+            ansi_color = match_color
+    else:
+        ascii_art = text
     if(not size is None):
         ascii_font = SIZE_MAP[max(1,min(5,size))] if isinstance(size, int) else size
         if(size>=1):
-            fig = Figlet(font=ascii_font, width=width)
-            ascii_art = fig.renderText(text)
-        else:
-            ascii_art = text
-    else:
-        ascii_art = text
+            fig = getfiglet(font=ascii_font, width=width)
+            ascii_art = fig.renderText(ascii_art)
     styled_text = ansi_bgcolor + ansi_color + ascii_art
     if reset: styled_text += "\033[0m"
     return styled_text
