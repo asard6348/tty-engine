@@ -65,8 +65,13 @@ class _change_callback(metaclass=_metainit, init='_chinit'):
             
     def onchange(self, cb, once=False):
         if once:
+            fired = [False]
             def wrapped(*args, **kwargs):
-                self.obj.scene.pending.append(lambda: self._onchangecb.remove(wrapped) if wrapped in self._onchangecb else None)
+                if fired[0]: return
+                fired[0] = True
+                self.obj.scene.pending.append(
+                    lambda: self._onchangecb.remove(wrapped)
+                    if wrapped in self._onchangecb else None)
                 return cb(*args, **kwargs)
             wrapped.__signature__ = inspect.signature(cb)
             cb = wrapped
@@ -272,6 +277,14 @@ class transform(_change_callback):
         for gx, gy in pixels:
             local_pixels.add((gx - rx, ry - gy))
         return local_pixels
+
+    def toworld(self, pixels):
+        rx = round(self._x + self.vx)
+        ry = round(self._y + self.vy)
+        local_pixels = set()
+        for gx, gy in pixels:
+            local_pixels.add((gx + rx, ry + gy))
+        return local_pixels
  
     def rotate(self, angle_degrees):
         rounded = round(angle_degrees * 20) / 20
@@ -403,6 +416,23 @@ class transform(_change_callback):
                 if (ci, ri) in styled_pixels and styled_pixels[(ci, ri)][0] != ' ':
                     styled_pixels[(ci, ri)] = (' ', '')
                     changed = True
+        if changed:
+            coords = list(styled_pixels)
+            xs = [p[0] for p in coords]
+            ys = [p[1] for p in coords]
+            self.rtext = self.build_rows(styled_pixels, min(xs), max(xs), min(ys), max(ys))
+        return changed
+
+    def cutpoints(self, points, r=1):
+        styled_pixels = self.parse_pixels(self.vrtext)
+        changed = False
+        for wx, wy in points:
+            for dy in range(-(r-1), r):
+                for dx in range(-(r-1), r):
+                    result = self.world_to_rtext(wx+dx, wy+dy)
+                    if result and styled_pixels.get(result, (' ',''))[0] != ' ':
+                        styled_pixels[result] = (' ', '')
+                        changed = True
         if changed:
             coords = list(styled_pixels)
             xs = [p[0] for p in coords]
@@ -589,17 +619,26 @@ class transform(_change_callback):
             return
 
         for wp in valid_walls:
-            nearest = min(components, key=lambda g: min(
-                abs(wp[0]-p[0]) + abs(wp[1]-p[1]) for p in g
-            ))
-            nearest.add(wp)
+            cx, cy = wp
+            nearest = None
+            for comp in components:
+                for dx, dy in ((-1,0),(1,0),(0,-1),(0,1)):
+                    if (cx+dx, cy+dy) in comp:
+                        nearest = comp
+                        break
+                if nearest: break
+            if nearest:
+                nearest.add(wp)
 
         self._split_cb = self._spawn_from_components(components, pixels, callback)
         return self._split_cb
 
     def onsplit(self, cb, once=False):
         if once:
+            fired = [False]
             def wrapped(*args, **kwargs):
+                if fired[0]: return
+                fired[0] = True
                 self.obj.scene.pending.append(lambda: self._onsplit.remove(wrapped) if wrapped in self._onsplit else None)
                 return cb(*args, **kwargs)
             wrapped.__signature__ = inspect.signature(cb)
@@ -971,12 +1010,19 @@ class physics(_change_callback):
 
     def ontouch(self, callback, when=None, once=False):
         l = _argslen(callback)
+        fired = [False]
         def wrapped(obj2, intersection):
+            if once and fired[0]: return
             if when is None or when(obj2):
+                if once: fired[0] = True
                 if l > 1: callback(obj2, intersection)
                 elif l > 0: callback(obj2)
                 else: callback()
-                if once: self.scene.pending.append(lambda: self._touch_callbacks.remove(wrapped) if wrapped in self._touch_callbacks else None)
+                if once:
+                    self.scene.pending.append(
+                        lambda: self._touch_callbacks.remove(wrapped)
+                        if wrapped in self._touch_callbacks else None
+                    )
         self._touch_callbacks.append(wrapped)
         return callback
 

@@ -38,8 +38,6 @@ class vanish():
             return
         self.obj._vanishing = True
         self.ct = self.obj.transform.vrtext
-        self.bg = None
-        self.fg = None
     def update(self, scene, session, handle):
         if self.obj is None or not hasattr(self.obj, 'transform'):
             handle.cancel()
@@ -48,7 +46,7 @@ class vanish():
             self.delay -= 1/scene.framerate
             return
         if self.time <= 0:
-            self.obj.transform.text = session.style(self.ct, alpha=0, bgalpha=0, bgcolor=self.bg, color=self.fg, onbg=True)
+            self.obj.transform.vtext = session.style(self.ct, alpha=0, bgalpha=0, clean=True)
             self.obj.discard()
             handle.cancel()
             return
@@ -56,7 +54,7 @@ class vanish():
         progress = max(0, self.time / self._st)
         new_alpha = self.alpha * progress
         new_bgalpha = self.bgalpha * progress
-        self.obj.transform.text = session.style(self.ct, alpha=new_alpha, bgalpha=new_bgalpha, bgcolor=self.bg, color=self.fg, onbg=True)
+        self.obj.transform.vtext = session.style(self.ct, alpha=new_alpha, bgalpha=new_bgalpha, clean=True)
 
 class flash():
     def __init__(self, scene, delay=0, time=1, tar=(0,0,0), st=None):
@@ -102,20 +100,20 @@ class asteroid():
         x, y = pt.forward(r(70, 100), 0, dr)
         al = r(7, 10)/10
         self.a = scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, rotation=r(-180,180)*0, xvel=r(-10,10)*0, yvel=r(-10,10)*0)
-        self.a.forvanish = {'delay': 1, 'time': 0, 'alpha': al}
+        self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al}
         self.a.imast = True
         def ont(obj2, inter):
             if obj2.physics.phantom or hasattr(obj2, 'imast'): return
             handle.cancel()
+            if hasattr(self.a, 'imast'):
+                delattr(self.a, 'imast')
+            scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True))
             if obj2 == self.plr:
                 ginfo[1] += 1
             def spl(ps, ob=obj2):
                 if hasattr(ob, 'forvanish'):
                     for p in ps:
                         world.launch(lambda: vanish(p, **ob.forvanish))
-            '''for ax,ay in inter:
-                obj2.transform.cut(ax,ay)
-            obj2.transform.split(spl)'''
             obj2.transform.split_at(obj2.transform.tolocal(inter), spl)
             if hasattr(self.a, 'forvanish'):
                 world.launch(lambda: vanish(self.a, **self.a.forvanish))
@@ -136,7 +134,12 @@ class player():
         scene.gravity = (0,0)
         scene.drag = 1
 
-        self.rocket = scene.obj().create(style('    █    \n   ███   \n  ██ ██  \n ██   ██ \n██     ██', color='brightblue'),dynamic=True, hitbox=False, mass=50)
+        self.rocket = scene.obj().create(style('''
+    █    
+   ███   
+  ██ ██  
+ ██   ██ 
+██     ██''', color='brightblue'),dynamic=True, hitbox=False, mass=50)
         t = self.rocket.transform
         p = self.rocket.physics
         self.thrustspeed = 0.1*p.mass
@@ -199,8 +202,7 @@ class player():
                     if hasattr(obj2, 'physics'):
                         obj2.physics.phantom = True
                     delattr(obj2, 'imast')
-                for px,py in points:
-                    obj2.transform.cut(px, py)
+                obj2.transform.cutpoints(points)
                 vanish_data = getattr(obj2, 'forvanish', None)
                 if not vanish_data:
                     obj2.transform.split()
@@ -259,7 +261,9 @@ class player():
         if self._ad <= 0 and self._ad != -1:
             self._ad = 1
             world.launch(lambda: asteroid(self.rocket))
-
+            
+    def final(self, scene, world):
+        t = self.rocket.transform
         self.camfollow(t.x+t.xc(), t.y-t.yc())
         if hasattr(self.info, 'transform'):
             self.info.transform.x, self.info.transform.y = 0+scene.camx, 0+scene.camy
@@ -285,7 +289,7 @@ class background():
         r = random.randrange
         st = session.style
         while l < self.limit:
-            self.s.append(c(st('★', alpha=r(2, 7)/10), r(0, scene.dimx)+scene.camx, -r(0, scene.dimy)+scene.camy))
+            self.s.append(c(st('★', alpha=r(4, 9)/10), r(0, scene.dimx)+scene.camx, -r(0, scene.dimy)+scene.camy))
             l += 1
         
 

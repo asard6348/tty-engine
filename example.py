@@ -109,7 +109,7 @@ def dev(Session=Session): #DEBUG
 
             def onpress(): # key press events
                 def w():
-                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] else 0
+                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] and self.plr.physics.yvel==0 else 0
                 def q():
                     self.session.running = False
                 def f():
@@ -189,8 +189,8 @@ def dev(Session=Session): #DEBUG
             if self.plr:
                 self.tarx = self.plr.transform.x+self.plr.transform.xc(self.plr.transform.htext)
                 self.tary = self.plr.transform.y-self.plr.transform.yc(self.plr.transform.htext)
-            sc.camx += ((self.tarx+camtarx-sc.dimx/2)-sc.camx)/self.camrange#; sc.camx = round(sc.camx)
-            sc.camy += ((self.tary+camtary+sc.dimy/2)-sc.camy)/self.camrange#; sc.camy = round(sc.camy)
+            sc.camx += (sc.iround(self.tarx+camtarx-sc.dimx/2)-sc.camx)/self.camrange#; sc.camx = round(sc.camx)
+            sc.camy += (sc.iround(self.tary+camtary+sc.dimy/2)-sc.camy)/self.camrange#; sc.camy = round(sc.camy)
 
             if hasattr(self, 'info'):
                 self.info.transform.x = sc.camx

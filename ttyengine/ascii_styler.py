@@ -75,6 +75,7 @@ def getfiglet(font, width):
 @lru_cache(maxsize=512)
 def rgb(color):
     if isinstance(color, (tuple, list)):
+        color = tuple(color)
         if len(color) == 3:
             return tuple(max(0, min(255, int(c))) for c in color)
         elif len(color) == 2:
@@ -103,47 +104,73 @@ def getcolor(text:str, back=False):
     color = matches[-1].group(0) if matches else ""
     return tupl, color
 
-def style(text:str,color=None,alpha=1.0,size=None,width=80,bgcolor=None,bgalpha=1.0,bg=bg,fg=fg,reset=True,onbg=False,clean=None):
-    bg = rgb(bg) or bg
-    fg = rgb(fg) or fg
+def style(text: str, color=None, alpha=None, size=None, width=80,
+          bgcolor=None, bgalpha=None, bg=bg, fg=fg, reset=True, clean=None):
+
+    bg_rgb  = rgb(bg)  or bg
+    fg_rgb  = rgb(fg)  or fg
+
     match_bgcolor = ""
-    match_color = ""
-    bgcolor = rgb(bgcolor)
-    if not bgcolor is None:
-        rb = int(bg[0] * (1 - bgalpha) + bgcolor[0] * bgalpha)
-        gb = int(bg[1] * (1 - bgalpha) + bgcolor[1] * bgalpha)
-        bb = int(bg[2] * (1 - bgalpha) + bgcolor[2] * bgalpha)
+    match_color   = ""
+
+    user_color  = color
+    user_bgcolor = bgcolor
+
+    bgcolor_rgb = rgb(bgcolor)
+    color_rgb   = rgb(color)
+
+    if user_bgcolor is not None or bgalpha is not None:
+        _bgalpha = bgalpha if bgalpha is not None else 1.0
+        if bgcolor_rgb is None:
+            bgcolor_rgb, match_bgcolor = getcolor(text, True)
+        rb = int(bg_rgb[0] * (1 - _bgalpha) + bgcolor_rgb[0] * _bgalpha)
+        gb = int(bg_rgb[1] * (1 - _bgalpha) + bgcolor_rgb[1] * _bgalpha)
+        bb = int(bg_rgb[2] * (1 - _bgalpha) + bgcolor_rgb[2] * _bgalpha)
         ansi_bgcolor = f"\033[48;2;{rb};{gb};{bb}m"
     else:
-        bgcolor, match_bgcolor = getcolor(text, True)
+        bgcolor_rgb, match_bgcolor = getcolor(text, True)
         ansi_bgcolor = ""
-    bgcolor = bg if onbg else bgcolor
-    color = rgb(color)
-    if color is None and alpha is not None:
-        color, match_color = getcolor(text)
-        if clean is None: clean = True
-    if not color is None:
-        r = int(bgcolor[0] * (1 - alpha) + color[0] * alpha)
-        g = int(bgcolor[1] * (1 - alpha) + color[1] * alpha)
-        b = int(bgcolor[2] * (1 - alpha) + color[2] * alpha)
+
+    if user_color is not None or alpha is not None:
+        _alpha = alpha if alpha is not None else 1.0
+        if color_rgb is None:
+            color_rgb, match_color = getcolor(text)
+            if not clean:
+                clean = True
+        r = int(bg_rgb[0] * (1 - _alpha) + color_rgb[0] * _alpha)
+        g = int(bg_rgb[1] * (1 - _alpha) + color_rgb[1] * _alpha)
+        b = int(bg_rgb[2] * (1 - _alpha) + color_rgb[2] * _alpha)
         ansi_color = f"\033[38;2;{r};{g};{b}m"
     else:
         ansi_color = ""
+
     if clean:
         ascii_art = recomp.sub('', text)
         if not ansi_bgcolor:
             ansi_bgcolor = match_bgcolor
         if not ansi_color:
-            ansi_color = match_color
+            ansi_color   = match_color
     else:
         ascii_art = text
-    if(not size is None):
-        ascii_font = SIZE_MAP[max(1,min(5,size))] if isinstance(size, int) else size
-        if(size>=1):
+
+    if size is not None:
+        ascii_font = SIZE_MAP[max(1, min(5, size))] if isinstance(size, int) else size
+        if size >= 1:
             fig = getfiglet(font=ascii_font, width=width)
             ascii_art = fig.renderText(ascii_art)
-    styled_text = ansi_bgcolor + ansi_color + ascii_art
-    if reset: styled_text += "\033[0m"
+
+    prefix = ansi_bgcolor + ansi_color
+    if prefix:
+        suffix = "\033[0m" if reset else ""
+        lines = ascii_art.split('\n')
+        while lines and not lines[-1].strip():
+            lines.pop()
+        styled_text = '\n'.join(prefix + line.rstrip() + suffix for line in lines) + '\n'
+    else:
+        styled_text = ascii_art
+        if reset:
+            styled_text += "\033[0m"
+
     return styled_text
 
 def fill(color=None, width=None, height=None, xoffset=0, yoffset=0, termx=None, termy=None):

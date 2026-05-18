@@ -88,14 +88,10 @@ class World():
         self.autoterm = True
         self.autodim = True
         self.autobg = True
-        self.autofps = True if session is None else session.autofps
+        self.autofps = True
         for setting, val in kwargs.items():
             if val is not None: setattr(self, setting, val)
-        if not session is None: self.scene.bgcolor = self.session.bgcolor
-        if autoreg: attempt(self.register)
-        if front: self.front()
-        else: self.back()
-        if self.autofps: self.scene.maxframerate = 1/max(latency())
+        if autoreg: attempt(lambda: self.register(front))
 
     class Handle(): # scene behaviour handle
         def __init__(self, handle, world):
@@ -110,10 +106,23 @@ class World():
             self.handle = handle(**getargs(handle, self.handleargs))
             start = getattr(self.handle, 'start', None)
             self.startargs = getargs(start, self.handleargs)
-            if start: start(**self.startargs)
-            self.updateargs = getargs(getattr(self.handle, 'update', None), self.handleargs)
-            self.finalargs = getargs(getattr(self.handle, 'final', None), self.handleargs)
             self.world.handles.append(self)
+            if start: start(**self.startargs)
+        def func(self, key: str):
+            fu = getattr(self.handle, key, None)
+            method_cache_attr = f"_{key}_method"
+            args_cache_attr = f"{key}args"
+            if fu != getattr(self, method_cache_attr, None):
+                setattr(self, method_cache_attr, fu)
+                if fu is not None:
+                    ar = getargs(fu, self.handleargs)
+                    setattr(self, args_cache_attr, ar)
+                else:
+                    if hasattr(self, args_cache_attr):
+                        delattr(self, args_cache_attr)
+            if fu:
+                return lambda: fu(**getattr(self, args_cache_attr))
+            return None
         def cancel(self):
             self.world.handles = [h for h in self.world.handles if h is not self]
             
@@ -124,11 +133,15 @@ class World():
     def cancel(self, handle):
         self.handles = [h for h in self.handles if h is not handle]
 
-    def register(self):
+    def register(self, front=True):
         if self.session is not None:
             if self not in self.session.worlds:
                 self.session.worlds.append(self)
                 self.session.worlds = sorted(list(self.session.worlds), key=lambda w: getattr(w, 'layer', 0))
+                self.scene.bgcolor = self.session.bgcolor
+                if front: self.front()
+                else: self.back()
+                self.session.latency = max(latency())
                 with self.session._resume:
                     self.session._resume.notify_all()
 
@@ -180,6 +193,7 @@ class Session():
         self._pause = False
         self.pausephysics = False
         self.pauserendering = False
+        self._latency = max(latency())
         self._termxoffset = 0
         self._termyoffset = 0
         bg = self.term.get_bgcolor(bits=8)
@@ -207,6 +221,16 @@ class Session():
         if not value:
             with self._resume:
                 self._resume.notify_all()
+
+    @property
+    def latency(self):
+        return self._latency
+    @latency.setter
+    def latency(self, value):
+        self._latency = value
+        if self.autofps:
+            for w in self.worlds:
+                if w.autofps: w.scene.maxframerate = 1/value
 
     @property
     def termxoffset(self):
@@ -280,7 +304,6 @@ class Session():
                         optt_stack = main_stack.enter_context(contextlib.ExitStack())
                         is_mouse = False
 
-                    tickdelta = 0
                     if(not self._pause):
                         bef = time.perf_counter()
                         self.inp.update()
@@ -337,9 +360,9 @@ class Session():
 
                             for handle in list(world.handles):
                                 if handle.pause: continue
-                                update = getattr(handle.handle, 'update', None)
+                                update = handle.func('update')
                                 if update:
-                                    update(**handle.updateargs)
+                                    update()
 
                             for o in world.scene.objs:
                                 if hasattr(o, 'physics'):
@@ -348,25 +371,25 @@ class Session():
 
                             for handle in list(world.handles):
                                 if handle.pause: continue
-                                final = getattr(handle.handle, 'final', None)
+                                final = handle.func('final')
                                 if final:
-                                    final(**handle.finalargs)
-                            
+                                    final()
+
+                            world_layer = getattr(world, 'layer', 0)
+                            exclude_rects = [
+                                (
+                                    w.scene.dimxoffset + 1,
+                                    -w.scene.dimyoffset + 1,
+                                    w.scene.dimxoffset + w.scene.dimx,
+                                    -w.scene.dimyoffset + w.scene.dimy,
+                                )
+                                for w in self.worlds
+                                if not w.pause and getattr(w, 'layer', 0) > world_layer
+                            ]
                             for o in world.scene.objs:
                                 if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:
                                         o.rendering._markdirty()
-                                        world_layer = getattr(world, 'layer', 0)
-                                        exclude_rects = [
-                                            (
-                                                w.scene.dimxoffset + 1,
-                                                -w.scene.dimyoffset + 1,
-                                                w.scene.dimxoffset + w.scene.dimx,
-                                                -w.scene.dimyoffset + w.scene.dimy,
-                                            )
-                                            for w in self.worlds
-                                            if not w.pause and getattr(w, 'layer', 0) > world_layer
-                                        ]
                                         rem, draw = o.rendering.render(False, True, exclude_rects)
                                         removebuffer += rem
                                         if o.rendering.show: drawbuffer += draw
@@ -377,7 +400,6 @@ class Session():
                         framebuffer += '\033[?2026l' if self.vsync else ''
                         sys.stdout.write(framebuffer)
                         sys.stdout.flush()
-                        tickdelta = -(time.perf_counter() - bef)
 
                     now = time.perf_counter()
                     next_tick = min(
@@ -385,8 +407,8 @@ class Session():
                          for fps, group in framerate_groups.items()),
                         default=now
                     )
-                    sleep = next_tick - now - tickdelta
-                    if sleep > max(latency()) and not self._pause:
+                    sleep = next_tick - now
+                    if sleep > self._latency and not self._pause:
                         tar = time.perf_counter() + sleep
                         while time.perf_counter() < tar: pass
                     elif self._pause or len(self.worlds) == 0:
