@@ -104,8 +104,8 @@ def getcolor(text:str, back=False):
     color = matches[-1].group(0) if matches else ""
     return tupl, color
 
-def style(text: str, color=None, alpha=None, size=None, width=80,
-          bgcolor=None, bgalpha=None, bg=bg, fg=fg, reset=True, clean=None):
+def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
+          bgalpha=None, bg=bg, fg=fg, onbg=False, reset=True, clean=None):
 
     bg_rgb  = rgb(bg)  or bg
     fg_rgb  = rgb(fg)  or fg
@@ -137,9 +137,10 @@ def style(text: str, color=None, alpha=None, size=None, width=80,
             color_rgb, match_color = getcolor(text)
             if not clean:
                 clean = True
-        r = int(bg_rgb[0] * (1 - _alpha) + color_rgb[0] * _alpha)
-        g = int(bg_rgb[1] * (1 - _alpha) + color_rgb[1] * _alpha)
-        b = int(bg_rgb[2] * (1 - _alpha) + color_rgb[2] * _alpha)
+        activebg_rgb = bg_rgb if onbg else bgcolor_rgb
+        r = int(activebg_rgb[0] * (1 - _alpha) + color_rgb[0] * _alpha)
+        g = int(activebg_rgb[1] * (1 - _alpha) + color_rgb[1] * _alpha)
+        b = int(activebg_rgb[2] * (1 - _alpha) + color_rgb[2] * _alpha)
         ansi_color = f"\033[38;2;{r};{g};{b}m"
     else:
         ansi_color = ""
@@ -162,10 +163,11 @@ def style(text: str, color=None, alpha=None, size=None, width=80,
     prefix = ansi_bgcolor + ansi_color
     if prefix:
         suffix = "\033[0m" if reset else ""
+        trailing = '\n' if ascii_art.endswith('\n') else ''
         lines = ascii_art.split('\n')
         while lines and not lines[-1].strip():
             lines.pop()
-        styled_text = '\n'.join(prefix + line.rstrip() + suffix for line in lines) + '\n'
+        styled_text = '\n'.join(prefix + line.rstrip() + suffix for line in lines) + trailing
     else:
         styled_text = ascii_art
         if reset:

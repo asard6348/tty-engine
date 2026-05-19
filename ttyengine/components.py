@@ -286,11 +286,12 @@ class transform(_change_callback):
             local_pixels.add((gx + rx, ry + gy))
         return local_pixels
  
-    def rotate(self, angle_degrees):
-        rounded = round(angle_degrees * 20) / 20
-        if self._rot_cache_angle == rounded:
-            return
-        self._rot_cache_angle = rounded
+    def rotate(self, angle_degrees, init=False):
+        if not init:
+            rounded = round(angle_degrees * 20) / 20
+            if self._rot_cache_angle == rounded:
+                return
+            self._rot_cache_angle = rounded
 
         angle = math.radians(angle_degrees)
         cos_a = math.cos(angle)

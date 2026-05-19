@@ -46,7 +46,8 @@ class vanish():
             self.delay -= 1/scene.framerate
             return
         if self.time <= 0:
-            self.obj.transform.vtext = session.style(self.ct, alpha=0, bgalpha=0, clean=True)
+            self.obj.transform.vrtext = session.style(self.ct, alpha=0, bgalpha=0, onbg=True, clean=True)
+            self.obj.transform.rotate(self.obj.transform.rotation, True)
             self.obj.discard()
             handle.cancel()
             return
@@ -54,7 +55,8 @@ class vanish():
         progress = max(0, self.time / self._st)
         new_alpha = self.alpha * progress
         new_bgalpha = self.bgalpha * progress
-        self.obj.transform.vtext = session.style(self.ct, alpha=new_alpha, bgalpha=new_bgalpha, clean=True)
+        self.obj.transform.vrtext = session.style(self.ct, alpha=new_alpha, bgalpha=new_bgalpha, onbg=True, clean=True)
+        self.obj.transform.rotate(self.obj.transform.rotation, True)
 
 class flash():
     def __init__(self, scene, delay=0, time=1, tar=(0,0,0), st=None):
@@ -102,22 +104,24 @@ class asteroid():
         self.a = scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, rotation=r(-180,180)*0, xvel=r(-10,10)*0, yvel=r(-10,10)*0)
         self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al}
         self.a.imast = True
+        self.a.ast = True
         def ont(obj2, inter):
             if obj2.physics.phantom or hasattr(obj2, 'imast'): return
-            handle.cancel()
-            if hasattr(self.a, 'imast'):
-                delattr(self.a, 'imast')
-            scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True))
             if obj2 == self.plr:
+                self.a.physics.offtouch(ont)
                 ginfo[1] += 1
+                scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True))
+                if hasattr(self.a, 'imast'):
+                    delattr(self.a, 'imast')
+                if hasattr(self.a, 'forvanish'):
+                    world.launch(lambda: vanish(self.a, **self.a.forvanish))
+                handle.cancel()
             def spl(ps, ob=obj2):
                 if hasattr(ob, 'forvanish'):
                     for p in ps:
                         world.launch(lambda: vanish(p, **ob.forvanish))
             obj2.transform.split_at(obj2.transform.tolocal(inter), spl)
-            if hasattr(self.a, 'forvanish'):
-                world.launch(lambda: vanish(self.a, **self.a.forvanish))
-        self.a.physics.ontouch(ont, when=lambda o: hasattr(o, 'physics'), once=True)
+        self.a.physics.ontouch(ont)
     def update(self, handle):
         try:
             t = self.a.transform
@@ -197,10 +201,10 @@ class player():
                 if i==0: bp.xvel += d
                 else: bp.yvel += d
             def destroy(obj2, points):
+                #if obj2.physics.phantom and not hasattr(obj2, 'ast'): return
                 if hasattr(obj2, 'imast'):
                     ginfo[0] += 1
-                    if hasattr(obj2, 'physics'):
-                        obj2.physics.phantom = True
+                    obj2.physics.phantom = True
                     delattr(obj2, 'imast')
                 obj2.transform.cutpoints(points)
                 vanish_data = getattr(obj2, 'forvanish', None)
