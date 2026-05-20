@@ -252,7 +252,6 @@ class player():
             scale = self.thrustmax / speed
             p.xvel *= scale
             p.yvel *= scale
-        p.avel = p.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*self.rocket.physics.mass
 
         if self._shoot_delay > 0:
             self._shoot_delay -= 1/scene.framerate
@@ -266,11 +265,10 @@ class player():
             self._ad = 1
             world.launch(lambda: asteroid(self.rocket))
             
-    def final(self, scene, world):
-        t = self.rocket.transform
         self.camfollow(t.x+t.xc(), t.y-t.yc())
         if hasattr(self.info, 'transform'):
             self.info.transform.x, self.info.transform.y = 0+scene.camx, 0+scene.camy
+        p.avel = p.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*self.rocket.physics.mass
 
         if dinfo is not None:
             dinfo.clear()
