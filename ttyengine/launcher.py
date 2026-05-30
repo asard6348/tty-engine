@@ -80,7 +80,7 @@ class World():
         self.session = session
         self.handles = []
         self.scene = scene.Scene() # new object Scene instance
-        self.layer = 0
+        self._layer = 0
         self.last_tick = time.perf_counter()
         self.pause = False
         self.pausephysics = False
@@ -92,6 +92,18 @@ class World():
         for setting, val in kwargs.items():
             if val is not None: setattr(self, setting, val)
         if autoreg: attempt(lambda: self.register(front))
+
+    @property
+    def layer(self):
+        return self._layer
+    @layer.setter
+    def layer(self, value):
+        self._layer = value
+        self.sort()
+
+    def sort(self, layer=None):
+        if self.session is not None:
+            self.session.worlds = sorted(list(self.session.worlds), key=lambda w: getattr(w, '_layer', 0) if w is not self or layer is None else layer)
 
     class Handle(): # scene behaviour handle
         def __init__(self, handle, world):
@@ -137,10 +149,10 @@ class World():
         if self.session is not None:
             if self not in self.session.worlds:
                 self.session.worlds.append(self)
-                self.session.worlds = sorted(list(self.session.worlds), key=lambda w: getattr(w, 'layer', 0))
                 self.scene.bgcolor = self.session.bgcolor
                 if front: self.front()
                 else: self.back()
+                self.sort()
                 self.session.latency = max(latency())
                 with self.session._resume:
                     self.session._resume.notify_all()
@@ -155,10 +167,10 @@ class World():
             l = 0
             for w in self.session.worlds:
                 if ll is None:
-                    ll = w.layer
-                    l = w.layer
+                    ll = w._layer
+                    l = w._layer
                     continue
-                if w.layer > ll: l = w.layer
+                if w._layer > ll: l = w._layer
             self.layer = l + 1
 
     def back(self):
@@ -167,10 +179,10 @@ class World():
             l = 0
             for w in self.session.worlds:
                 if ll is None:
-                    ll = w.layer
-                    l = w.layer
+                    ll = w._layer
+                    l = w._layer
                     continue
-                if w.layer < ll: l = w.layer
+                if w._layer < ll: l = w._layer
             self.layer = l - 1
 
     def tick_ready(self):
@@ -311,14 +323,6 @@ class Session():
                         removebuffer = ""
                         drawbuffer = ""
 
-                        dim_changed = any([w.scene.checkres() for w in self.worlds]) or changed_optimized
-                        if self.outerbg and dim_changed:
-                            fillbuffer += self.fill(
-                                self.bgcolor,
-                                self.term.width,
-                                self.term.height,
-                            )
-
                         framerate_groups = {}
                         for w in self.worlds:
                             if w.pause: continue
@@ -332,9 +336,9 @@ class Session():
                             if any(now - w.last_tick >= 1.0 / fps for w in group):
                                 ready_fps.add(fps)
 
-                        for idx, world in enumerate(self.worlds):
-                            if world.pause: continue
-                            
+                        itworlds = [w for w in self.worlds if not w.pause and w.scene.framerate in ready_fps and w.tick_ready()]
+
+                        for idx, world in enumerate(itworlds):
                             termx = self.term.width
                             termy = self.term.height
                             if self.autoterm and world.autoterm:
@@ -344,27 +348,36 @@ class Session():
                                 world.scene.dimx = world.scene.termx
                                 world.scene.dimy = world.scene.termy
 
-                            if self.autobg and world.autobg and dim_changed:
-                                fillbuffer += self.fill(
-                                    world.scene.bgcolor,
-                                    world.scene.dimx,
-                                    world.scene.dimy,
-                                    world.scene.dimxoffset,
-                                    -world.scene.dimyoffset,
-                                    world.scene.termx,
-                                    world.scene.termy,
-                                )
-
-                            should_tick = world.scene.framerate in ready_fps and world.tick_ready()
-                            if not should_tick: continue
-
                             for handle in list(world.handles):
                                 if handle.pause: continue
                                 update = handle.func('update')
                                 if update:
                                     update()
+                                    
+                        dim_changed = any([w.scene.checkres() for w in self.worlds if not w.pause]) or changed_optimized
+                        if dim_changed:
+                            if self.outerbg:
+                                fillbuffer += self.fill(
+                                    self.bgcolor,
+                                    self.term.width,
+                                    self.term.height,
+                                )
+                            if self.autobg:
+                                for world in self.worlds:
+                                    if world.pause: continue
+                                    if world.autobg:
+                                        fillbuffer += self.fill(
+                                            world.scene.bgcolor,
+                                            world.scene.dimx,
+                                            world.scene.dimy,
+                                            world.scene.dimxoffset,
+                                            -world.scene.dimyoffset,
+                                            world.scene.termx,
+                                            world.scene.termy,
+                                        )
 
-                            for o in world.scene.objs:
+                        for idx, world in enumerate(itworlds):
+                            for o in list(world.scene.objs):
                                 if hasattr(o, 'physics'):
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
@@ -374,6 +387,8 @@ class Session():
                                 final = handle.func('final')
                                 if final:
                                     final()
+
+                            world.scene.flush()
 
                             world_layer = getattr(world, 'layer', 0)
                             exclude_rects = [
@@ -386,14 +401,13 @@ class Session():
                                 for w in self.worlds
                                 if not w.pause and getattr(w, 'layer', 0) > world_layer
                             ]
-                            for o in world.scene.objs:
+                            for o in list(world.scene.objs):
                                 if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:
                                         o.rendering._markdirty()
                                         rem, draw = o.rendering.render(False, True, exclude_rects)
                                         removebuffer += rem
                                         if o.rendering.show: drawbuffer += draw
-                            world.scene.flush()
 
                         framebuffer = '\033[?2026h' if self.vsync else ''
                         framebuffer += removebuffer + fillbuffer + drawbuffer

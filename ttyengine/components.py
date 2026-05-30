@@ -40,17 +40,17 @@ class _metainit(type):
 
 class _change_callback(metaclass=_metainit, init='_chinit'):
     def _chinit(self):
-        self._onchangecb = []
+        self._onchangecb = {}
         def cln():
             discarded = self.obj
             for other in self.obj.scene.objs:
                 com = getattr(other, self.__class__.__name__, None)
                 if other is discarded or not com or not hasattr(com, '_onchangecb'):
                     continue
-                com._onchangecb = [
-                    cb for cb in com._onchangecb
+                com._onchangecb = {
+                    cb:par for cb,par in com._onchangecb.items()
                     if not _closure_refs(cb, discarded)
-                ]
+                }
         if not hasattr(self, 'on_discard'):
             self.on_discard = cln
         else:
@@ -70,18 +70,17 @@ class _change_callback(metaclass=_metainit, init='_chinit'):
                 if fired[0]: return
                 fired[0] = True
                 self.obj.scene.pending.append(
-                    lambda: self._onchangecb.remove(wrapped)
+                    lambda: self._onchangecb.pop(wrapped)
                     if wrapped in self._onchangecb else None)
                 return cb(*args, **kwargs)
             wrapped.__signature__ = inspect.signature(cb)
             cb = wrapped
-        self._onchangecb.append(cb)
+        self._onchangecb[cb] = _argslen(cb)
         return cb
     def offchange(self, cb):
-        self._onchangecb = [f for f in self._onchangecb if f is not cb]
+        self._onchangecb = {f:par for f,par in self._onchangecb.items() if f is not cb}
     def _change(self, attr, old):
-        for cb in self._onchangecb:
-            l = _argslen(cb)
+        for cb,l in self._onchangecb.items():
             if l > 1:
                 cb(attr, old)
             elif l > 0:
@@ -99,7 +98,7 @@ class transform(_change_callback):
         'rotation',
     ]
     _default = True
- 
+
     def __init__(self, obj, **kwargs):
         self.obj = obj
         self.scene = obj.scene
@@ -118,14 +117,27 @@ class transform(_change_callback):
         self._rotation = kwargs.get('rotation', 0)
         self._rot_cache_angle = None
         self._aspect = 0.5
-        self._onsplit = []
- 
+        self._onsplit = {}
+        self._xlen_cache = None
+        self._ylen_cache = None
+        self._parse_pixels_key = None
+        self._parse_pixels_val = None
+        self._centroid_cache = {}
+
     def __getitem__(self, key):
         return getattr(self, key)
- 
+
     def __setitem__(self, key, value):
         setattr(self, key, value)
- 
+
+    def _invalidate(self):
+        self._xlen_cache = None
+        self._ylen_cache = None
+        self._parse_pixels_key = None
+        self._parse_pixels_val = None
+        self._centroid_cache = {}
+        self._rot_cache_angle = None
+
     @property
     def x(self):
         return self._x
@@ -134,7 +146,7 @@ class transform(_change_callback):
         old = self._x
         self._x = value
         self._change('x', old)
- 
+
     @property
     def y(self):
         return self._y
@@ -147,7 +159,6 @@ class transform(_change_callback):
     @property
     def vx(self):
         return self._vx
-
     @vx.setter
     def vx(self, value):
         old = self._vx
@@ -157,13 +168,12 @@ class transform(_change_callback):
     @property
     def vy(self):
         return self._vy
-
     @vy.setter
     def vy(self, value):
         old = self._vy
         self._vy = value
         self._change('vy', old)
- 
+
     @property
     def text(self):
         return self._text
@@ -175,10 +185,10 @@ class transform(_change_callback):
         self.vhtext = value
         self._htext = ctext
         self._rtext = ctext
-        self._rot_cache_angle = None
+        self._invalidate()
         self.rotate(self._rotation)
         self._change('text', old)
- 
+
     @property
     def rtext(self):
         return self._rtext
@@ -188,10 +198,10 @@ class transform(_change_callback):
         ctext = self.scene.recomp.sub('', value)
         self.vrtext = value
         self._rtext = ctext
-        self._rot_cache_angle = None
+        self._invalidate()
         self.rotate(self._rotation)
         self._change('rtext', old)
- 
+
     @property
     def htext(self):
         return self._htext
@@ -203,21 +213,26 @@ class transform(_change_callback):
         self.vhtext = value
         self._htext = ctext
         self._rtext = ctext
-        self._rot_cache_angle = None
+        self._invalidate()
         self.rotate(self._rotation)
         self._change('htext', old)
- 
+
     @property
     def rotation(self):
         return self._rotation
     @rotation.setter
     def rotation(self, value):
         old = self._rotation
+        oldt = self._text
         self._rotation = value
         self.rotate(value)
         self._change('rotation', old)
+        self._change('text', oldt)
 
     def _pixel_centroid(self, txt):
+        cached = self._centroid_cache.get(id(txt))
+        if cached is not None and cached[0] == txt:
+            return cached[1]
         clean = self.scene.recomp.sub('', txt)
         xs, ys = [], []
         for ri, row in enumerate(clean.splitlines()):
@@ -225,11 +240,13 @@ class transform(_change_callback):
                 if char not in (' ', '\n'):
                     xs.append(ci)
                     ys.append(ri)
-        if not xs:
-            return 0.0, 0.0
-        return sum(xs) / len(xs), sum(ys) / len(ys)
- 
+        result = (sum(xs) / len(xs), sum(ys) / len(ys)) if xs else (0.0, 0.0)
+        self._centroid_cache[id(txt)] = (txt, result)
+        return result
+
     def parse_pixels(self, text):
+        if self._parse_pixels_key is not None and self._parse_pixels_key == text:
+            return self._parse_pixels_val
         pixels = {}
         current_style = ''
         for ri, line in enumerate(text.splitlines()):
@@ -246,6 +263,8 @@ class transform(_change_callback):
                     for char in part:
                         pixels[(ci, ri)] = (char, current_style)
                         ci += 1
+        self._parse_pixels_key = text
+        self._parse_pixels_val = pixels
         return pixels
 
     def build_rows(self, pixels, min_x, max_x, min_y, max_y):
@@ -285,7 +304,7 @@ class transform(_change_callback):
         for gx, gy in pixels:
             local_pixels.add((gx + rx, ry + gy))
         return local_pixels
- 
+
     def rotate(self, angle_degrees, init=False):
         if not init:
             rounded = round(angle_degrees * 20) / 20
@@ -318,7 +337,7 @@ class transform(_change_callback):
 
             if not new_pixels:
                 return ''
-            
+
             all_xs = [p[0] for p in new_pixels]
             ns_ys  = [p[1] for p in new_pixels if new_pixels[p][0] != ' ']
             if not ns_ys:
@@ -327,6 +346,8 @@ class transform(_change_callback):
 
         self.vtext = cal(self.vrtext)
         self._text = cal(self._rtext)
+        self._xlen_cache = None
+        self._ylen_cache = None
 
         orig_cx, orig_cy = self._pixel_centroid(self._rtext)
         rot_cx,  rot_cy  = self._pixel_centroid(self._text)
@@ -507,7 +528,7 @@ class transform(_change_callback):
             fy = wcy - vy_new + (frag_rot_cy - frag_rot_min_y)
 
             kw = self.obj.kwargs()
-            del kw['mass']
+            kw.pop('mass', None)
             spawns.append({
                 **kw,
                 'text': self.build_rows(group_pixels, min_x, max_x, min_y, max_y),
@@ -526,8 +547,7 @@ class transform(_change_callback):
                 if l > 1: cb(parts, obj_ref)
                 elif l > 0: cb(parts)
                 else: cb()
-            for calb in self._onsplit:
-                cl = _argslen(calb)
+            for calb,cl in self._onsplit.items():
                 if cl > 1: calb(parts, obj_ref)
                 elif cl > 0: calb(parts)
                 else: calb()
@@ -640,36 +660,56 @@ class transform(_change_callback):
             def wrapped(*args, **kwargs):
                 if fired[0]: return
                 fired[0] = True
-                self.obj.scene.pending.append(lambda: self._onsplit.remove(wrapped) if wrapped in self._onsplit else None)
+                self.obj.scene.pending.append(lambda: self._onsplit.pop(wrapped) if wrapped in self._onsplit else None)
                 return cb(*args, **kwargs)
             wrapped.__signature__ = inspect.signature(cb)
             cb = wrapped
-        self._onsplit.append(cb)
+        self._onsplit[cb] = _argslen(cb)
         return cb
-    
+
     def offsplit(self, cb):
-        self._onsplit = [f for f in self._onsplit if f is not cb]
- 
+        self._onsplit = {f:par for f,par in self._onsplit.items() if f is not cb}
+
     def xlen(self, text=None):
-        text = self._text if text is None else text
+        if text is None:
+            if self._xlen_cache is not None:
+                return self._xlen_cache
+            text = self._text
+            lens = []
+            for row in text.splitlines():
+                for i, char in enumerate(row):
+                    if char != ' ':
+                        lens.append(i)
+            result = abs(max(lens) - (min(lens) - 1)) if lens else 0
+            self._xlen_cache = result
+            return result
         lens = []
         for row in text.splitlines():
             for i, char in enumerate(row):
                 if char != ' ':
                     lens.append(i)
         return abs(max(lens) - (min(lens) - 1)) if lens else 0
- 
+
     def ylen(self, text=None):
-        text = self._text if text is None else text
+        if text is None:
+            if self._ylen_cache is not None:
+                return self._ylen_cache
+            text = self._text
+            count = 0
+            for row in text.splitlines():
+                if any(c != ' ' and c != '\n' for c in row):
+                    count += 1
+            self._ylen_cache = count
+            return count
         count = 0
         for row in text.splitlines():
             if any(c != ' ' and c != '\n' for c in row):
                 count += 1
         return count
- 
+
     def xc(self, text=None):
         return self.xlen(text) / 2
- 
+
     def yc(self, text=None):
         return self.ylen(text) / 2
 
@@ -688,6 +728,9 @@ class transform(_change_callback):
 
     def aim(self, obj, offset=0):
         return self.point(obj.transform.x, obj.transform.y, offset=offset)
+
+    def alerp(self, angle):
+        return (angle - self._rotation + 540) % 360 - 180
     
 
 class rendering():
@@ -920,7 +963,7 @@ class physics(_change_callback):
         'xvel', 'yvel', 'avel',
         'dynamic',
         'bounciness',
-        'mass',
+        'mass', 'automass',
         'solid',
         'hitbox',
         'touch',
@@ -951,8 +994,13 @@ class physics(_change_callback):
         self.dynamic = kwargs.get('dynamic', True)
         self.bounciness = kwargs.get('bounciness', 0)
         self.mass = kwargs.get('mass', None)
+        self.automass = kwargs.get('automass', self.mass is None)
+        def masscal(prop='text'):
+            if self.automass and prop.endswith('text'):
+                self.mass = sum(1 for c in self.t._rtext if c not in (' ', '\n'))
         if self.mass is None:
-            self.mass = sum(1 for c in self.t._text if c not in (' ', '\n'))
+            masscal()
+        self.t.onchange(masscal)
         self.solid = kwargs.get('solid', True)
         self.hitbox = kwargs.get('hitbox', False)
         self.phantom = kwargs.get('phantom', False)
@@ -1006,6 +1054,13 @@ class physics(_change_callback):
         self._avel = value
         self._change('avel', old)
 
+    @property
+    def mass(self):
+        return self._mass
+    @mass.setter
+    def mass(self, value):
+        self._mass = max(1, value) if isinstance(value, (int, float)) else value
+
     def _dirty(self):
         self._pixel_cache = None
 
@@ -1032,9 +1087,6 @@ class physics(_change_callback):
             cb for cb in self._touch_callbacks if cb.__closure__ and
             cb.__closure__[0].cell_contents is not callback
         ]
-
-    def alerp(self, angle):
-        return (angle - self.t.rotation + 540) % 360 - 180
 
     def getpixels(self, x=None, y=None, text=None):
         default_call = x is None and y is None and text is None
@@ -1110,7 +1162,7 @@ class physics(_change_callback):
         axises = self._axises if axises is None else axises
         aspect = self._aspect if aspect is None else aspect
         self._dirty()
-        actualmass = max(abs(self.mass), 1)
+        actualmass = self.mass
 
         for ia, a in enumerate(axises): # per-axis step
             opp_ia = 1 - ia
@@ -1155,7 +1207,7 @@ class physics(_change_callback):
                 if physical_col is not None:
                     obj2, intersection = physical_col
                     obj2p = obj2.physics
-                    othermass = max(abs(obj2p.mass), 1)
+                    othermass = obj2p.mass
                     totalmass = actualmass + othermass
 
                     pos_list = [self.t.x, self.t.y]
@@ -1167,11 +1219,11 @@ class physics(_change_callback):
                     vel_obj2_before = obj2p[a + 'vel']
                     resting = self.touch[ia] and abs(self[a + 'vel']) / actualmass < 0.5
                     if obj2p.dynamic and not obj2p.hitbox and not resting:
-                        obj2p.avel += self.mass * (otd[opp_ia] * (
+                        obj2p.avel += actualmass * (otd[opp_ia] * (
                             (vel_obj2_before - vel_self_before) if ia == 1
                             else -(vel_obj2_before - vel_self_before)))
                     if not self.hitbox and not resting:
-                        self.avel += self.mass * (td[opp_ia] * (
+                        self.avel += actualmass * (td[opp_ia] * (
                             (vel_self_before - vel_obj2_before) if ia == 1
                             else -(vel_self_before - vel_obj2_before)))
 

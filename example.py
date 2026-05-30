@@ -164,10 +164,10 @@ def dev(Session=Session): #DEBUG
                     self.push.explosion.explode(ax,ay)
                 else:
                     self.push.rendering.show = False
-                if(k('up')): self.tary += self.camspeed/2
-                if(k('down')): self.tary += -self.camspeed/2
-                if(k('right')): self.tarx += self.camspeed
-                if(k('left')): self.tarx += -self.camspeed
+                if(k('up')): sc.dimyoffset += 1#self.tary += self.camspeed/2
+                if(k('down')): sc.dimyoffset += -1#self.tary += -self.camspeed/2
+                if(k('right')): sc.dimxoffset += 1#self.tarx += self.camspeed
+                if(k('left')): sc.dimxoffset += -1#self.tarx += -self.camspeed
             whilepressed()
             
             for o in self.scene.objs:
@@ -189,8 +189,8 @@ def dev(Session=Session): #DEBUG
             if self.plr:
                 self.tarx = self.plr.transform.x+self.plr.transform.xc(self.plr.transform.htext)
                 self.tary = self.plr.transform.y-self.plr.transform.yc(self.plr.transform.htext)
-            sc.camx += (sc.iround(self.tarx+camtarx-sc.dimx/2)-sc.camx)/self.camrange#; sc.camx = round(sc.camx)
-            sc.camy += (sc.iround(self.tary+camtary+sc.dimy/2)-sc.camy)/self.camrange#; sc.camy = round(sc.camy)
+            sc.camx += (self.tarx + camtarx - (sc.dimx/2) - sc.camx) / self.camrange
+            sc.camy += (self.tary + camtary + (sc.dimy/2) - sc.camy) / self.camrange
 
             if hasattr(self, 'info'):
                 self.info.transform.x = sc.camx

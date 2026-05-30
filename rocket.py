@@ -9,36 +9,65 @@ class ginf():
     def upd(self):
         sc = self.scene
         style = self.style
-        txt = f'SHOTS :   {ginfo[0]}       HITS :   {ginfo[1]}'
-        self.info.create(style(txt, color='darkorange', size=1, width=500))
+        new_txt = f'SHOTS :   {ginfo[0]}       HITS :   {ginfo[1]}'
+        if new_txt != self._last_txt:
+            self._last_txt = new_txt
+            self.info.create(style(new_txt, color='darkorange', size=1, width=500))
         t = self.info.transform
-        t.x = sc.camx+sc.dimx/2-t.xlen()/2
-        t.y = sc.camy-sc.dimy+t.ylen()
+        t.x = sc.camx + sc.iround((sc.dimx - t.xlen()) / 2)
+        t.y = sc.camy - sc.dimy + t.ylen()
     def start(self, scene, session):
         self.scene = scene
         self.style = session.style
         self.info = scene.obj()
+        self._last_txt = None
     def final(self, scene, handle):
         if len(ginfo) < 2:
             handle.cancel()
             return
         self.upd()
 
-class vanish():
-    def __init__(self, obj, delay=0, time=2, alpha=1, bgalpha=1):
+class fade():
+    def __init__(self, obj, delay=0, time=2, alpha=1, bgalpha=1, callback=None, appear=False):
         self.obj = obj
         self.delay = delay
         self._st = time
         self.time = time
         self.alpha = alpha
         self.bgalpha = bgalpha
-    def start(self, handle, session, scene):
-        if hasattr(self.obj, '_vanishing') or not hasattr(self.obj, 'transform'):
+        self.cb = callback
+        self.appear = appear
+    def start(self, handle, session, world):
+        if hasattr(self.obj, '_fading') or not hasattr(self.obj, 'transform'):
             handle.cancel()
             return
-        self.obj._vanishing = True
-        self.ct = self.obj.transform.vrtext
-    def update(self, scene, session, handle):
+        self.obj._fading = True
+        if hasattr(self.obj, '_fadeprogress'):
+            self.time *= self.obj._fadeprogress
+        else:
+            self.obj._fadeprogress = 1
+        self.t = self.obj.transform
+        self.s = session.style
+        def inh(parts):
+            if parts[0] == self.obj:
+                return
+            else:
+                handle.cancel()
+            for p in parts:
+                p._fadeprogress = self.obj._fadeprogress
+                world.launch(lambda: fade(p, self.delay, self._st, self.alpha, self.bgalpha, self.cb, self.appear))
+        self.t.onsplit(inh)
+    def lerp(self, progress, init=False):
+        progress = 1-progress if self.appear else progress
+        if not init:
+            self.obj._fadeprogress = progress
+        ct = self.t.vrtext
+        new_alpha = self.alpha * progress
+        new_bgalpha = self.bgalpha * progress
+        self.t.vrtext = self.s(ct, alpha=new_alpha, bgalpha=new_bgalpha, onbg=True, clean=True)
+        self.t.rotate(self.t.rotation, True)
+        self.t.vrtext = ct
+    def final(self, scene, session, handle):
         if self.obj is None or not hasattr(self.obj, 'transform'):
             handle.cancel()
             return
@@ -46,17 +75,46 @@ class vanish():
             self.delay -= 1/scene.framerate
             return
         if self.time <= 0:
-            self.obj.transform.vrtext = session.style(self.ct, alpha=0, bgalpha=0, onbg=True, clean=True)
-            self.obj.transform.rotate(self.obj.transform.rotation, True)
-            self.obj.discard()
+            self.lerp(0)
+            delattr(self.obj, '_fading')
+            if self.cb: self.cb()
             handle.cancel()
             return
         self.time -= 1/scene.framerate
         progress = max(0, self.time / self._st)
-        new_alpha = self.alpha * progress
-        new_bgalpha = self.bgalpha * progress
-        self.obj.transform.vrtext = session.style(self.ct, alpha=new_alpha, bgalpha=new_bgalpha, onbg=True, clean=True)
-        self.obj.transform.rotate(self.obj.transform.rotation, True)
+        self.lerp(progress)
+
+class explode():
+    def __init__(self, x, y, delay=0, time=0.5, radius=25, force=100, callback=None, explode=True):
+        self.pos = (x,y)
+        self.radi = radius
+        self.forc = force
+        self.begin = time
+        self.timer = self.begin
+        self.delay = delay
+        self.exp = explode
+        self.cb = callback
+    def start(self, scene):
+        self.bomb = scene.obj().create(exradius=self.radi, exforce=self.forc) # bomb
+        if self.exp: self.bomb.explosion.explode()
+    def final(self, scene, handle, session):
+        if self.delay > 0:
+            self.delay -= 1/scene.framerate
+            return
+        if self.timer <= 0:
+            if self.cb:
+                self.cb()
+            self.bomb.discard()
+            handle.cancel()
+            return
+        self.timer -= 1/scene.framerate
+        t = self.bomb.transform
+        ex = self.bomb.explosion
+        delta = max(0, self.timer/self.begin)
+        t.text = session.style(ex.circle((ex.radius/2)*(1-delta), 'X'), alpha=min(1,ex.force/20)*delta, color='orange', bgcolor=scene.bgcolor)
+        t.x, t.y = self.pos
+        t.x -= t.xlen()/2
+        t.y += t.ylen()/2
 
 class flash():
     def __init__(self, scene, delay=0, time=1, tar=(0,0,0), st=None):
@@ -101,8 +159,8 @@ class asteroid():
         dr = r(-180, 180)
         x, y = pt.forward(r(70, 100), 0, dr)
         al = r(7, 10)/10
-        self.a = scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, rotation=r(-180,180)*0, xvel=r(-10,10)*0, yvel=r(-10,10)*0)
-        self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al}
+        self.a = scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10))
+        self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al, 'callback': self.a.discard}
         self.a.imast = True
         self.a.ast = True
         def ont(obj2, inter):
@@ -114,13 +172,12 @@ class asteroid():
                 if hasattr(self.a, 'imast'):
                     delattr(self.a, 'imast')
                 if hasattr(self.a, 'forvanish'):
-                    world.launch(lambda: vanish(self.a, **self.a.forvanish))
+                    world.launch(lambda: fade(self.a, **self.a.forvanish))
                 handle.cancel()
-            def spl(ps, ob=obj2):
-                if hasattr(ob, 'forvanish'):
-                    for p in ps:
-                        world.launch(lambda: vanish(p, **ob.forvanish))
-            obj2.transform.split_at(obj2.transform.tolocal(inter), spl)
+            obj2.transform.split_at(obj2.transform.tolocal(inter))
+            for xi, yi in inter:
+                world.launch(lambda: explode(xi, yi, time=0.3, radius=15, force=50, explode=False))
+                break
         self.a.physics.ontouch(ont)
     def update(self, handle):
         try:
@@ -176,6 +233,7 @@ class player():
             scene.camy += ydelta
             return xdelta, ydelta
         self.camfollow = camfollow
+        camfollow(t.x+t.xc(), t.y-t.yc())
         
         self.info = scene.obj().create(session.style('ZOOM OUT BY "CTRL" + "-"', color='black', bgcolor='white'), renderspaces=True)
         self._ad = -1
@@ -184,7 +242,7 @@ class player():
             world.launch(lambda scene: flash(scene, time=0.5, st=(255,255,255)))
             if hasattr(self.info, 'transform'):
                 self.info['text'] = style('STARTED!', size=3, color='white', bgcolor='blue')
-                world.launch(lambda: vanish(self.info, 0.5, 0.5))
+                world.launch(lambda: fade(self.info, 0.5, 0.5, callback=self.info.discard))
                 world.launch(ginf)
         session.inp.onpress('f', lambda e: onf(), True)
         
@@ -201,29 +259,30 @@ class player():
                 if i==0: bp.xvel += d
                 else: bp.yvel += d
             def destroy(obj2, points):
-                #if obj2.physics.phantom and not hasattr(obj2, 'ast'): return
+                ph = obj2.physics
+                tr = obj2.transform
+                #if ph.phantom and not hasattr(obj2, 'ast'): return
                 if hasattr(obj2, 'imast'):
                     ginfo[0] += 1
-                    obj2.physics.phantom = True
+                    ph.phantom = True
                     delattr(obj2, 'imast')
-                obj2.transform.cutpoints(points)
+                tr.cutpoints(points)
                 vanish_data = getattr(obj2, 'forvanish', None)
-                if not vanish_data:
-                    obj2.transform.split()
-                    return
-                def vn(parts):
-                    for p in parts:
-                        p.forvanish = vanish_data
-                        world.launch(lambda p=p, vd=vanish_data: vanish(p, **vd))
-                res = obj2.transform.split(vn)
-                if res is None:
-                    world.launch(lambda: vanish(obj2, **vanish_data))
+                def regul(parts):
+                    for par in parts:
+                        pah = getattr(par, 'physics', None)
+                        if pah is None: continue
+                        dlt = pah.mass/ph.mass
+                        par.create(xvel=pah.xvel*dlt, yvel=pah.yvel*dlt, avel=pah.avel*dlt)
+                tr.split(regul)
+                if vanish_data:
+                    world.launch(lambda: fade(obj2, **vanish_data))
             def dis():
                 maxi = 1
                 if abs(bp.xvel) <= maxi and abs(bp.yvel)*1/bt._aspect <= maxi:
                     bullet.discard()
             bp.ontouch(destroy, when=lambda o: o is not self.rocket)
-            world.launch(lambda: vanish(bullet, 0.5, 1))
+            world.launch(lambda: fade(bullet, 0.5, 1, callback=bullet.discard))
         self._shoot = shoot
         self._shoot_delay = 0
 
@@ -265,10 +324,10 @@ class player():
             self._ad = 1
             world.launch(lambda: asteroid(self.rocket))
             
-        self.camfollow(t.x+t.xc(), t.y-t.yc())
+        self.camfollow(t.x+t.xc(), t.y-t.yc(), 5)
         if hasattr(self.info, 'transform'):
             self.info.transform.x, self.info.transform.y = 0+scene.camx, 0+scene.camy
-        p.avel = p.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*self.rocket.physics.mass
+        p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*self.rocket.physics.mass
 
         if dinfo is not None:
             dinfo.clear()
@@ -276,23 +335,39 @@ class player():
 
 class background():
     def start(self):
-        self.limit = 15
+        self.density = 0.08
         self.s = []
-    def update(self, scene, session):
-        l = 0
-        for s in list(self.s):
-            if abs(s.transform.x-scene.camx) > scene.dimx or abs(s.transform.y-scene.camy) > scene.dimy:
-                self.s.remove(s)
-                s.discard()
-                continue
-            l += 1
-        if l >= self.limit: return
-        c = lambda *args, **kwargs: scene.obj().create(*args, **kwargs)
-        r = random.randrange
+        self._per = 0
+
+    def _spawn(self, scene, session, world, x, y):
+        r = random.random
         st = session.style
-        while l < self.limit:
-            self.s.append(c(st('★', alpha=r(4, 9)/10), r(0, scene.dimx)+scene.camx, -r(0, scene.dimy)+scene.camy))
-            l += 1
+        alpha = round(r() * 0.5 + 0.4, 1)
+        text = st('★', alpha=alpha)
+        star = scene.obj().create(text, x=x, y=y)
+        world.launch(lambda: fade(star, 0, 0.3, alpha, 1, lambda: world.launch(lambda: fade(star, 1, 1, alpha, 1, star.discard)), True))
+        star.ondiscard(lambda: self.s.remove(star) if star in self.s else None)
+        self.s.append(star)
+
+    def update(self, scene, session, world):
+        for s in list(self.s):
+            if abs(s.transform.x - scene.camx) > scene.dimx or abs(s.transform.y - scene.camy) > scene.dimy:
+                s.discard()
+
+        limit = int(scene.dimx * scene.dimy * self.density)
+        current = len(self.s)
+        if current >= limit:
+            return
+
+        self._per -= 1 / scene.framerate
+        if self._per > 0:
+            return
+        self._per = 0.005 + (current / limit) * 0.05
+
+        r = random.random
+        self._spawn(scene, session, world,
+                    x=scene.camx + r() * scene.dimx,
+                    y=scene.camy - r() * scene.dimy)
         
 
 def d():
