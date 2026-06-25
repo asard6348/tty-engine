@@ -86,7 +86,7 @@ def debug(debugger=None, dinfo=None, title=None, back=False):
         try:
             while True:
                 if proc is not None:
-                    lines = "".join(dinfo).split("\n")
+                    lines = "".join(repr(str(dinfo))).split("\n")
                     out = "\033[H"
                     for line in lines:
                         out += line + "\033[K\n"

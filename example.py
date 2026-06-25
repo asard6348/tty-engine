@@ -9,7 +9,7 @@ def dev(Session=Session): #DEBUG
     import sys
 
     #TITLE
-    sys.stdout.write(f"\033]0;Test\007")
+    sys.stdout.write(f"\033]0;TTY Simulator\007")
     sys.stdout.flush()
     #DEBUGGER
     #from ttyengine.debugger import debug
@@ -17,7 +17,7 @@ def dev(Session=Session): #DEBUG
 
     #SCENE BEHAVIOURS
     class explode():
-        def __init__(self, scene, x,y,radius=25,force=100,timer=0.5):
+        def __init__(self, scene, x,y,radius=25,force=200,timer=0.5):
             self.pos = (x,y)
             self.bomb = scene.obj().create(x=x, y=y, exradius=radius, exforce=force) # bomb
             self.bomb.explosion.explode()
@@ -47,7 +47,7 @@ def dev(Session=Session): #DEBUG
             self.plrmaxspeed = 10
             self.plrspeedfriction = 0.9
             self.plrjumppower = 10
-            self.camrange = 1
+            self.camrange = 5
             self.camspeed = 5
             self.void = -100
         
@@ -57,12 +57,12 @@ def dev(Session=Session): #DEBUG
             inp = self.session.inp
             style = self.session.style
             sc.bgcolor = (255,255,255)
-            #sc.gravity = (0,0)
+            sc.gravity = (0,0)
             obj = sc.obj
             self.tarx = 0
             self.tary = 0
 
-            self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True)
+            '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
                             )
             self.plr = obj().create(plrtext,0,0,hitbox=True,renderspaces=False)
@@ -84,7 +84,8 @@ def dev(Session=Session): #DEBUG
             ip=20
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
-                ip+=20
+                ip+=20'''
+            
             if not hasattr(self, 'plr'): self.plr = None
 
             self.pen = obj().create(penchar='█')
@@ -104,7 +105,7 @@ def dev(Session=Session): #DEBUG
             inp.onmouse('click', on_click_pen)
             inp.onmouse('release', on_release_pen)
 
-            self.push = sc.obj().create(exradius=20, exforce=100, show=False)
+            self.push = sc.obj().create(exradius=40, exforce=60, show=False)
             self.push.transform.text = self.push.explosion.circle(5, style('X', 'red'))
 
             def onpress(): # key press events
@@ -142,17 +143,17 @@ def dev(Session=Session): #DEBUG
                     return inp.held(but)
                 if(k('e')):
                     self.plr.physics.avel += 1
-                #if(k('w')):
-                    #gobj.camy+=0.1
+                if(k('w')):
+                    self.tary += self.camspeed/2
                     #if self.plr: self.plr.yvel += self.plrspeed if abs(self.plr.yvel) < self.plrmaxspeed else 0
-                #if(k('s')):
-                    #gobj.camy-=0.1
+                if(k('s')):
+                    self.tary += -self.camspeed/2
                     #if self.plr: self.plr.yvel += -self.plrspeed if abs(self.plr.xvel) < self.plrmaxspeed else 0
                 if(k('d')):
-                    #gobj.camx+=0.1
+                    self.tarx += self.camspeed
                     if self.plr: self.plr.physics.xvel += self.plrspeed if abs(self.plr.physics.xvel) < self.plrmaxspeed else 0
                 if(k('a')):
-                    #gobj.camx-=0.1
+                    self.tarx += -self.camspeed
                     if self.plr: self.plr.physics.xvel += -self.plrspeed if abs(self.plr.physics.xvel) < self.plrmaxspeed else 0
                 if(k('c')):
                     mx, my = inp.mouse
@@ -171,7 +172,7 @@ def dev(Session=Session): #DEBUG
             whilepressed()
             
             for o in self.scene.objs:
-                if(o.transform.y<self.void):
+                if(hasattr(o, 'physics') and o.transform.y<self.void):
                     o.transform.y=0;o.transform.x=0
             if self.plr:
                 self.plr.physics.xvel *= self.plrspeedfriction
