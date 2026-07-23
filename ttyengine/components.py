@@ -739,7 +739,10 @@ class rendering():
     _required = [transform]
     _default = True
     def on_discard(self):
-        self.remove()
+        #self.remove()
+        for other in self.scene.objs:
+            if hasattr(other, 'rendering'):
+                other.rendering._markdirty()
 
     def __init__(self, obj, **kwargs):
         self.t = obj.transform
@@ -1130,7 +1133,7 @@ class physics(_change_callback):
     def collides(self, objs, x=None, y=None, text=None):
         pixels1 = self.getpixels(x, y, text)
         if not pixels1:
-            return False, {}
+            return {}
 
         # bbox of self for fast rejection
         p1_xs = [p[0] for p in pixels1]
@@ -1159,7 +1162,7 @@ class physics(_change_callback):
                 result[obj2] = intersection
                 if not self.phantom:
                     break
-        return bool(result), result
+        return result
 
     def armratio(self, points, o, pos=None):
         xi = [p[0] for p in points]
@@ -1197,7 +1200,7 @@ class physics(_change_callback):
             while ch > 0: # step
                 step = min(self.scene.precision, ch)
                 t = {a: self.t[a] + c * step}
-                hit, collisions = self.collides(self.scene.solids, **t)
+                collisions = self.collides(self.scene.solids, **t)
 
                 # phantom: full sweep for callbacks
                 if self.phantom:
@@ -1265,8 +1268,8 @@ class physics(_change_callback):
                 ch -= step
 
         # depenetration
-        hit, cols = self.collides(self.scene.solids)
-        if self.solid and hit and not self.phantom:
+        cols = self.collides(self.scene.solids)
+        if self.solid and cols and not self.phantom:
             non_phantom = {o: px for o, px in cols.items() if not o.physics.phantom}
             if non_phantom:
                 all_inter = set()
@@ -1286,8 +1289,8 @@ class physics(_change_callback):
 
         self.avel *= self.scene.drag # rotation
         self.t.rotation += self.avel / actualmass
-        hit, cols = self.collides(self.scene.solids)
-        if hit and self.solid and not self.phantom:
+        cols = self.collides(self.scene.solids)
+        if cols and self.solid and not self.phantom:
             non_phantom = {o: px for o, px in cols.items() if not o.physics.phantom}
             if non_phantom:
                 obj2 = next(iter(non_phantom))
@@ -1299,7 +1302,7 @@ class physics(_change_callback):
                 self.t.x += self.xvel / actualmass
                 self.t.y += self.yvel / actualmass
                 self.t.rotation += self.avel / actualmass
-                if self.collides(self.scene.solids)[0] and self.solid: # slide
+                if self.collides(self.scene.solids) and self.solid: # slide
                     self.t.x -= orx / actualmass
                     self.t.y -= ory / actualmass
                     self.t.rotation -= self.avel / actualmass

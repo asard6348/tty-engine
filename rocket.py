@@ -4,25 +4,32 @@ from ttyengine.debugger import debug
 dinfo = None
 #_d, dinfo = debug()
 
+lost = False
+plr = None
+
 ginfo = [0, 0]
 class ginf():
     def upd(self):
+        global lost
         sc = self.scene
         style = self.style
         new_txt = f'SHOTS :   {ginfo[0]}       HITS :   {ginfo[1]}'
-        if new_txt != self._last_txt:
+        if new_txt != self._last_txt or self._lost != lost:
             self._last_txt = new_txt
-            self.info.create(style(new_txt, color='darkorange', size=1, width=500))
+            self.info.create(style(new_txt, color='darkorange', alpha=0.5 if lost else 1, size=1, width=500), z=5)
         t = self.info.transform
         t.x = sc.camx + sc.iround((sc.dimx - t.xlen()) / 2)
         t.y = sc.camy - sc.dimy + t.ylen()
     def start(self, scene, session):
+        global lost
         self.scene = scene
         self.style = session.style
         self.info = scene.obj()
         self._last_txt = None
+        self._lost = lost
     def final(self, scene, handle):
         if len(ginfo) < 2:
+            self.info.discard()
             handle.cancel()
             return
         self.upd()
@@ -57,6 +64,7 @@ class fade():
                 p._fadeprogress = self.obj._fadeprogress
                 world.launch(lambda: fade(p, self.delay, self._st, self.alpha, self.bgalpha, self.cb, self.appear))
         self.t.onsplit(inh)
+        self.lerp(self.obj._fadeprogress)
     def lerp(self, progress, init=False):
         progress = 1-progress if self.appear else progress
         if not init:
@@ -95,7 +103,7 @@ class explode():
         self.exp = explode
         self.cb = callback
     def start(self, scene):
-        self.bomb = scene.obj().create(exradius=self.radi, exforce=self.forc) # bomb
+        self.bomb = scene.obj().create(z=10, exradius=self.radi, exforce=self.forc) # bomb
         if self.exp: self.bomb.explosion.explode()
     def final(self, scene, handle, session):
         if self.delay > 0:
@@ -140,12 +148,10 @@ class flash():
         scene.bgcolor = tuple(fin)
 
 class asteroid():
-    def __init__(self, plr):
-        self.plr = plr
     def start(self, scene, handle, session, world):
         r = random.randrange
         style = session.style
-        pt = self.plr.transform
+        pt = plr.transform
         minw = 2; maxw = 10
         minh = 1; maxh = 5
         def row(): return ('█'*r(minw, maxw))
@@ -164,17 +170,29 @@ class asteroid():
         self.a.imast = True
         self.a.ast = True
         def ont(obj2, inter):
+            global lost
             if obj2.physics.phantom or hasattr(obj2, 'imast'): return
-            if obj2 == self.plr:
+            if obj2 == plr:
                 self.a.physics.offtouch(ont)
-                ginfo[1] += 1
+                if not lost: ginfo[1] += 1
                 scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True) if hasattr(self.a, 'physics') else None)
                 if hasattr(self.a, 'imast'):
                     delattr(self.a, 'imast')
                 if hasattr(self.a, 'forvanish'):
                     world.launch(lambda: fade(self.a, **self.a.forvanish))
                 handle.cancel()
-            obj2.transform.split_at(obj2.transform.tolocal(inter))
+            t = self.a.transform
+            olx,oly = t.x,t.y
+            fx,fy = t.forward(1,angle=t.aim(obj2))
+            t.x += fx
+            t.y += fy
+            intr = self.a.physics.collides(obj2)
+            intr = next(iter(intr.values()), None) if isinstance(intr, dict) else None
+            if intr:
+                for wx,wy in intr:
+                    obj2.transform.cut(wx,wy)
+            obj2.transform.split()
+            t.x,t.y = olx,oly
             for xi, yi in inter:
                 world.launch(lambda: explode(xi, yi, time=0.3, radius=15, force=50, explode=False))
                 break
@@ -183,43 +201,65 @@ class asteroid():
         try:
             t = self.a.transform
             p = self.a.physics
-            f = t.forward(0.5, 0, t.aim(self.plr))
+            f = t.forward(0.5, 0, t.aim(plr))
             p.xvel += f[0]
             p.yvel += f[1]
-        except: handle.cancel(); return
+        except:
+            if self.a:
+                self.a.discard()
+            handle.cancel()
+            return
 
 class player():
     def start(self, scene, session, world, handle):
+        global plr
         inp = session.inp
         style = session.style
         scene.gravity = (0,0)
         scene.drag = 1
+        self.smcam = 5
 
-        self.rocket = scene.obj().create(style('''
+        plr = scene.obj().create(style('''
     █    
    ███   
   ██ ██  
  ██   ██ 
 ██     ██''', color='brightblue'),dynamic=True, hitbox=False, mass=50)
-        t = self.rocket.transform
-        p = self.rocket.physics
+        t = plr.transform
+        p = plr.physics
         self.thrustspeed = 0.1*p.mass
         self.thrustmax = 3*p.mass
         self.thrustbreak = 0.9
         def swslf(ps):
+            global plr, lost, ginfo
             ac = None
             for par in ps:
                 if hasattr(par, 'physics') and (ac==None or par.physics.mass > ac.physics.mass):
                     ac = par
-            self.rocket = ac
-            if self.rocket:
-                t = self.rocket.transform
-                p = self.rocket.physics
+            for pr in [pr for pr in ps if pr != ac]:
+                if hasattr(pr, 'physics'):
+                    pr.physics.phantom = True
+            plr = ac
+            if hasattr(ac, 'physics') and ac.physics.mass<=8:
+                lost = True
+            if plr:
+                t = plr.transform
+                p = plr.physics
                 self.thrustspeed = 0.1*p.mass
                 self.thrustmax = 3*p.mass
                 self.thrustbreak = 0.9
-                self.rocket.transform.onsplit(swslf)
-            else: handle.cancel()
+                plr.transform.onsplit(swslf)
+            if not plr or lost:
+                lost = True
+                t.offsplit(swslf)
+                self.smcam = 20
+                lsinfo = scene.obj().create(style('YOU LOST!', size=3, color='black', bgcolor='red'), z=20, renderspaces=True)
+                lst = lsinfo.transform
+                lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
+                lst.y = scene.camy - scene.iround((scene.dimy) / 4) + scene.iround(lst.ylen() / 2)
+                world.launch(lambda: fade(lsinfo, 0, 2, appear=True))
+                handle.cancel()
+                return
         t.onsplit(swslf)
 
         self.camtarx = scene.camx
@@ -235,7 +275,7 @@ class player():
         self.camfollow = camfollow
         camfollow(t.x+t.xc(), t.y-t.yc())
         
-        self.info = scene.obj().create(session.style('ZOOM OUT BY "CTRL" + "-"', color='black', bgcolor='white'), renderspaces=True)
+        self.info = scene.obj().create(session.style('ZOOM OUT BY "CTRL" + "-", QUIT BY "Q", START GAME BY "F"', color='black', bgcolor='white'), renderspaces=True)
         self._ad = -1
         def onf():
             self._ad = 0
@@ -247,8 +287,8 @@ class player():
         session.inp.onpress('f', lambda e: onf(), True)
         
         def shoot():
-            t = self.rocket.transform
-            p = self.rocket.physics
+            t = plr.transform
+            p = plr.physics
             sx, sy = t.forward(t.ylen())
             spawn_x = t.x + t.xc() + sx
             spawn_y = t.y - t.yc() + sy
@@ -259,11 +299,12 @@ class player():
                 if i==0: bp.xvel += d
                 else: bp.yvel += d
             def destroy(obj2, points):
+                global lost
                 ph = obj2.physics
                 tr = obj2.transform
                 #if ph.phantom and not hasattr(obj2, 'ast'): return
                 if hasattr(obj2, 'imast'):
-                    ginfo[0] += 1
+                    if not lost: ginfo[0] += 1
                     ph.phantom = True
                     delattr(obj2, 'imast')
                 tr.cutpoints(points)
@@ -281,7 +322,7 @@ class player():
                 maxi = 1
                 if abs(bp.xvel) <= maxi and abs(bp.yvel)*1/bt._aspect <= maxi:
                     bullet.discard()
-            bp.ontouch(destroy, when=lambda o: o is not self.rocket)
+            bp.ontouch(destroy, when=lambda o: o is not plr)
             world.launch(lambda: fade(bullet, 0.5, 1, callback=bullet.discard))
         self._shoot = shoot
         self._shoot_delay = 0
@@ -290,12 +331,13 @@ class player():
         inp.onpress('q', lambda e: close(), True)
 
     def update(self, scene, session, world, handle):
-        if not hasattr(self.rocket, 'transform'):
+        global plr
+        if not hasattr(plr, 'transform'):
             handle.cancel()
             return
         inp = session.inp
-        t = self.rocket.transform
-        p = self.rocket.physics
+        t = plr.transform
+        p = plr.physics
 
         if inp.held('space'):
             p.xvel *= self.thrustbreak
@@ -322,12 +364,12 @@ class player():
             self._ad -= 1/scene.framerate
         if self._ad <= 0 and self._ad != -1:
             self._ad = 1
-            world.launch(lambda: asteroid(self.rocket))
+            world.launch(lambda: asteroid())
             
-        self.camfollow(t.x+t.xc(), t.y-t.yc(), 5)
+        self.camfollow(t.x+t.xc(), t.y-t.yc(), self.smcam)
         if hasattr(self.info, 'transform'):
             self.info.transform.x, self.info.transform.y = 0+scene.camx, 0+scene.camy
-        p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*self.rocket.physics.mass
+        p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*plr.physics.mass
 
         if dinfo is not None:
             dinfo.clear()
@@ -344,7 +386,7 @@ class background():
         st = session.style
         alpha = round(r() * 0.5 + 0.4, 1)
         text = st('★', alpha=alpha)
-        star = scene.obj().create(text, x=x, y=y)
+        star = scene.obj().create(text, x=x, y=y, z=-10)
         world.launch(lambda: fade(star, 0, 0.3, alpha, 1, lambda: world.launch(lambda: fade(star, 1, 1, alpha, 1, star.discard)), True))
         star.ondiscard(lambda: self.s.remove(star) if star in self.s else None)
         self.s.append(star)

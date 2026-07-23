@@ -377,8 +377,7 @@ class Session():
                                         )
 
                         for idx, world in enumerate(itworlds):
-                            objs = sorted(world.scene.objs, key=lambda ko: ko.rendering.z if hasattr(ko, 'rendering') else 0)
-                            for o in list(objs):
+                            for o in list(world.scene.objs):
                                 if hasattr(o, 'physics'):
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
@@ -402,6 +401,7 @@ class Session():
                                 for w in self.worlds
                                 if not w.pause and getattr(w, 'layer', 0) > world_layer
                             ]
+                            objs = sorted(world.scene.objs, key=lambda ko: ko.rendering.z if hasattr(ko, 'rendering') else 0)
                             for o in list(objs):
                                 if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:

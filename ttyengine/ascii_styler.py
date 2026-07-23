@@ -16,7 +16,7 @@ RGB_MAP = {
     "purple": (128, 0, 128),
     "violet": (238, 130, 238),
     "magenta": (188, 63, 188),
-    "pink": (255, 105, 180), # 13 colors
+    "pink": (255, 105, 180),
     "brightred": (241, 76, 76),
     "brightorange": (255, 200, 0),
     "brightbrown": (205, 133, 63),
@@ -29,7 +29,7 @@ RGB_MAP = {
     "brightpurple": (191, 0, 191),
     "brightviolet": (255, 170, 255),
     "brightmagenta": (214, 112, 214),
-    "brightpink": (255, 182, 193), # 13 bright colors
+    "brightpink": (255, 182, 193),
     "darkred": (139, 0, 0),
     "darkorange": (255, 140, 0),
     "darkbrown": (60, 30, 10),
@@ -42,7 +42,7 @@ RGB_MAP = {
     "darkpurple": (75, 0, 130),
     "darkviolet": (148, 0, 211),
     "darkmagenta": (139, 0, 139),
-    "darkpink": (231, 84, 128), # 13 dark colors
+    "darkpink": (231, 84, 128),
     "black": (0, 0, 0),
     "darkgray": (64, 64, 64),
     "brightblack": (102, 102, 102),
@@ -50,19 +50,17 @@ RGB_MAP = {
     "brightgray": (192, 192, 192),
     "default": (204, 204, 204),
     "bright": (229, 229, 229),
-    "white": (255, 255, 255), # 8 gray scale colors
+    "white": (255, 255, 255),
 }
 
 SIZE_MAP = {
     1: "standard", 2: "big", 3: "slant", 4: "doom", 5: "bubble",
 }
 
-
-
 bg = (0,0,0)
 fg = RGB_MAP["default"]
-bgrecomp = re.compile(r'\033\[48;2;(\d+);(\d+);(\d+)m')
-fgrecomp = re.compile(r'\033\[38;2;(\d+);(\d+);(\d+)m')
+bgrecomp = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
+fgrecomp = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 recomp = re.compile(r'\x1b\[[0-9;]*m')
 _figlet_cache = {}
 
@@ -99,13 +97,16 @@ def rgb(color):
     return None
 
 def getcolor(text:str, back=False):
+    target = "\033[48;2;" if back else "\033[38;2;"
+    if target not in text:
+        return (bg if back else fg), ""
     matches = list(bgrecomp.finditer(text) if back else fgrecomp.finditer(text))
     tupl = tuple(int(x) for x in matches[-1].groups()) if matches else (bg if back else fg)
     color = matches[-1].group(0) if matches else ""
     return tupl, color
 
 def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
-          bgalpha=None, bg=bg, fg=fg, onbg=False, reset=True, clean=None):
+          bgalpha=None, bg=bg, fg=fg, onbg=False, reset=True, clean=False):
 
     bg_rgb  = rgb(bg)  or bg
     fg_rgb  = rgb(fg)  or fg
@@ -135,8 +136,6 @@ def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
         _alpha = alpha if alpha is not None else 1.0
         if color_rgb is None:
             color_rgb, match_color = getcolor(text)
-            if not clean:
-                clean = True
         activebg_rgb = bg_rgb if onbg else bgcolor_rgb
         r = int(activebg_rgb[0] * (1 - _alpha) + color_rgb[0] * _alpha)
         g = int(activebg_rgb[1] * (1 - _alpha) + color_rgb[1] * _alpha)
@@ -161,17 +160,14 @@ def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
             ascii_art = fig.renderText(ascii_art)
 
     prefix = ansi_bgcolor + ansi_color
-    if prefix:
-        suffix = "\033[0m" if reset else ""
-        trailing = '\n' if ascii_art.endswith('\n') else ''
-        lines = ascii_art.split('\n')
-        while lines and not lines[-1].strip():
-            lines.pop()
-        styled_text = '\n'.join(prefix + line.rstrip() + suffix for line in lines) + trailing
-    else:
-        styled_text = ascii_art
-        if reset:
-            styled_text += "\033[0m"
+    suffix = "\033[0m" if reset else ""
+    trailing = '\n' if ascii_art.endswith('\n') else ''
+    
+    lines = ascii_art.split('\n')
+    while lines and not lines[-1].strip():
+        lines.pop()
+        
+    styled_text = '\n'.join(prefix + line.rstrip() + suffix for line in lines) + trailing
 
     return styled_text
 

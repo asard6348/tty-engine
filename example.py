@@ -48,7 +48,7 @@ def dev(Session=Session): #DEBUG
             self.plrspeedfriction = 0.9
             self.plrjumppower = 10
             self.camrange = 5
-            self.camspeed = 5
+            self.camspeed = 0.7
             self.void = -100
         
         def start(self):    #START
@@ -57,7 +57,7 @@ def dev(Session=Session): #DEBUG
             inp = self.session.inp
             style = self.session.style
             #sc.bgcolor = (255,255,255)
-            sc.gravity = (0,0)
+            sc.gravity = (0,0)#-0.05)
             obj = sc.obj
             self.tarx = sc.dimx/2
             self.tary = -sc.dimy/2
@@ -84,7 +84,7 @@ def dev(Session=Session): #DEBUG
             ip=20
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
-                ip+=20'''
+                ip+=20
 
             c = {'g': style("█",(24,30,24),reset=False)*2,
                  'dp': style("█",(143,8,112),reset=False)*2,
@@ -134,7 +134,7 @@ def dev(Session=Session): #DEBUG
 {c['g']*8}{c['y']*2}
 {c['y']}{c['g']*4}{c['y']*3}
   {c['y']*4}
-""", 'default'),dynamic=True)
+"""),dynamic=True)'''
             
             if not hasattr(self, 'plr'): self.plr = None
 
@@ -187,6 +187,7 @@ def dev(Session=Session): #DEBUG
         def update(self):   #UPDATE
             sc = self.scene
             inp = self.session.inp
+            cmspeed = self.camspeed*((sc.dimx+sc.dimy)/100)
             
             def whilepressed(): # key hold events
                 def k(but):
@@ -194,16 +195,16 @@ def dev(Session=Session): #DEBUG
                 if(k('e')):
                     self.plr.physics.avel += 1
                 if(k('w')):
-                    self.tary += self.camspeed/2
+                    self.tary += cmspeed/2
                     #if self.plr: self.plr.yvel += self.plrspeed if abs(self.plr.yvel) < self.plrmaxspeed else 0
                 if(k('s')):
-                    self.tary += -self.camspeed/2
+                    self.tary += -cmspeed/2
                     #if self.plr: self.plr.yvel += -self.plrspeed if abs(self.plr.xvel) < self.plrmaxspeed else 0
                 if(k('d')):
-                    self.tarx += self.camspeed
+                    self.tarx += cmspeed
                     if self.plr: self.plr.physics.xvel += self.plrspeed if abs(self.plr.physics.xvel) < self.plrmaxspeed else 0
                 if(k('a')):
-                    self.tarx += -self.camspeed
+                    self.tarx += -cmspeed
                     if self.plr: self.plr.physics.xvel += -self.plrspeed if abs(self.plr.physics.xvel) < self.plrmaxspeed else 0
                 if(k('c')):
                     mx, my = inp.mouse
