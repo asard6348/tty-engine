@@ -1,6 +1,6 @@
 import sys, re, os, threading, time
 from collections import defaultdict
-from ._vendor import keyboard
+import keyboard
 
 _WINDOWS = sys.platform == 'win32'
 if _WINDOWS:

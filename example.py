@@ -56,11 +56,11 @@ def dev(Session=Session): #DEBUG
             world = self.world
             inp = self.session.inp
             style = self.session.style
-            sc.bgcolor = (255,255,255)
+            #sc.bgcolor = (255,255,255)
             sc.gravity = (0,0)
             obj = sc.obj
-            self.tarx = 0
-            self.tary = 0
+            self.tarx = sc.dimx/2
+            self.tary = -sc.dimy/2
 
             '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
@@ -85,6 +85,56 @@ def dev(Session=Session): #DEBUG
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
                 ip+=20'''
+
+            c = {'g': style("█",(24,30,24),reset=False)*2,
+                 'dp': style("█",(143,8,112),reset=False)*2,
+                 'w': style("█",'white',reset=False)*2,
+                 'v': style("█",(161,50,201),reset=False)*2,
+                 'dv': style("█",'darkpurple',reset=False)*2,
+                 'p': style("█",(255,143,225),reset=False)*2,
+                 'y': style("█",'brightorange',reset=False)*2,}
+            self.art = obj().create(style(f"""
+                      {c['g']}                                          {c['g']}
+                      {c['g']*2}        {c['g']*7}                {c['g']*2}
+                      {c['g']}{c['dp']}{c['g']*4}{c['dp']*7}{c['g']*3}      {c['g']*2}{c['dp']}{c['g']}
+                        {c['g']}{c['dp']*2}{c['g']}{c['dp']*7}{c['g']}{c['dp']*3}{c['g']*3}{c['dp']*3}{c['g']*3}
+                  {c['g']*5}{c['dp']*10}{c['g']*2}{c['dp']*9}{c['g']}
+                  {c['g']}{c['dp']*16}{c['g']*2}{c['dp']*6}{c['g']}
+                    {c['g']*2}{c['dp']*6}{c['g']*4}{c['dp']*6}{c['g']}{c['dp']*5}{c['g']}
+                    {c['g']}{c['dp']*6}{c['g']}{c['w']*4}{c['g']*2}{c['dp']*3}{c['g']*2}{c['dp']*4}{c['g']}
+                  {c['g']}{c['dp']*6}{c['g']}{c['w']*6}{c['g']*5}{c['dp']*4}{c['g']*2}
+                {c['g']*3}{c['dp']*3}{c['g']*3}{c['w']*2}{c['g']}{c['w']*3}{c['g']*3}{c['dp']*8}{c['g']*2}  {c['g']*2}
+                      {c['g']*6}{c['w']*6}{c['g']}{c['dp']*11}{c['g']*2}{c['p']}{c['g']*3}
+                        {c['g']}{c['p']}{c['dp']}{c['g']*3}{c['w']*4}{c['v']}{c['g']}{c['dp']*5}{c['g']}{c['dp']*2}{c['g']*4}{c['v']}{c['p']}{c['v']}{c['p']}{c['g']}
+                      {c['g']}{c['p']*6}{c['v']*4}{c['p']}{c['g']}{c['dp']*5}{c['g']*6}{c['p']*2}{c['v']}{c['p']*2}{c['g']}
+                      {c['g']}{c['p']}{c['dp']}{c['p']*9}{c['g']}{c['dp']*4}{c['g']}{c['v']}{c['p']}{c['v']}{c['g']}{c['y']}{c['g']}{c['v']}{c['p']*3}{c['g']}
+                      {c['g']}{c['p']*9}{c['v']}{c['g']*2}{c['dp']*4}{c['g']}{c['p']*3}{c['g']*4}{c['p']*2}{c['g']*2}
+                        {c['g']}{c['p']*5}{c['v']}{c['g']*5}{c['dp']*4}{c['g']}{c['p']*3}{c['v']}{c['g']*3}{c['p']*4}{c['g']}
+                          {c['g']*7}{c['v']*2}{c['g']*3}{c['dp']*3}{c['g']}{c['p']*3}{c['v']}{c['g']}{c['y']}{c['g']*6}
+                        {c['g']}{c['p']}{c['g']*11}{c['dp']*2}{c['g']}{c['v']*3}{c['g']*5}
+                    {c['g']*2}{c['p']}{c['v']*2}{c['g']*4}{c['p']*3}{c['g']*3}{c['dp']*2}{c['g']}{c['v']}{c['g']*2}
+                  {c['g']}{c['p']*5}{c['g']}{c['y']}{c['g']}{c['p']*2}{c['v']}{c['g']*4}{c['dp']*2}{c['g']*2}
+                {c['g']}{c['p']*6}{c['g']*3}{c['p']*3}{c['v']}{c['g']*4}{c['dp']}{c['g']}
+                {c['g']}{c['p']*5}{c['g']}{c['y']}{c['g']}{c['p']*5}{c['g']}{c['v']}{c['g']*4}
+              {c['g']*3}{c['p']*4}{c['g']*3}{c['p']*3}{c['g']*3}{c['v']}{c['g']}
+          {c['g']*6}{c['v']*3}{c['g']*3}{c['p']}{c['v']}{c['g']}{c['dv']*2}{c['g']*2}
+    {c['g']*13}{c['y']}{c['g']*3}{c['y']}{c['g']}{c['y']}{c['g']*2}
+      {c['g']}{c['v']}{c['g']*14}{c['y']*2}{c['g']*5}
+        {c['g']}{c['v']*3}{c['g']*4}{c['v']*3}{c['g']}{c['dv']}{c['dp']}{c['g']*3}{c['dp']*4}{c['g']*2}
+          {c['g']*3}{c['v']*4}{c['g']*3}{c['dp']*11}{c['g']}
+              {c['g']*5}{c['dv']}{c['dp']*5}{c['g']*2}{c['dp']*6}{c['g']}
+                {c['g']}{c['dp']*7}{c['g']*2}{c['dp']*7}{c['dv']}{c['g']}
+              {c['g']*2}{c['dp']*7}{c['g']}  {c['g']}{c['dp']*6}{c['g']}
+              {c['g']*4}{c['dp']*3}{c['dv']}{c['g']}    {c['g']*7}
+            {c['g']*9}    {c['g']*8}
+        {c['g']*9}      {c['g']*8}
+      {c['g']*7}            {c['g']*10}
+  {c['g']*9}            {c['g']}{c['y']*2}{c['g']*8}
+{c['g']*10}                    {c['y']*6}{c['g']}
+{c['g']*8}{c['y']*2}
+{c['y']}{c['g']*4}{c['y']*3}
+  {c['y']*4}
+""", 'default'),dynamic=True)
             
             if not hasattr(self, 'plr'): self.plr = None
 
@@ -93,7 +143,7 @@ def dev(Session=Session): #DEBUG
             def on_click_pen(mx, my, data):
                 self.pen.pen._x = mx + sc.camx
                 self.pen.pen._y = sc.camy - my
-                self.pen.pen.down(char=style(self.pen.pen.char, color=(self.penc+13 if data==0 else 'black')))
+                self.pen.pen.down(char=style(self.pen.pen.char, ))#color=(self.penc+13 if data==0 else 'black')))
                 self.penc = 0 if self.penc >= 13 else self.penc + 1
                 if data == 2:
                     self.pen.pen.cancel()

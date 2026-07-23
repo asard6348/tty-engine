@@ -59,7 +59,7 @@ def latency(samples=1000): # os task latency statistic
 def attemptimports():
     global scene, Terminal, inp, style, fill
     from . import scene #scene objects module
-    from ._vendor.blessed import Terminal #blessed terminal
+    from blessed import Terminal #blessed terminal
     from .input_handler import inp #input module
     from .ascii_styler import style, fill #ascii styler callable function
 attempt(attemptimports)
@@ -377,7 +377,8 @@ class Session():
                                         )
 
                         for idx, world in enumerate(itworlds):
-                            for o in list(world.scene.objs):
+                            objs = sorted(world.scene.objs, key=lambda ko: ko.rendering.z if hasattr(ko, 'rendering') else 0)
+                            for o in list(objs):
                                 if hasattr(o, 'physics'):
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
@@ -401,7 +402,7 @@ class Session():
                                 for w in self.worlds
                                 if not w.pause and getattr(w, 'layer', 0) > world_layer
                             ]
-                            for o in list(world.scene.objs):
+                            for o in list(objs):
                                 if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:
                                         o.rendering._markdirty()

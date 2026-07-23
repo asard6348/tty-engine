@@ -168,7 +168,7 @@ class asteroid():
             if obj2 == self.plr:
                 self.a.physics.offtouch(ont)
                 ginfo[1] += 1
-                scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True))
+                scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True) if hasattr(self.a, 'physics') else None)
                 if hasattr(self.a, 'imast'):
                     delattr(self.a, 'imast')
                 if hasattr(self.a, 'forvanish'):

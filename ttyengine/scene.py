@@ -50,7 +50,7 @@ class obj:
 
     def add(self, com, **kwargs):
         if isinstance(com, str):
-            comp, params = {co:pars for co, pars in _allcomps.items() if co.__name__ == com}.items()[0]
+            comp, params = {co: pars for co, pars in _allcomps.items() if co.__name__ == com}.items()[0]
         else:
             comp = com
             params = _argslen(com)
@@ -62,15 +62,19 @@ class obj:
             compins = comp()
         ow = getattr(compins, '_owned', None)
         ch = getattr(compins, '_changed', None)
-        if ow:
-            for k,v in kwargs.items():
+        
+        for k, v in kwargs.items():
+            if ow and k in ow:
                 val = getattr(compins, k, None)
-                if k in ow and val == v:
+                if val == v:
                     if not ch:
-                        compins._changed = {k:v}
+                        compins._changed = {k: v}
                         ch = compins._changed
                     else:
-                        ch.update({k:v})
+                        ch.update({k: v})
+            elif not ow or k not in ow:
+                setattr(self, k, v)
+
         compinsattr = comp.__name__
         setattr(self, compinsattr, compins)
         return compins
@@ -81,15 +85,17 @@ class obj:
             c = getattr(self, c) if isinstance(c, str) else getattr(self, c.__name__) if inspect.isclass(c) else c
             ow = getattr(c, '_owned', None)
             ch = getattr(c, '_changed', None)
-            for k,v in kwargs.items():
+            for k, v in kwargs.items():
                 if (ow and k in ow) or (not ow and hasattr(c, k)):
                     setattr(c, k, v)
                     if ow and k in ow:
                         if not ch:
-                            c._changed = {k:v}
+                            c._changed = {k: v}
                             ch = c._changed
                         else:
-                            ch.update({k:v})
+                            ch.update({k: v})
+                else:
+                    setattr(self, k, v)
 
     def kwargs(self):
         result = {}
@@ -105,7 +111,7 @@ class obj:
         return self.scene.obj().create(**kwargs)
 
     def create(self, text=None, x=None, y=None, **kwargs):
-        kwargs.update({k: v for k,v in {'text': text, 'x': x, 'y': y}.items() if v is not None})
+        kwargs.update({k: v for k, v in {'text': text, 'x': x, 'y': y}.items() if v is not None})
 
         for com in _defls:
             if not hasattr(self, com.__name__):
@@ -116,16 +122,20 @@ class obj:
                         else: self.set(rcom, **kwargs)
                 self.add(com, **kwargs)
             else: self.set(com, **kwargs)
-        for k in kwargs:
+
+        for k in list(kwargs.keys()):
             comp = _attrs.get(k)
-            if not hasattr(self, comp.__name__):
-                if hasattr(comp, '_required'):
-                    for rcomp in comp._required:
-                        if not hasattr(self, rcomp.__name__):
-                            self.add(rcomp, **kwargs)
-                        else: self.set(rcomp, **kwargs)
-                self.add(comp, **kwargs)
-            else: self.set(comp, **kwargs)
+            if comp:
+                if not hasattr(self, comp.__name__):
+                    if hasattr(comp, '_required'):
+                        for rcomp in comp._required:
+                            if not hasattr(self, rcomp.__name__):
+                                self.add(rcomp, **kwargs)
+                            else: self.set(rcomp, **kwargs)
+                    self.add(comp, **kwargs)
+                else: self.set(comp, **kwargs)
+            else:
+                setattr(self, k, kwargs[k])
 
         if not self in self.scene.objs:
             self.scene.objs.append(self)
@@ -183,6 +193,8 @@ class Scene:
         self._camy = 0
         self._bgcolor = (0, 0, 0)
         self.recomp = re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07?|\x1b[()]?[A-Za-z0-9])')
+        self._lastz = 0
+        self._firstz = 0
 
     @property
     def dimx(self):

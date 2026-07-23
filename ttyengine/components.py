@@ -96,6 +96,7 @@ class transform(_change_callback):
         'text', 'rtext', 'htext',
         'vtext', 'vrtext', 'vhtext',
         'rotation',
+        'aspect',
     ]
     _default = True
 
@@ -116,7 +117,7 @@ class transform(_change_callback):
         self._htext = ctext
         self._rotation = kwargs.get('rotation', 0)
         self._rot_cache_angle = None
-        self._aspect = 0.5
+        self.aspect = kwargs.get('aspect', 0.5)
         self._onsplit = {}
         self._xlen_cache = None
         self._ylen_cache = None
@@ -327,7 +328,7 @@ class transform(_change_callback):
             new_pixels = {}
             for (x, y), (char, style) in self.parse_pixels(txt).items():
                 rel_x, rel_y = x - cx, y - cy
-                ASPECT = self._aspect
+                ASPECT = self.aspect
                 rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
                 ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
                 nx = int(round(rx_n / ASPECT + cx))
@@ -369,7 +370,7 @@ class transform(_change_callback):
         angle = math.radians(self._rotation)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
-        ASPECT = self._aspect
+        ASPECT = self.aspect
         rot_positions = {}
         for ri, row in enumerate(crows):
             for ci, char in enumerate(row):
@@ -413,7 +414,7 @@ class transform(_change_callback):
         angle = math.radians(self._rotation)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
-        ASPECT = self._aspect
+        ASPECT = self.aspect
         rel_x = ci - cx_r
         rel_y = ri - cy_r
         rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
@@ -467,7 +468,7 @@ class transform(_change_callback):
         angle = math.radians(self._rotation)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
-        ASPECT = self._aspect
+        ASPECT = self.aspect
         ox = round(self._x + self.vx)
         oy = round(self._y + self.vy)
 
@@ -716,13 +717,13 @@ class transform(_change_callback):
     def forward(self, move=1, offset=0, angle=None):
         angle = math.radians((self._rotation if angle is None else angle) + offset)
         x = math.sin(angle) * move
-        y = math.cos(angle) * self._aspect * move
+        y = math.cos(angle) * self.aspect * move
         return (x, y)
 
     def point(self, tx, ty, offset=0):
         dx = tx - self._x
         dy = ty - self._y
-        ASPECT = self._aspect
+        ASPECT = self.aspect
         angle = math.degrees(math.atan2(-dy, dx * ASPECT))+90
         return angle + offset
 
@@ -734,7 +735,7 @@ class transform(_change_callback):
     
 
 class rendering():
-    _owned = ['show', 'renderspaces']
+    _owned = ['show', 'renderspaces', 'z']
     _required = [transform]
     _default = True
     def on_discard(self):
@@ -750,6 +751,7 @@ class rendering():
         self.pyoff = 0
         self._show = kwargs.get('show', True)
         self.renderspaces = kwargs.get('renderspaces', False)
+        self.z = kwargs.get('z', 0)
         self._dirty = True
         self.t.onchange(self._markdirty)
 
@@ -762,8 +764,24 @@ class rendering():
         self._show = value
         self._markdirty()
 
+    @property
+    def z(self):
+        return self._z
+
+    @z.setter
+    def z(self, value):
+        self._z = value
+        if self._z > self.scene._lastz: self.scene._lastz = self._z
+        if self._z < self.scene._firstz: self.scene._firstz = self._z
+
     def _markdirty(self):
         self._dirty = True
+
+    def front(self):
+        self.z = self.scene._lastz +1
+
+    def back(self):
+        self.z = self.scene._firstz -1
 
     def crop_row(self, row, start, end, renderspaces=False):
         bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
@@ -987,7 +1005,7 @@ class physics(_change_callback):
         self.t = obj.transform
         self.scene = obj.scene
         self._axises = ('x', 'y')
-        self._aspect = (1, self.t._aspect)
+        self.aspect = (1, self.t.aspect)
         self._xvel = kwargs.get('xvel', 0)
         self._yvel = kwargs.get('yvel', 0)
         self._avel = kwargs.get('avel', 0)
@@ -1160,7 +1178,7 @@ class physics(_change_callback):
 
     def physics(self, axises=None, aspect=None):
         axises = self._axises if axises is None else axises
-        aspect = self._aspect if aspect is None else aspect
+        aspect = self.aspect if aspect is None else aspect
         self._dirty()
         actualmass = self.mass
 
@@ -1370,7 +1388,7 @@ class pen():
         self._rebuild()
 
     def _line(self, x0, y0, x1, y1):
-        ASPECT = 1/self.obj.transform._aspect
+        ASPECT = 1/self.obj.transform.aspect
         dx = abs(x1 - x0)
         dy = abs(y1 - y0) * ASPECT
         steps = max(int(max(dx, dy)), 1)
@@ -1457,7 +1475,7 @@ class explosion():
         self.force = kwargs.get('exforce', 5)
 
     def circle(self, radius, char='o'):
-        rx = round(radius * (1/self.t._aspect))
+        rx = round(radius * (1/self.t.aspect))
         ry = round(radius)
         if rx<1 or ry<1:
             return char
@@ -1486,7 +1504,7 @@ class explosion():
             oy = o.transform.y - o.transform.yc()
             dx = ox - ex
             dy = oy - ey
-            ASPECT = self.t._aspect
+            ASPECT = self.t.aspect
             dist = math.sqrt((dx * ASPECT) ** 2 + dy ** 2)
             if dist > r or dist == 0:
                 continue
