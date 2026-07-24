@@ -834,9 +834,11 @@ class rendering():
         return result
 
     def render_rows(self, text, ox, oy, xoff, yoff, erase=False, exclude_rects=None):
-        bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
-                   f'{self.scene.bgcolor[1]};'
-                   f'{self.scene.bgcolor[2]}m')
+        bgcolor = None
+        if not erase:
+            bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
+                       f'{self.scene.bgcolor[1]};'
+                       f'{self.scene.bgcolor[2]}m')
         out  = ''
         term_w     = self.scene.termx
         term_h     = self.scene.termy
