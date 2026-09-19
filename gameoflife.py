@@ -1,8 +1,9 @@
-from ttyengine import launcher
+from ttyengine import launcher, debugger
 import time
 
 ses = launcher.Session()
 wor = ses.World()
+#_d,dinfo = debugger.debug()
 
 class main:
     def start(self, scene, session):
@@ -11,13 +12,13 @@ class main:
         st = session.style
         self.scene = scene
         self.st = st
-        self.startup = o().create('\n\nMove with WASD keys. Change FPS by E/Q. Pause with SPACE. Click to toggle cell.')
+        self.startup = o().create('\n\nMove with WASD keys. Change FPS by E/Q. Pause with SPACE. Click to toggle cell.', z=20)
         self.pause = True
         
         self.pixels = {}
 
         def pix(mx, my, data):
-            wx = int(mx + scene.camx) // 2 * 2
+            wx = ((mx + ((scene.camx+0.5)//2*2))+0.5) // 2 * 2
             wy = scene.iround(-my + scene.camy)
             
             pos = (wx, wy)
@@ -25,7 +26,7 @@ class main:
                 self.pixels[pos].discard()
                 del self.pixels[pos]
             else:
-                self.pixels[pos] = o().create(st('██', 'orange'), wx, wy, rotation=0, z=10, aspect=1, dynamic=False)
+                self.pixels[pos] = o().create(st('██', 'orange'), wx, wy, rotation=0, z=10, aspect=1)
 
             if self.startup:
                 self.startup.discard()
@@ -33,20 +34,21 @@ class main:
 
         inp.onmouse('click', pix)
 
-        def pas(e):
+        def pas():
             self.pause = not self.pause
         inp.onpress('space', pas)
+        inp.onpress('q', exit)
 
         self.infobj = o().create()
         self.steps = 0
-        scene.framerate = 20
+        scene.framerate = 30
         self.last_step = time.time()
 
-        self.datobj = o().create('FPS: '+str(scene.framerate), scene.camx+4, scene.camy)
+        self.datobj = o().create('FPS: ' + str(int(scene.framerate)) + ('  PAUSED' if self.pause else ''), scene.camx+4, scene.camy, z=20)
 
     def final(self, scene, session):
         inp = session.inp
-        camspeed = (60 / max(1, scene.framerate)) * 0.5 * ((len(self.pixels) + 10) / 100)*((scene.dimx+scene.dimy)/100)
+        camspeed = (60 / max(1, scene.framerate)) * 0.15 *((scene.dimx+scene.dimy)/25)
         scene.camx += (inp.held('d') - inp.held('a')) * camspeed
         scene.camy += (inp.held('w') - inp.held('s')) * (camspeed * 0.5)
         
@@ -82,14 +84,14 @@ class main:
                 del self.pixels[pos]
 
             for x, y in birthing:
-                self.pixels[(x, y)] = self.scene.obj().create(self.st('██', 'orange'), x, y, rotation=0, z=10, aspect=1, dynamic=False)
+                self.pixels[(x, y)] = self.scene.obj().create(self.st('██', 'orange'), x, y, rotation=0, z=10, aspect=1)
 
             if self.pixels:
                 self.steps += 1
                 self.infobj.transform.text = str(self.steps) + ' steps.'
 
         self.infobj.transform.x, self.infobj.transform.y = scene.camx, scene.camy
-        self.datobj.create('FPS: ' + str(int(scene.framerate)), scene.camx + self.infobj.transform.xlen() + 4, scene.camy)
+        self.datobj.create('FPS: ' + str(int(scene.framerate)) + ('  PAUSED' if self.pause else ''), scene.camx + self.infobj.transform.xlen() + 4, scene.camy, z=20)
         if self.startup:
             self.startup.create(x=scene.camx, y=scene.camy)
 

@@ -1,6 +1,10 @@
-import sys, re, os, threading, time
+import sys, re, os, threading, time, inspect, traceback
 from collections import defaultdict
-import keyboard
+
+try:
+    import keyboard
+except ImportError:
+    keyboard = None
 
 _WINDOWS = sys.platform == 'win32'
 if _WINDOWS:
@@ -17,9 +21,51 @@ else:
     import fcntl
 
 
+def _accepts_arg(cb):
+    try:
+        sig = inspect.signature(cb)
+    except (TypeError, ValueError):
+        return True
+    for p in sig.parameters.values():
+        if p.kind == p.VAR_POSITIONAL:
+            return True
+    positional = [p for p in sig.parameters.values()
+                  if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 1
+
+
+class _FakeKeyEvent:
+    __slots__ = ('event_type', 'name')
+    def __init__(self, event_type, name):
+        self.event_type = event_type
+        self.name = name
+
+
+class _FallbackKeyboard:
+    def __init__(self):
+        self._cb = None
+
+    def hook(self, callback, suppress=False):
+        self._cb = callback
+        return callback
+
+    def unhook_all(self):
+        self._cb = None
+
+    def feed(self, name):
+        if self._cb:
+            self._cb(_FakeKeyEvent('down', name))
+            self._cb(_FakeKeyEvent('up', name))
+
+
+_ARROW_SEQS = {
+    '\x1b[A': 'up',    '\x1b[B': 'down',  '\x1b[C': 'right', '\x1b[D': 'left',
+    '\x1bOA': 'up',    '\x1bOB': 'down',  '\x1bOC': 'right', '\x1bOD': 'left',
+}
+
+
 class inp():
     def __init__(self, term=None, watchfocus=True, trackmotion=False):
-        self.keyboard     = keyboard
         self.lock         = threading.Lock()
         self.wf           = watchfocus
         self.track_motion = trackmotion
@@ -32,7 +78,26 @@ class inp():
         self._press_queue   = []
         self._release_queue = []
         self._pressed_keys  = set()
-        self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
+        self._kb_is_fallback = False
+        self.keyboard = None
+
+        if keyboard is not None:
+            try:
+                self.keyboard = keyboard
+                self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
+            except Exception:
+                self.keyboard = None
+
+        if self.keyboard is None:
+            self.keyboard = _FallbackKeyboard()
+            self._kb_is_fallback = True
+            self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
+            sys.stderr.write(
+                "input_handler: no low-level keyboard access (needs root on "
+                "Linux), using basic stdin-based key detection instead -- "
+                "onpress/onrelease fire normally, but held() is not reliable "
+                "in this mode.\n"
+            )
 
         # ── mouse (raw VT sequence parser) ────────────────────────────────
         self._mouse_x     = 0
@@ -98,9 +163,9 @@ class inp():
     #KEYBOARD
     def _kb_event_raw(self, event):
         with self.lock:
-            if event.event_type == keyboard.KEY_DOWN:
+            if event.event_type == 'down':
                 self._press_queue.append((event.name, event))
-            elif event.event_type == keyboard.KEY_UP:
+            elif event.event_type == 'up':
                 self._release_queue.append((event.name, event))
 
     #MOUSE
@@ -146,6 +211,12 @@ class inp():
                 self._handle_x10(ord(buf[i+3])-32, ord(buf[i+4])-33, ord(buf[i+5])-33)
                 i += 6; continue
 
+            # ── arrow keys (fallback keyboard backend only) ────────────────
+            if n - i >= 3 and buf[i:i+3] in _ARROW_SEQS:
+                if self._kb_is_fallback:
+                    self.keyboard.feed(_ARROW_SEQS[buf[i:i+3]])
+                i += 3; continue
+
             # ── focus in / out ─────────────────────────────────────────────
             if buf[i:i+3] == '\x1b[I':
                 with self.lock: self.focused = True
@@ -166,10 +237,29 @@ class inp():
                 i += 1; continue   # unknown escape, discard just the \x1b
 
             # ── everything else (keyboard chars, non-escape bytes) ────────
-            # The keyboard library handles these independently; just discard.
+            if self._kb_is_fallback:
+                name = self._char_to_keyname(buf[i])
+                if name:
+                    self.keyboard.feed(name)
             i += 1
 
         self._buf = buf[i:]
+
+    @staticmethod
+    def _char_to_keyname(ch):
+        if ch == ' ':
+            return 'space'
+        if ch in ('\r', '\n'):
+            return 'enter'
+        if ch == '\t':
+            return 'tab'
+        if ch in ('\x7f', '\x08'):
+            return 'backspace'
+        if ch == '\x1b':
+            return 'esc'
+        if ch.isprintable():
+            return ch.lower()
+        return None
 
     def _handle_sgr(self, btn, x, y, action):
         self._mouse_x, self._mouse_y = x, y
@@ -220,11 +310,19 @@ class inp():
 
         if focused:
             for key_name, event in press_q:
-                for cb in list(self._press_cbs.get(key_name, [])):
-                    cb(event)
+                for cb, accepts in list(self._press_cbs.get(key_name, [])):
+                    try:
+                        cb(event) if accepts else cb()
+                    except Exception:
+                        sys.stderr.write("input_handler: onpress callback for %r raised:\n" % key_name)
+                        traceback.print_exc()
             for key_name, event in release_q:
-                for cb in list(self._release_cbs.get(key_name, [])):
-                    cb(event)
+                for cb, accepts in list(self._release_cbs.get(key_name, [])):
+                    try:
+                        cb(event) if accepts else cb()
+                    except Exception:
+                        sys.stderr.write("input_handler: onrelease callback for %r raised:\n" % key_name)
+                        traceback.print_exc()
 
         # mouse
         self._mouse_wheel = 0
@@ -246,25 +344,27 @@ class inp():
         return list(self._pressed_keys)
 
     def onpress(self, key, callback, caps=False):
+        accepts = _accepts_arg(callback)
         if caps:
-            self._press_cbs[key.lower()].append(callback)
-            self._press_cbs[key.upper()].append(callback)
+            self._press_cbs[key.lower()].append((callback, accepts))
+            self._press_cbs[key.upper()].append((callback, accepts))
             return (key.lower(), callback, 'press'), (key.upper(), callback, 'press')
-        self._press_cbs[key].append(callback)
+        self._press_cbs[key].append((callback, accepts))
         return (key, callback, 'press')
 
-    def onrelease(self, key, callback):
+    def onrelease(self, key, callback, caps=False):
+        accepts = _accepts_arg(callback)
         if caps:
-            self._release_cbs[key.lower()].append(callback)
-            self._release_cbs[key.upper()].append(callback)
+            self._release_cbs[key.lower()].append((callback, accepts))
+            self._release_cbs[key.upper()].append((callback, accepts))
             return (key.lower(), callback, 'release'), (key.upper(), callback, 'release')
-        self._release_cbs[key].append(callback)
+        self._release_cbs[key].append((callback, accepts))
         return (key, callback, 'release')
 
     def stop(self, handle):
         key, cb, kind = handle
         target = self._press_cbs if kind == 'press' else self._release_cbs
-        target[key] = [c for c in target[key] if c is not cb]
+        target[key] = [entry for entry in target[key] if entry[0] is not cb]
 
     def stop_all(self):
         self._press_cbs.clear()

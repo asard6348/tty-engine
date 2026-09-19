@@ -3,10 +3,10 @@ from pygments import highlight
 from pygments.lexers.python import PythonConsoleLexer as TracebackLexer
 from pygments.formatters.terminal import TerminalFormatter
 
-def trace(exception, lexer=TracebackLexer, clear=True, out=sys.stdout.write, flush=sys.stdout.flush):
+def trace(exception, lexer=TracebackLexer, clear=True, out=sys.stdout.write, flush=sys.stdout.flush): # custom traceback for terminal
     try:
-        if clear and out:
-            out("\033[H\033[2J\033[3J")
+        if(clear):
+            if out: out("\033[H\033[2J\033[3J")
         if out:
             exc = highlight("".join(traceback.format_exc())+'\n', lexer(), TerminalFormatter())
             out(exc)
@@ -66,17 +66,11 @@ attempt(attemptimports)
 #WINDOWS INTIALIZATION
 def universal_init():
     if os.name == 'nt':
-        kernel32 = ctypes.windll.kernel32
-        kernel32.SetConsoleOutputCP(65001)
-        hOut = kernel32.GetStdHandle(-11)
-        outMode = ctypes.c_uint32()
-        kernel32.GetConsoleMode(hOut, ctypes.byref(outMode))
-        kernel32.SetConsoleMode(hOut, outMode.value | 0x0004 | 0x0008)
-        hIn = kernel32.GetStdHandle(-10)
-        inMode = ctypes.c_uint32()
-        kernel32.GetConsoleMode(hIn, ctypes.byref(inMode))
-        newInMode = (inMode.value | 0x0200 | 0x0080) & ~0x0040
-        kernel32.SetConsoleMode(hIn, newInMode)
+        hOut = ctypes.windll.kernel32.GetStdHandle(-11) # STD_OUTPUT_HANDLE
+        dwMode = ctypes.c_uint32()
+        ctypes.windll.kernel32.GetConsoleMode(hOut, ctypes.byref(dwMode))
+        # 0x0004 is ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        ctypes.windll.kernel32.SetConsoleMode(hOut, dwMode.value | 0x0004)
 attempt(universal_init)
     
 #WORLD CLASS
@@ -414,6 +408,8 @@ class Session():
                                         rem, draw = o.rendering.render(False, True, exclude_rects)
                                         removebuffer += rem
                                         if o.rendering.show: drawbuffer += draw
+                            removebuffer += ''.join(world.scene.discards)
+                            world.scene.discards.clear()
 
                         framebuffer = '\033[?2026h' if self.vsync else ''
                         framebuffer += removebuffer + fillbuffer + drawbuffer
@@ -430,12 +426,7 @@ class Session():
                     sleep = next_tick - now
                     if sleep > self._latency and not self._pause:
                         tar = time.perf_counter() + sleep
-                        margin = max(self._latency, 0.0005)
-                        coarse = sleep - margin
-                        if coarse > 0:
-                            time.sleep(coarse)
-                        while time.perf_counter() < tar:
-                            pass
+                        while time.perf_counter() < tar: pass
                     elif self._pause or len(self.worlds) == 0:
                         with self._resume:
                             self._resume.wait_for(lambda: not self._pause and len(self.worlds) > 0)

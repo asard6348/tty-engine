@@ -41,6 +41,7 @@ class _metainit(type):
 class _change_callback(metaclass=_metainit, init='_chinit'):
     def _chinit(self):
         self._onchangecb = {}
+        self._changing = False
         def cln():
             discarded = self.obj
             for other in self.obj.scene.objs:
@@ -62,31 +63,48 @@ class _change_callback(metaclass=_metainit, init='_chinit'):
                     old_func()
                 cln()
             self.on_discard = cln_
-            
+
     def onchange(self, cb, once=False):
         if once:
+            match_attr = once if isinstance(once, str) else None
+            l = _argslen(cb)
             fired = [False]
-            def wrapped(*args, **kwargs):
+            orig = cb
+            def wrapped(attr=None, old=None, internal=False):
                 if fired[0]: return
+                if match_attr is not None and attr != match_attr: return
                 fired[0] = True
-                self.obj.scene.pending.append(
-                    lambda: self._onchangecb.pop(wrapped)
-                    if wrapped in self._onchangecb else None)
-                return cb(*args, **kwargs)
-            wrapped.__signature__ = inspect.signature(cb)
+                if wrapped in self._onchangecb:
+                    del self._onchangecb[wrapped]
+                if l > 2: orig(attr, old, internal)
+                elif l > 1: orig(attr, old)
+                elif l > 0: orig(attr)
+                else: orig()
             cb = wrapped
-        self._onchangecb[cb] = _argslen(cb)
+            self._onchangecb[cb] = 3
+        else:
+            self._onchangecb[cb] = _argslen(cb)
         return cb
+
     def offchange(self, cb):
         self._onchangecb = {f:par for f,par in self._onchangecb.items() if f is not cb}
+
     def _change(self, attr, old):
-        for cb,l in self._onchangecb.items():
-            if l > 1:
-                cb(attr, old)
-            elif l > 0:
-                cb(attr)
-            else:
-                cb()
+        internal = self._changing
+        self._changing = True
+        try:
+            for cb, l in list(self._onchangecb.items()):
+                if l > 2:
+                    cb(attr, old, internal)
+                elif l > 1:
+                    cb(attr, old)
+                elif l > 0:
+                    cb(attr)
+                else:
+                    cb()
+        finally:
+            self._changing = internal
+
 
 #COMPONENTS
 class transform(_change_callback):
@@ -548,26 +566,26 @@ class transform(_change_callback):
                 if l > 1: cb(parts, obj_ref)
                 elif l > 0: cb(parts)
                 else: cb()
-            for calb,cl in self._onsplit.items():
+            for calb, cl in list(self._onsplit.items()):
                 if cl > 1: calb(parts, obj_ref)
                 elif cl > 0: calb(parts)
                 else: calb()
             obj_ref.discard()
-        self.scene.pending.append(do_split)
+        do_split()
         return do_split
 
     def split(self, callback=None):
-        if getattr(self, '_split_cb', None) in self.scene.pending:
+        if getattr(self.obj, 'transform', None) is not self:
             return
         pixels = self.parse_pixels(self.vrtext)
         coords = {pos for pos, (char, _) in pixels.items() if char != ' '}
-        if not coords and not self.obj.discard in self.scene.pending:
+        if not coords:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
-                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
-                else: self.scene.pending.append(callback)
-            self.scene.pending.append(self.obj.discard)
+                if l > 1: callback([self.obj], self.obj)
+                elif l > 0: callback([self.obj])
+                else: callback()
+            self.obj.discard()
             return
 
         remaining = set(coords)
@@ -591,16 +609,16 @@ class transform(_change_callback):
         if len(components) < 2:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
-                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
-                else: self.scene.pending.append(callback)
+                if l > 1: callback([self.obj], self.obj)
+                elif l > 0: callback([self.obj])
+                else: callback()
             return
 
         self._split_cb = self._spawn_from_components(components, pixels, callback)
         return self._split_cb
 
     def split_at(self, wall_pixels, callback=None):
-        if getattr(self, '_split_cb', None) in self.scene.pending:
+        if getattr(self.obj, 'transform', None) is not self:
             return
         pixels = self.parse_pixels(self.vrtext)
         coords = {pos for pos, (char, _) in pixels.items() if char != ' '}
@@ -609,9 +627,9 @@ class transform(_change_callback):
         if not valid_walls:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
-                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
-                else: self.scene.pending.append(callback)
+                if l > 1: callback([self.obj], self.obj)
+                elif l > 0: callback([self.obj])
+                else: callback()
             return
 
         remaining = coords - valid_walls
@@ -635,9 +653,9 @@ class transform(_change_callback):
         if len(components) < 2:
             if callable(callback):
                 l = _argslen(callback)
-                if l > 1: self.scene.pending.append(lambda: callback([self.obj], self.obj))
-                elif l > 0: self.scene.pending.append(lambda: callback([self.obj]))
-                else: self.scene.pending.append(callback)
+                if l > 1: callback([self.obj], self.obj)
+                elif l > 0: callback([self.obj])
+                else: callback()
             return
 
         for wp in valid_walls:
@@ -657,15 +675,21 @@ class transform(_change_callback):
 
     def onsplit(self, cb, once=False):
         if once:
+            l = _argslen(cb)
             fired = [False]
-            def wrapped(*args, **kwargs):
+            orig = cb
+            def wrapped(parts=None, obj_ref=None):
                 if fired[0]: return
                 fired[0] = True
-                self.obj.scene.pending.append(lambda: self._onsplit.pop(wrapped) if wrapped in self._onsplit else None)
-                return cb(*args, **kwargs)
-            wrapped.__signature__ = inspect.signature(cb)
+                if wrapped in self._onsplit:
+                    del self._onsplit[wrapped]
+                if l > 1: orig(parts, obj_ref)
+                elif l > 0: orig(parts)
+                else: orig()
             cb = wrapped
-        self._onsplit[cb] = _argslen(cb)
+            self._onsplit[cb] = 2
+        else:
+            self._onsplit[cb] = _argslen(cb)
         return cb
 
     def offsplit(self, cb):
@@ -739,7 +763,7 @@ class rendering():
     _required = [transform]
     _default = True
     def on_discard(self):
-        #self.remove()
+        self.scene.discards.append(self.remove(write=False))
         for other in self.scene.objs:
             if hasattr(other, 'rendering'):
                 other.rendering._markdirty()
@@ -834,11 +858,9 @@ class rendering():
         return result
 
     def render_rows(self, text, ox, oy, xoff, yoff, erase=False, exclude_rects=None):
-        bgcolor = None
-        if not erase:
-            bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
-                       f'{self.scene.bgcolor[1]};'
-                       f'{self.scene.bgcolor[2]}m')
+        bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
+                   f'{self.scene.bgcolor[1]};'
+                   f'{self.scene.bgcolor[2]}m')
         out  = ''
         term_w     = self.scene.termx
         term_h     = self.scene.termy
@@ -910,7 +932,7 @@ class rendering():
 
     def remove(self, write=True):
         if not self.ptext:
-            return
+            return ''
         bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
                    f'{self.scene.bgcolor[1]};'
                    f'{self.scene.bgcolor[2]}m')
@@ -951,8 +973,9 @@ class rendering():
             return ('', '') if split else ''
         bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
                    f'{self.scene.bgcolor[1]};{self.scene.bgcolor[2]}m')
-        acx = self.scene.iround((self.t.x + self.t.vx) - (self.scene.camx))
-        acy = -self.scene.iround((self.t.y + self.t.vy) - (self.scene.camy))
+        ir = self.scene.iround
+        acx = ir(((self.t.x) + (self.t.vx)) - ir(self.scene.camx))
+        acy = -ir(((self.t.y) + (self.t.vy)) - ir(self.scene.camy))
         actext = self.t.vtext
         acxoff = self.scene.dimxoffset
         acyoff = self.scene.dimyoffset
@@ -1097,11 +1120,8 @@ class physics(_change_callback):
                 if l > 1: callback(obj2, intersection)
                 elif l > 0: callback(obj2)
                 else: callback()
-                if once:
-                    self.scene.pending.append(
-                        lambda: self._touch_callbacks.remove(wrapped)
-                        if wrapped in self._touch_callbacks else None
-                    )
+                if once and wrapped in self._touch_callbacks:
+                    self._touch_callbacks.remove(wrapped)
         self._touch_callbacks.append(wrapped)
         return callback
 
@@ -1210,26 +1230,37 @@ class physics(_change_callback):
                     for solid_obj in self.scene.solids:
                         if solid_obj is self.obj or solid_obj in collisions:
                             continue
-                        pixels2 = solid_obj.physics.getpixels()
+                        solid_p = getattr(solid_obj, 'physics', None)
+                        if solid_p is None:
+                            continue
+                        pixels2 = solid_p.getpixels()
                         intersection = pixels1 & pixels2
                         if intersection:
                             collisions[solid_obj] = intersection
 
                 physical_col = None
-                for obj2, intersection in collisions.items():
+                for obj2, intersection in list(collisions.items()):
+                    obj2p = getattr(obj2, 'physics', None)
+                    if obj2p is None:
+                        continue
                     # callbacks
-                    for cb in self._touch_callbacks:
+                    for cb in list(self._touch_callbacks):
                         cb(obj2, intersection)
-                    for cb in obj2.physics._touch_callbacks:
+                    if getattr(self.obj, 'physics', None) is not self:
+                        return
+                    for cb in list(obj2p._touch_callbacks):
                         cb(self.obj, intersection)
+                    if getattr(self.obj, 'physics', None) is not self:
+                        return
+                    if getattr(obj2, 'physics', None) is not obj2p:
+                        continue
                     # only resolve physics when both solid and neither phantom
-                    if self.solid and not self.phantom and not obj2.physics.phantom:
+                    if self.solid and not self.phantom and not obj2p.phantom:
                         if physical_col is None:
-                            physical_col = (obj2, intersection)
+                            physical_col = (obj2, obj2p, intersection)
 
                 if physical_col is not None:
-                    obj2, intersection = physical_col
-                    obj2p = obj2.physics
+                    obj2, obj2p, intersection = physical_col
                     othermass = obj2p.mass
                     totalmass = actualmass + othermass
 

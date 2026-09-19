@@ -32,7 +32,7 @@ def dev(Session=Session): #DEBUG
             t = self.bomb.transform
             ex = self.bomb.explosion
             delta = (self.timer/self.begin) if self.begin != 0 else 0
-            t.text = session.style(ex.circle((ex.radius/2)*(1-delta), 'X'), alpha=min(1,ex.force/20)*delta, color='orange', bgcolor=scene.bgcolor)
+            t.text = session.style(ex.circle((ex.radius/2)*(1-delta), 'X'), alpha=max(0,min(1,ex.force/20)*delta), color='orange', bgcolor=scene.bgcolor)
             t.x, t.y = self.pos
             t.x -= t.xlen()/2
             t.y += t.ylen()/2
@@ -50,19 +50,21 @@ def dev(Session=Session): #DEBUG
             self.camrange = 5
             self.camspeed = 0.7
             self.void = -100
+            #scene.bgcolor = (255,255,255)
+            scene.gravity = (0,-0.05)
+            #scene.drag = 1
+            self.pencolor = None#(0,255,255)
         
         def start(self):    #START
             sc = self.scene
             world = self.world
             inp = self.session.inp
             style = self.session.style
-            #sc.bgcolor = (255,255,255)
-            sc.gravity = (0,0)#-0.05)
             obj = sc.obj
-            self.tarx = sc.dimx/2
+            self.tarx = 0*sc.dimx/2
             self.tary = -sc.dimy/2
 
-            '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True)
+            self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
                             )
             self.plr = obj().create(plrtext,0,0,hitbox=True,renderspaces=False)
@@ -70,6 +72,10 @@ def dev(Session=Session): #DEBUG
                 if 0 < len(parts): self.plr = parts[0]
                 else: self.plr = None
             self.plr.transform.onsplit(plref)
+            self.tarx = self.plr.transform.x+self.plr.transform.xc(self.plr.transform.htext)
+            self.tary = self.plr.transform.y-self.plr.transform.yc(self.plr.transform.htext)
+            sc.camx += (self.tarx - (sc.dimx/2) - sc.camx) / 1
+            sc.camy += (self.tary + (sc.dimy/2) - sc.camy) / 1
             self.enemy = obj().create("OOOOOO\n"*4,25,-(sc.dimy+1), bounciness=1)
             self.enemy.transform.y += self.enemy.transform.ylen()
             self.enemy.physics.dynamic = True; self.enemy.physics.hitbox = False
@@ -86,7 +92,7 @@ def dev(Session=Session): #DEBUG
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
                 ip+=20
 
-            c = {'g': style("█",(24,30,24),reset=False)*2,
+            '''c = {'g': style("█",(24,30,24),reset=False)*2,
                  'dp': style("█",(143,8,112),reset=False)*2,
                  'w': style("█",'white',reset=False)*2,
                  'v': style("█",(161,50,201),reset=False)*2,
@@ -143,7 +149,7 @@ def dev(Session=Session): #DEBUG
             def on_click_pen(mx, my, data):
                 self.pen.pen._x = mx + sc.camx
                 self.pen.pen._y = sc.camy - my
-                self.pen.pen.down(char=style(self.pen.pen.char, ))#color=(self.penc+13 if data==0 else 'black')))
+                self.pen.pen.down(char=style(self.pen.pen.char, color=(self.penc+13 if data==0 else 'gray') if not self.pencolor else self.pencolor))
                 self.penc = 0 if self.penc >= 13 else self.penc + 1
                 if data == 2:
                     self.pen.pen.cancel()
@@ -155,7 +161,7 @@ def dev(Session=Session): #DEBUG
             inp.onmouse('click', on_click_pen)
             inp.onmouse('release', on_release_pen)
 
-            self.push = sc.obj().create(exradius=40, exforce=60, show=False)
+            self.push = sc.obj().create(exradius=40, exforce=30, show=False)
             self.push.transform.text = self.push.explosion.circle(5, style('X', 'red'))
 
             def onpress(): # key press events
@@ -177,11 +183,11 @@ def dev(Session=Session): #DEBUG
                     mx, my = inp.mouse
                     ax=mx + self.scene.camx
                     ay=self.scene.camy - my
-                    world.launch(lambda scene: explode(scene=scene,x=ax,y=ay,timer=0.3))
+                    world.launch(lambda scene: explode(scene=scene,x=ax,y=ay,timer=0.3,radius=50,force=1000))
                 for but in [w,q,f,r,t,p,x]:
                     def close():
                         self.session.running = False
-                    inp.onpress(but.__name__, lambda e, func=but: attempt(func))
+                    inp.onpress(but.__name__, but)
             onpress()
 
         def update(self):   #UPDATE

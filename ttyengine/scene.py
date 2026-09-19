@@ -112,32 +112,45 @@ class obj:
 
     def create(self, text=None, x=None, y=None, **kwargs):
         kwargs.update({k: v for k, v in {'text': text, 'x': x, 'y': y}.items() if v is not None})
+        processed = set()
 
         for com in _defls:
-            if not hasattr(self, com.__name__):
-                if hasattr(com, '_required'):
-                    for rcom in com._required:
-                        if not hasattr(self, rcom.__name__):
-                            self.add(rcom, **kwargs)
-                        else: self.set(rcom, **kwargs)
-                self.add(com, **kwargs)
-            else: self.set(com, **kwargs)
+            if com not in processed:
+                if not hasattr(self, com.__name__):
+                    if hasattr(com, '_required'):
+                        for rcom in com._required:
+                            if rcom not in processed:
+                                if not hasattr(self, rcom.__name__):
+                                    self.add(rcom, **kwargs)
+                                else:
+                                    self.set(rcom, **kwargs)
+                                processed.add(rcom)
+                    self.add(com, **kwargs)
+                else: 
+                    self.set(com, **kwargs)
+                processed.add(com)
 
         for k in list(kwargs.keys()):
             comp = _attrs.get(k)
             if comp:
-                if not hasattr(self, comp.__name__):
-                    if hasattr(comp, '_required'):
-                        for rcomp in comp._required:
-                            if not hasattr(self, rcomp.__name__):
-                                self.add(rcomp, **kwargs)
-                            else: self.set(rcomp, **kwargs)
-                    self.add(comp, **kwargs)
-                else: self.set(comp, **kwargs)
+                if comp not in processed:
+                    if not hasattr(self, comp.__name__):
+                        if hasattr(comp, '_required'):
+                            for rcomp in comp._required:
+                                if rcomp not in processed:
+                                    if not hasattr(self, rcomp.__name__):
+                                        self.add(rcomp, **kwargs)
+                                    else: 
+                                        self.set(rcomp, **kwargs)
+                                    processed.add(rcomp)
+                        self.add(comp, **kwargs)
+                    else: 
+                        self.set(comp, **kwargs)
+                    processed.add(comp)
             else:
                 setattr(self, k, kwargs[k])
 
-        if not self in self.scene.objs:
+        if self not in self.scene.objs:
             self.scene.objs.append(self)
         return self
 
@@ -172,11 +185,13 @@ class Scene:
         self.objs = []
         self.dinfo = []
         self.pending = []
+        self.discards = []
         self._maxframerate = 60
         self.framerate = 60
         self._oncamcb = {}
         self._ondimcb = {}
         self._ondimoffsetcb = {}
+        self._firing = False
         self.termx = 120
         self.termy = 30
         self._dimx = self.termx
@@ -274,13 +289,38 @@ class Scene:
         self._fire(self._oncamcb, 'y', old)
 
     def _fire(self, callbacks, att='', old=None):
-        for cb, params in callbacks.items():
-            if params > 1:
-                cb(att, old)
-            elif params > 0:
-                cb(att)
-            else:
-                cb()
+        internal = self._firing
+        self._firing = True
+        try:
+            for cb, params in list(callbacks.items()):
+                if params > 2:
+                    cb(att, old, internal)
+                elif params > 1:
+                    cb(att, old)
+                elif params > 0:
+                    cb(att)
+                else:
+                    cb()
+        finally:
+            self._firing = internal
+
+    def _register_once(self, cb, store, once):
+        match_att = once if isinstance(once, str) else None
+        l = _argslen(cb)
+        fired = [False]
+        orig = cb
+        def wrapped(att=None, old=None, internal=False):
+            if fired[0]: return
+            if match_att is not None and att != match_att: return
+            fired[0] = True
+            if wrapped in store:
+                del store[wrapped]
+            if l > 2: orig(att, old, internal)
+            elif l > 1: orig(att, old)
+            elif l > 0: orig(att)
+            else: orig()
+        store[wrapped] = 3
+        return wrapped
 
     def oncam(self, callback):
         self._oncamcb[callback] = _argslen(callback)

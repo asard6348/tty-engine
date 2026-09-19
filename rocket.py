@@ -16,7 +16,7 @@ class ginf():
         new_txt = f'SHOTS :   {ginfo[0]}       HITS :   {ginfo[1]}'
         if new_txt != self._last_txt or self._lost != lost:
             self._last_txt = new_txt
-            self.info.create(style(new_txt, color='darkorange', alpha=0.5 if lost else 1, size=1, width=500), z=5)
+            self.info.create(style(new_txt, color='darkorange', alpha=0.5 if lost else 1, size=1, width=500), z=30)
         t = self.info.transform
         t.x = sc.camx + sc.iround((sc.dimx - t.xlen()) / 2)
         t.y = sc.camy - sc.dimy + t.ylen()
@@ -125,12 +125,12 @@ class explode():
         t.y += t.ylen()/2
 
 class flash():
-    def __init__(self, scene, delay=0, time=1, tar=(0,0,0), st=None):
+    def __init__(self, scene, session, delay=0, time=1, tar=None, st=None):
         self.de = delay
         self._sti = time
         self.ti = time
-        self.tar = tar
-        self.st = st if st else scene.bgcolor
+        self.tar = tar if tar else scene.bgcolor
+        self.st = st if st else session.fgcolor
     def update(self, scene, handle):
         if self.de > 0:
             self.de -= 1/scene.framerate
@@ -215,9 +215,13 @@ class player():
         global plr
         inp = session.inp
         style = session.style
+        #scene.framerate=1
+        #scene.bgcolor=(255,0,0)
         scene.gravity = (0,0)
         scene.drag = 1
         self.smcam = 5
+        self.lsinfo = None
+        self.lsy = 10
 
         plr = scene.obj().create(style('''
     █    
@@ -249,16 +253,16 @@ class player():
                 self.thrustmax = 3*p.mass
                 self.thrustbreak = 0.9
                 plr.transform.onsplit(swslf)
-            if not plr or lost:
+            if (not plr or lost) and not self.lsinfo:
                 lost = True
-                t.offsplit(swslf)
                 self.smcam = 20
                 lsinfo = scene.obj().create(style('YOU LOST!', size=3, color='black', bgcolor='red'), z=20, renderspaces=True)
                 lst = lsinfo.transform
-                lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
-                lst.y = scene.camy - scene.iround((scene.dimy) / 4) + scene.iround(lst.ylen() / 2)
+                lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2) if not plr else plr.transform.x-(lst.xlen()/2)
+                lst.y = scene.camy - scene.iround((scene.dimy) / 4) + scene.iround(lst.ylen() / 2) if not plr else plr.transform.y+self.lsy
                 world.launch(lambda: fade(lsinfo, 0, 2, appear=True))
-                handle.cancel()
+                self.lsinfo = lsinfo
+                #handle.cancel()
                 return
         t.onsplit(swslf)
 
@@ -267,8 +271,9 @@ class player():
         def camfollow(x=None, y=None, smooth=1):
             if x is not None: self.camtarx = x
             if y is not None: self.camtary = y
-            xdelta = ((self.camtarx-scene.dimx/2)-scene.camx)/smooth
-            ydelta = ((self.camtary+scene.dimy/2)-scene.camy)/smooth
+            ir = int
+            xdelta = ((ir(self.camtarx)-ir(scene.dimx/2))-ir(scene.camx))/smooth
+            ydelta = ((ir(self.camtary)+ir(scene.dimy/2))-ir(scene.camy))/smooth
             scene.camx += xdelta
             scene.camy += ydelta
             return xdelta, ydelta
@@ -279,12 +284,12 @@ class player():
         self._ad = -1
         def onf():
             self._ad = 0
-            world.launch(lambda scene: flash(scene, time=0.5, st=(255,255,255)))
+            world.launch(lambda scene, session: flash(scene, session, time=0.5, st=(255,255,255)))
             if hasattr(self.info, 'transform'):
                 self.info['text'] = style('STARTED!', size=3, color='white', bgcolor='blue')
                 world.launch(lambda: fade(self.info, 0.5, 0.5, callback=self.info.discard))
                 world.launch(ginf)
-        session.inp.onpress('f', lambda e: onf(), True)
+        session.inp.onpress('f', onf, True)
         
         def shoot():
             t = plr.transform
@@ -307,7 +312,10 @@ class player():
                     if not lost: ginfo[0] += 1
                     ph.phantom = True
                     delattr(obj2, 'imast')
+                #dph = ph.mass
                 tr.cutpoints(points)
+                #dlt = ph.mass/dph
+                #obj2.create(xvel=ph.xvel*dlt, yvel=ph.yvel*dlt, avel=ph.avel*dlt)
                 vanish_data = getattr(obj2, 'forvanish', None)
                 def regul(parts):
                     for par in parts:
@@ -328,7 +336,7 @@ class player():
         self._shoot_delay = 0
 
         def close(): session.running = not session.running
-        inp.onpress('q', lambda e: close(), True)
+        inp.onpress('q', close, True)
 
     def update(self, scene, session, world, handle):
         global plr
@@ -339,26 +347,27 @@ class player():
         t = plr.transform
         p = plr.physics
 
-        if inp.held('space'):
-            p.xvel *= self.thrustbreak
-            p.yvel *= self.thrustbreak
-        dirs = {'w': 0, 's': 180, 'd': 90, 'a': -90}
-        for key, off in dirs.items():
-            if inp.held(key, True):
-                f = t.forward(self.thrustspeed, off)
-                p.xvel += f[0]
-                p.yvel += f[1]
-        speed = math.sqrt(p.xvel**2 + (p.yvel*2)**2)
-        if speed > self.thrustmax:
-            scale = self.thrustmax / speed
-            p.xvel *= scale
-            p.yvel *= scale
+        if not self.lsinfo:
+            if inp.held('space'):
+                p.xvel *= self.thrustbreak
+                p.yvel *= self.thrustbreak
+            dirs = {'w': 0, 's': 180, 'd': 90, 'a': -90}
+            for key, off in dirs.items():
+                if inp.held(key, True):
+                    f = t.forward(self.thrustspeed, off)
+                    p.xvel += f[0]
+                    p.yvel += f[1]
+            speed = math.sqrt(p.xvel**2 + (p.yvel*2)**2)
+            if speed > self.thrustmax:
+                scale = self.thrustmax / speed
+                p.xvel *= scale
+                p.yvel *= scale
 
-        if self._shoot_delay > 0:
-            self._shoot_delay -= 1/scene.framerate
-        if inp.mouseheld(0) and self._shoot_delay <= 0:
-            self._shoot_delay = 0.2
-            self._shoot()
+            if self._shoot_delay > 0:
+                self._shoot_delay -= 1/scene.framerate
+            if inp.mouseheld(0) and self._shoot_delay <= 0:
+                self._shoot_delay = 0.2
+                self._shoot()
 
         if self._ad > 0:
             self._ad -= 1/scene.framerate
@@ -369,11 +378,16 @@ class player():
         self.camfollow(t.x+t.xc(), t.y-t.yc(), self.smcam)
         if hasattr(self.info, 'transform'):
             self.info.transform.x, self.info.transform.y = 0+scene.camx, 0+scene.camy
-        p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*plr.physics.mass
+        if hasattr(self.lsinfo, 'transform'):
+            lst = self.lsinfo.transform
+            lst.x = t.x-(lst.xlen()/2)
+            lst.y = t.y+self.lsy
+        if not self.lsinfo:
+            p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*plr.physics.mass
 
-        if dinfo is not None:
+        if dinfo is not None and False:
             dinfo.clear()
-            dinfo.extend(str(world.handles))
+            dinfo.extend(scene.bgcolor)
 
 class background():
     def start(self):

@@ -16,7 +16,7 @@ RGB_MAP = {
     "purple": (128, 0, 128),
     "violet": (238, 130, 238),
     "magenta": (188, 63, 188),
-    "pink": (255, 105, 180),
+    "pink": (255, 105, 180), # 13 colors
     "brightred": (241, 76, 76),
     "brightorange": (255, 200, 0),
     "brightbrown": (205, 133, 63),
@@ -29,7 +29,7 @@ RGB_MAP = {
     "brightpurple": (191, 0, 191),
     "brightviolet": (255, 170, 255),
     "brightmagenta": (214, 112, 214),
-    "brightpink": (255, 182, 193),
+    "brightpink": (255, 182, 193), # 13 bright colors
     "darkred": (139, 0, 0),
     "darkorange": (255, 140, 0),
     "darkbrown": (60, 30, 10),
@@ -42,7 +42,7 @@ RGB_MAP = {
     "darkpurple": (75, 0, 130),
     "darkviolet": (148, 0, 211),
     "darkmagenta": (139, 0, 139),
-    "darkpink": (231, 84, 128),
+    "darkpink": (231, 84, 128), # 13 dark colors
     "black": (0, 0, 0),
     "darkgray": (64, 64, 64),
     "brightblack": (102, 102, 102),
@@ -50,7 +50,7 @@ RGB_MAP = {
     "brightgray": (192, 192, 192),
     "default": (204, 204, 204),
     "bright": (229, 229, 229),
-    "white": (255, 255, 255),
+    "white": (255, 255, 255), # 8 gray scale colors
 }
 
 SIZE_MAP = {
@@ -104,22 +104,16 @@ def getcolor(text:str, back=False):
     tupl = tuple(int(x) for x in matches[-1].groups()) if matches else (bg if back else fg)
     color = matches[-1].group(0) if matches else ""
     return tupl, color
-
 def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
           bgalpha=None, bg=bg, fg=fg, onbg=False, reset=True, clean=False):
-
     bg_rgb  = rgb(bg)  or bg
     fg_rgb  = rgb(fg)  or fg
-
     match_bgcolor = ""
     match_color   = ""
-
     user_color  = color
     user_bgcolor = bgcolor
-
     bgcolor_rgb = rgb(bgcolor)
     color_rgb   = rgb(color)
-
     if user_bgcolor is not None or bgalpha is not None:
         _bgalpha = bgalpha if bgalpha is not None else 1.0
         if bgcolor_rgb is None:
@@ -131,7 +125,6 @@ def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
     else:
         bgcolor_rgb, match_bgcolor = getcolor(text, True)
         ansi_bgcolor = ""
-
     if user_color is not None or alpha is not None:
         _alpha = alpha if alpha is not None else 1.0
         if color_rgb is None:
@@ -143,7 +136,6 @@ def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
         ansi_color = f"\033[38;2;{r};{g};{b}m"
     else:
         ansi_color = ""
-
     if clean:
         ascii_art = recomp.sub('', text)
         if not ansi_bgcolor:
@@ -152,23 +144,20 @@ def style(text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
             ansi_color   = match_color
     else:
         ascii_art = text
-
     if size is not None:
         ascii_font = SIZE_MAP[max(1, min(5, size))] if isinstance(size, int) else size
         if size >= 1:
             fig = getfiglet(font=ascii_font, width=width)
             ascii_art = fig.renderText(ascii_art)
-
     prefix = ansi_bgcolor + ansi_color
     suffix = "\033[0m" if reset else ""
     trailing = '\n' if ascii_art.endswith('\n') else ''
-    
+
     lines = ascii_art.split('\n')
     while lines and not lines[-1].strip():
         lines.pop()
-        
-    styled_text = '\n'.join(prefix + line.rstrip() + suffix for line in lines) + trailing
 
+    styled_text = '\n'.join(prefix + line.rstrip() + suffix for line in lines) + trailing
     return styled_text
 
 def fill(color=None, width=None, height=None, xoffset=0, yoffset=0, termx=None, termy=None):

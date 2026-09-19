@@ -28,7 +28,7 @@ def debug(debugger=None, dinfo=None, title=None, back=False):
         sys.stdout.flush()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(('127.0.0.1', {port}))
-        f = sock.makefile('r', buffering=1)
+        f = sock.makefile('r', buffering=1, encoding='utf-8')
         for frame in f:
             sys.stdout.write(frame)
             sys.stdout.flush()
@@ -79,7 +79,8 @@ def debug(debugger=None, dinfo=None, title=None, back=False):
         conn, _ = server.accept()
     except socket.timeout:
         return
-    pipe = conn.makefile('w', buffering=1)
+    pipe = conn.makefile('w', buffering=1, encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
     debugger.clear()
     debugger.append(proc)
     def renderdinfo(dinfo):
