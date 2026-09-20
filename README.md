@@ -5,11 +5,6 @@
 ### Requirements
 
 * blessed (`pip install blessed`)
-* if you need key down/up (input_handler.inp.held): keyboard (`pip install keyboard`)
-
-### Recommended
-
-* for games (needs root on linux): keyboard (`pip install keyboard`)
-* pygments (`pip install pygments`)
-* pyfiglet (`pip install pyfiglet`)
+* keyboard (`pip install keyboard`, needs root on linux) - key holding (input_handler.inp.held)
+* pyfiglet (`pip install pyfiglet`) - ascii font/size (ascii_styler.style(size=...))
 

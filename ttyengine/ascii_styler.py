@@ -1,5 +1,4 @@
 import re, shutil
-from pyfiglet import Figlet
 from typing import Optional, Union
 from functools import lru_cache
 
@@ -67,6 +66,14 @@ _figlet_cache = {}
 def getfiglet(font, width):
     key = (font, width)
     if key not in _figlet_cache:
+        try:
+            from pyfiglet import Figlet
+        except ImportError as e:
+            raise ImportError(
+                "pyfiglet is required to render figlet-style text (i.e. when "
+                "style() is called with a `size` argument). Install it with "
+                "`pip install pyfiglet`."
+            ) from e
         _figlet_cache[key] = Figlet(font=font, width=width)
     return _figlet_cache[key]
 

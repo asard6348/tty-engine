@@ -1,20 +1,46 @@
-import os, sys, time, threading, traceback, contextlib, inspect, ctypes
-from pygments import highlight
-from pygments.lexers.python import PythonConsoleLexer as TracebackLexer
-from pygments.formatters.terminal import TerminalFormatter
+import os, sys, time, threading, traceback, contextlib, inspect, ctypes, re
 
-def trace(exception, lexer=TracebackLexer, clear=True, out=sys.stdout.write, flush=sys.stdout.flush): # custom traceback for terminal
+def highlight_traceback(tb_str: str) -> str:
+    RESET, BOLD, RED, GREEN, YELLOW, CYAN, MAGENTA = (
+        "\033[0m", "\033[1m", "\033[91m", "\033[92m", "\033[93m", "\033[96m", "\033[95m"
+    )
+    lines = []
+    for line in tb_str.splitlines(True):
+        if line.startswith("Traceback"):
+            lines.append(f"{BOLD}{RED}{line}{RESET}")
+        elif line.strip().startswith("File "):
+            m = re.match(r'^(\s*File )("[^"]+")(, line )(\d+)(, in )(.*)$', line)
+            if m:
+                lines.append(
+                    f"{m.group(1)}{GREEN}{m.group(2)}{RESET}"
+                    f"{m.group(3)}{YELLOW}{m.group(4)}{RESET}"
+                    f"{m.group(5)}{CYAN}{m.group(6)}{RESET}\n"
+                )
+            else:
+                lines.append(line)
+        elif ":" in line and not line.startswith(" "):
+            parts = line.split(":", 1)
+            lines.append(f"{BOLD}{RED}{parts[0]}:{RESET}{BOLD}{parts[1]}{RESET}")
+        else:
+            line_hl = re.sub(r'("[^"]*"|\'[^\']*\')', rf'{GREEN}\1{RESET}', line)
+            kw = r'\b(def|class|return|if|elif|else|while|for|in|import|from|as|try|except|finally|raise|with|pass|break|continue|and|or|not|is|None|True|False)\b'
+            line_hl = re.sub(kw, rf'{MAGENTA}\1{RESET}', line_hl)
+            lines.append(line_hl)
+    return "".join(lines)
+
+def trace(exception, lexer=None, clear=True, out=sys.stdout.write, flush=sys.stdout.flush):
     try:
-        if(clear):
+        if clear:
             if out: out("\033[H\033[2J\033[3J")
         if out:
-            exc = highlight("".join(traceback.format_exc())+'\n', lexer(), TerminalFormatter())
+            tb_raw = "".join(traceback.format_exc()) + '\n'
+            exc = highlight_traceback(tb_raw)
             out(exc)
             if flush: flush()
     except:
         raise exception
-    
-def attempt(func, catch=None, lexer=TracebackLexer, fatal=True, clear=True, reset=True, out=sys.stdout.write, flush=sys.stdout.flush): # traceback support for terminal relation
+
+def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, out=sys.stdout.write, flush=sys.stdout.flush):
     try:
         return func()
     except Exception as e:
@@ -34,8 +60,8 @@ def attempt(func, catch=None, lexer=TracebackLexer, fatal=True, clear=True, rese
             except: pass
             try: os._exit(0)
             except: exit()
-        
-def getargs(func, args): # list of passable arguments to a function
+
+def getargs(func, args):
     if not callable(func): return {}
     sig = inspect.signature(func)
     par = sig.parameters
@@ -44,7 +70,7 @@ def getargs(func, args): # list of passable arguments to a function
     resargs = {k: v for k, v in args.items() if k in par}
     return resargs
 
-def latency(samples=1000): # os task latency statistic
+def latency(samples=1000):
     latencies = []
     for _ in range(samples):
         start = time.perf_counter()
@@ -57,28 +83,27 @@ def latency(samples=1000): # os task latency statistic
 #MODULES
 def attemptimports():
     global scene, Terminal, inp, style, fill
-    from . import scene #scene objects module
-    from blessed import Terminal #blessed terminal
-    from .input_handler import inp #input module
-    from .ascii_styler import style, fill #ascii styler callable function
+    from . import scene
+    from blessed import Terminal
+    from .input_handler import inp
+    from .ascii_styler import style, fill
 attempt(attemptimports)
 
 #WINDOWS INTIALIZATION
 def universal_init():
     if os.name == 'nt':
-        hOut = ctypes.windll.kernel32.GetStdHandle(-11) # STD_OUTPUT_HANDLE
+        hOut = ctypes.windll.kernel32.GetStdHandle(-11)
         dwMode = ctypes.c_uint32()
         ctypes.windll.kernel32.GetConsoleMode(hOut, ctypes.byref(dwMode))
-        # 0x0004 is ENABLE_VIRTUAL_TERMINAL_PROCESSING
         ctypes.windll.kernel32.SetConsoleMode(hOut, dwMode.value | 0x0004)
 attempt(universal_init)
-    
+
 #WORLD CLASS
 class World():
     def __init__(self, session=None, autoreg=True, front=True, **kwargs):
         self.session = session
         self.handles = []
-        self.scene = scene.Scene() # new object Scene instance
+        self.scene = scene.Scene()
         self._layer = 0
         self.last_tick = time.perf_counter()
         self.pause = False
@@ -104,7 +129,7 @@ class World():
         if self.session is not None:
             self.session.worlds = sorted(list(self.session.worlds), key=lambda w: getattr(w, '_layer', 0) if w is not self or layer is None else layer)
 
-    class Handle(): # scene behaviour handle
+    class Handle():
         def __init__(self, handle, world):
             self.world = world
             self.pause = False
@@ -136,7 +161,7 @@ class World():
             return None
         def cancel(self):
             self.world.handles = [h for h in self.world.handles if h is not self]
-            
+
     def launch(self, handle, safe=True):
         return (attempt(lambda: self.Handle(handle, self))
                 if safe else self.Handle(handle, self))
@@ -212,7 +237,6 @@ class Session():
         fg = self.term.get_fgcolor(bits=8)
         self.fgcolor = fg if fg != (-1, -1, -1) else (204, 204, 204)
         self._resume = threading.Condition()
-        # DEFAULT SETTINGS
         self.optimize = True
         self.mouse = True
         self.vsync = True
@@ -352,7 +376,7 @@ class Session():
                                 update = handle.func('update')
                                 if update:
                                     update()
-                                    
+
                         dim_changed = any([w.scene.checkres() for w in self.worlds if not w.pause]) or changed_optimized
                         if dim_changed:
                             if self.outerbg:
@@ -440,4 +464,3 @@ class Session():
 
     def run(self, **kwargs):
         attempt(lambda: self.run_attempt(**kwargs), lambda: contextlib.ExitStack().close())
-
