@@ -37,7 +37,7 @@ class main:
         def pas():
             self.pause = not self.pause
         inp.onpress('space', pas)
-        inp.onpress('q', exit)
+        inp.onpress('x', exit)
 
         self.infobj = o().create()
         self.steps = 0
