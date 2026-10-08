@@ -1,24 +1,34 @@
-import sys, re, os, threading, time, inspect, traceback
-from collections import defaultdict
+import sys, re, os, threading, time, inspect, traceback, atexit, codecs, weakref
+from collections import defaultdict, deque
 
 try:
     import keyboard
-except ImportError:
+except Exception:
     keyboard = None
 
 _WINDOWS = sys.platform == 'win32'
 if _WINDOWS:
     import msvcrt, ctypes
-    _kernel32 = ctypes.windll.kernel32
+    from ctypes import wintypes
+    _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    _kernel32.GetStdHandle.restype    = wintypes.HANDLE
+    _kernel32.GetStdHandle.argtypes   = [wintypes.DWORD]
+    _kernel32.GetConsoleMode.restype  = wintypes.BOOL
+    _kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _kernel32.SetConsoleMode.restype  = wintypes.BOOL
+    _kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     _ENABLE_MOUSE_INPUT                 = 0x0010
     _ENABLE_QUICK_EDIT_MODE             = 0x0040
     _ENABLE_EXTENDED_FLAGS              = 0x0080
     _ENABLE_VIRTUAL_TERMINAL_INPUT      = 0x0200
     _ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-    _STD_INPUT_HANDLE  = ctypes.c_ulong(-10)
-    _STD_OUTPUT_HANDLE = ctypes.c_ulong(-11)
+    _STD_INPUT_HANDLE  = -10 & 0xFFFFFFFF
+    _STD_OUTPUT_HANDLE = -11 & 0xFFFFFFFF
+    _WIN_SCAN = {'H': '\x1b[A', 'P': '\x1b[B', 'M': '\x1b[C', 'K': '\x1b[D',
+                 'G': '\x1b[H', 'O': '\x1b[F', 'I': '\x1b[5~', 'Q': '\x1b[6~',
+                 'R': '\x1b[2~', 'S': '\x1b[3~'}
 else:
-    import fcntl
+    import select
 
 
 def _accepts_arg(cb):
@@ -35,10 +45,11 @@ def _accepts_arg(cb):
 
 
 class _FakeKeyEvent:
-    __slots__ = ('event_type', 'name')
-    def __init__(self, event_type, name):
+    __slots__ = ('event_type', 'name', 'ident')
+    def __init__(self, event_type, name, ident=None):
         self.event_type = event_type
         self.name = name
+        self.ident = ident
 
 
 class _FallbackKeyboard:
@@ -54,30 +65,62 @@ class _FallbackKeyboard:
 
     def feed(self, name):
         if self._cb:
-            self._cb(_FakeKeyEvent('down', name))
-            self._cb(_FakeKeyEvent('up', name))
+            self._cb(_FakeKeyEvent('down', name, ('t', name)))
+            self._cb(_FakeKeyEvent('up', name, ('t', name)))
 
 
-_ARROW_SEQS = {
-    '\x1b[A': 'up',    '\x1b[B': 'down',  '\x1b[C': 'right', '\x1b[D': 'left',
-    '\x1bOA': 'up',    '\x1bOB': 'down',  '\x1bOC': 'right', '\x1bOD': 'left',
-}
+_ARROW_LETTERS = {'A': 'up', 'B': 'down', 'C': 'right', 'D': 'left',
+                  'H': 'home', 'F': 'end', 'P': 'f1', 'Q': 'f2', 'R': 'f3', 'S': 'f4'}
+_SS3_KEYS = dict(_ARROW_LETTERS)
+_TILDE_KEYS = {1: 'home', 2: 'insert', 3: 'delete', 4: 'end', 5: 'page up',
+               6: 'page down', 7: 'home', 8: 'end', 11: 'f1', 12: 'f2', 13: 'f3',
+               14: 'f4', 15: 'f5', 17: 'f6', 18: 'f7', 19: 'f8', 20: 'f9',
+               21: 'f10', 23: 'f11', 24: 'f12'}
+_KITTY_NAMES = {27: 'esc', 13: 'enter', 9: 'tab', 127: 'backspace', 8: 'backspace',
+                57358: 'caps lock', 57359: 'scroll lock', 57360: 'num lock',
+                57361: 'print screen', 57362: 'pause', 57363: 'menu',
+                57409: '.', 57410: '/', 57411: '*', 57412: '-', 57413: '+',
+                57414: 'enter', 57415: '=', 57441: 'shift', 57447: 'shift',
+                57442: 'ctrl', 57448: 'ctrl', 57443: 'alt', 57449: 'alt',
+                57444: 'windows', 57450: 'windows', 57453: 'alt gr'}
+
+def _kitty_name(code):
+    name = _KITTY_NAMES.get(code)
+    if name:
+        return name
+    if 57376 <= code <= 57398:
+        return 'f%d' % (code - 57376 + 13)
+    if 57399 <= code <= 57408:
+        return str(code - 57399)
+    if 0 < code < 0x110000 and chr(code).isprintable():
+        return 'space' if code == 32 else chr(code).lower()
+    return None
+
+_CSI_RE      = re.compile(r'\x1b\[([0-9:;<=>?]*)([ -/]*)([@-~])')
+_CSI_PARTIAL_RE = re.compile(r'\x1b\[[0-9:;<=>?]*[ -/]*')
+_ESC_TIMEOUT = 0.05
 
 
 class inp():
-    def __init__(self, term=None, watchfocus=True, trackmotion=False):
-        self.lock         = threading.Lock()
+    def __init__(self, term=None, watchfocus=True, trackmotion=False,
+                 legacy_hold=0.1, quiet=False):
+        self.lock         = threading.RLock()
         self.wf           = watchfocus
         self.track_motion = trackmotion
         self.focused      = True
         self._term        = None
+        self.legacy_hold  = legacy_hold
+        self.quiet        = quiet
 
         # ── keyboard (library handles held/press/release natively) ────────
         self._press_cbs     = defaultdict(list)
         self._release_cbs   = defaultdict(list)
-        self._press_queue   = []
-        self._release_queue = []
+        self._events        = deque()
+        self._down          = {}
         self._pressed_keys  = set()
+        self._release_at    = {}
+        self._kitty_state   = None
+        self._kitty_t       = 0.0
         self._kb_is_fallback = False
         self.keyboard = None
 
@@ -92,12 +135,13 @@ class inp():
             self.keyboard = _FallbackKeyboard()
             self._kb_is_fallback = True
             self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
-            sys.stderr.write(
-                "input_handler: no low-level keyboard access (needs root on "
-                "Linux), using basic stdin-based key detection instead -- "
-                "onpress/onrelease fire normally, but held() is not reliable "
-                "in this mode.\n"
-            )
+            if not self.quiet:
+                sys.stderr.write(
+                    "input_handler: no low-level keyboard access (needs root on "
+                    "Linux), using terminal key input instead -- full "
+                    "press/release if the terminal supports the kitty keyboard "
+                    "protocol, otherwise press-only with an emulated held().\n"
+                )
 
         # ── mouse (raw VT sequence parser) ────────────────────────────────
         self._mouse_x     = 0
@@ -106,12 +150,25 @@ class inp():
         self._mouse_wheel = 0
         self._mouse_cbs   = []
         self._buf         = '' # raw stdin accumulation buffer
+        self._buf_t       = 0.0
+        self._dec         = codecs.getincrementaldecoder('utf-8')('replace')
 
         # ── Windows console saved modes ───────────────────────────────────
         self._win_saved_in  = None
         self._win_saved_out = None
+        self._win_vt_in     = False
+        self._cleaned       = False
+
+        ref = weakref.ref(self)
+        atexit.register(lambda: ref() and ref().cleanup())
 
         self.term = term # triggers setter
+
+    @property
+    def backend(self):
+        if not self._kb_is_fallback:
+            return 'keyboard'
+        return 'kitty' if self._kitty_state == 'on' else 'terminal'
 
     #TERMINAL SETUP
     @property
@@ -122,128 +179,240 @@ class inp():
     def term(self, value):
         self._term = value
         if value:
+            self._cleaned = False
             if _WINDOWS:
                 self._setup_windows_console()
             if self.wf:
                 self._enable_focus_reporting()
             self._enable_mouse()
+            if self._kb_is_fallback:
+                self._start_kitty_probe()
+
+    @staticmethod
+    def _write(s):
+        try:
+            sys.stdout.write(s); sys.stdout.flush()
+        except Exception:
+            pass
 
     def _setup_windows_console(self):
-        mode = ctypes.c_ulong()
+        mode = wintypes.DWORD()
         hin  = _kernel32.GetStdHandle(_STD_INPUT_HANDLE)
         hout = _kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
-        _kernel32.GetConsoleMode(hin,  ctypes.byref(mode)); self._win_saved_in  = mode.value
-        _kernel32.GetConsoleMode(hout, ctypes.byref(mode)); self._win_saved_out = mode.value
-        new_in = (
-            (self._win_saved_in | _ENABLE_VIRTUAL_TERMINAL_INPUT
-                                | _ENABLE_MOUSE_INPUT
-                                | _ENABLE_EXTENDED_FLAGS)
-            & ~_ENABLE_QUICK_EDIT_MODE
-        )
-        _kernel32.SetConsoleMode(hin,  ctypes.c_ulong(new_in))
-        _kernel32.SetConsoleMode(hout, ctypes.c_ulong(
-            self._win_saved_out | _ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+        if self._win_saved_in is None and _kernel32.GetConsoleMode(hin, ctypes.byref(mode)):
+            self._win_saved_in = mode.value
+            new_in = (
+                (mode.value | _ENABLE_VIRTUAL_TERMINAL_INPUT
+                            | _ENABLE_MOUSE_INPUT
+                            | _ENABLE_EXTENDED_FLAGS)
+                & ~_ENABLE_QUICK_EDIT_MODE
+            )
+            self._win_vt_in = bool(_kernel32.SetConsoleMode(hin, new_in))
+        if self._win_saved_out is None and _kernel32.GetConsoleMode(hout, ctypes.byref(mode)):
+            self._win_saved_out = mode.value
+            _kernel32.SetConsoleMode(hout, mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
     def _enable_focus_reporting(self):
-        sys.stdout.write("\x1b[?1004h"); sys.stdout.flush()
+        self._write("\x1b[?1004h")
 
     def _disable_focus_reporting(self):
-        sys.stdout.write("\x1b[?1004l"); sys.stdout.flush()
+        self._write("\x1b[?1004l")
 
     def _enable_mouse(self):
         codes = "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
         if self.track_motion:
             codes += "\x1b[?1003h"
-        sys.stdout.write(codes); sys.stdout.flush()
+        self._write(codes)
 
     def _disable_mouse(self):
-        sys.stdout.write("\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l")
-        sys.stdout.flush()
+        self._write("\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l")
+
+    def _start_kitty_probe(self):
+        if self._kitty_state is not None:
+            return
+        try:
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                return
+        except Exception:
+            return
+        self._kitty_state, self._kitty_t = 'probing', time.monotonic()
+        self._write("\x1b[?u\x1b[c")
 
     #KEYBOARD
     def _kb_event_raw(self, event):
+        ident = getattr(event, 'ident', None)
+        if ident is None:
+            ident = getattr(event, 'scan_code', None)
+        if ident is None:
+            ident = event.name
+        if event.event_type not in ('down', 'up'):
+            return
         with self.lock:
-            if event.event_type == 'down':
-                self._press_queue.append((event.name, event))
-            elif event.event_type == 'up':
-                self._release_queue.append((event.name, event))
+            self._events.append((ident, event))
+
+    def _release_all(self):
+        with self.lock:
+            pending = dict(self._down)
+            for ident, event in self._events:
+                if event.event_type == 'down':
+                    pending[ident] = event.name
+                else:
+                    pending.pop(ident, None)
+            for ident, name in pending.items():
+                self._events.append((ident, _FakeKeyEvent('up', name, ident)))
+            self._release_at.clear()
+
+    def _term_press(self, name):
+        self._kb_event_raw(_FakeKeyEvent('down', name, ('t', name)))
+        self._release_at[name] = time.monotonic() + self.legacy_hold
+
+    def _flush_releases(self, now):
+        if self._release_at:
+            for name, t in list(self._release_at.items()):
+                if now >= t:
+                    del self._release_at[name]
+                    self._kb_event_raw(_FakeKeyEvent('up', name, ('t', name)))
+
+    def _stdin_press(self, name):
+        if self._kb_is_fallback and self._kitty_state != 'on':
+            self._term_press(name)
+
+    def _term_event(self, name, ident, ev):
+        if not self._kb_is_fallback:
+            return
+        if self._kitty_state == 'on':
+            self._kb_event_raw(_FakeKeyEvent('up' if ev == 3 else 'down', name, ident))
+        elif ev != 3:
+            self._term_press(name)
 
     #MOUSE
     def _read_raw(self):
         if _WINDOWS:
             chars = []
             while msvcrt.kbhit():
-                chars.append(msvcrt.getch().decode('utf-8', errors='replace'))
-            return ''.join(chars)
-        else:
-            fd = sys.stdin.fileno()
-            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-            try:
-                chunk = sys.stdin.buffer.read(4096) or b''
-            except (BlockingIOError, IOError):
-                chunk = b''
-            finally:
-                fcntl.fcntl(fd, fcntl.F_SETFL, flags)
-            return chunk.decode('utf-8', errors='replace')
-
-    def _parse_mouse(self):
-        buf = self._buf
-        i = 0
-        n = len(buf)
-
-        while i < n:
-
-            # ── SGR mouse: \x1b[<digits;digits;digits[Mm] ─────────────────
-            if buf[i:i+3] == '\x1b[<':
-                m = re.match(r'\x1b\[<(\d+);(\d+);(\d+)([Mm])', buf[i:])
-                if m:
-                    self._handle_sgr(int(m[1]), int(m[2])-1, int(m[3])-1, m[4])
-                    i += len(m.group()); continue
-                elif n - i < 32:
-                    break           # incomplete sequence — wait for more bytes
+                ch = msvcrt.getwch()
+                if ch in ('\x00', '\xe0') and not self._win_vt_in:
+                    chars.append(_WIN_SCAN.get(msvcrt.getwch(), ''))
                 else:
-                    i += 1; continue
+                    chars.append(ch)
+            return ''.join(chars)
+        try:
+            fd = sys.stdin.fileno()
+        except Exception:
+            return ''
+        chunks = []
+        while True:
+            try:
+                r, _, _ = select.select([fd], [], [], 0)
+                if not r:
+                    break
+                data = os.read(fd, 4096)
+            except (OSError, ValueError):
+                break
+            if not data:
+                break
+            chunks.append(data)
+            if len(data) < 4096:
+                break
+        return self._dec.decode(b''.join(chunks)) if chunks else ''
 
-            # ── X10 legacy mouse: \x1b[M + 3 raw bytes ───────────────────
-            if buf[i:i+3] == '\x1b[M':
-                if n - i < 6: break
-                self._handle_x10(ord(buf[i+3])-32, ord(buf[i+4])-33, ord(buf[i+5])-33)
-                i += 6; continue
-
-            # ── arrow keys (fallback keyboard backend only) ────────────────
-            if n - i >= 3 and buf[i:i+3] in _ARROW_SEQS:
-                if self._kb_is_fallback:
-                    self.keyboard.feed(_ARROW_SEQS[buf[i:i+3]])
-                i += 3; continue
-
-            # ── focus in / out ─────────────────────────────────────────────
-            if buf[i:i+3] == '\x1b[I':
-                with self.lock: self.focused = True
-                i += 3; continue
-            if buf[i:i+3] == '\x1b[O':
-                with self.lock: self.focused = False
-                i += 3; continue
-
-            # ── any other escape sequence: skip safely ────────────────────
-            # If \x1b is near the end of the buffer the sequence is probably
-            # incomplete (tail arrives next tick). Stop here and keep the
-            # \x1b in the buffer so it can be matched next tick.
-            # Only skip past it when there are enough bytes to be sure it
-            # isn't the start of something we'd recognise.
-            if buf[i] == '\x1b':
-                if n - i < 32:
-                    break           # might be an incomplete mouse/focus seq
-                i += 1; continue   # unknown escape, discard just the \x1b
-
-            # ── everything else (keyboard chars, non-escape bytes) ────────
-            if self._kb_is_fallback:
-                name = self._char_to_keyname(buf[i])
+    def _parse_input(self, now):
+        buf = self._buf
+        n = len(buf)
+        if not n:
+            return
+        stale = bool(self._buf_t) and (now - self._buf_t) >= _ESC_TIMEOUT
+        i = 0
+        while i < n:
+            c = buf[i]
+            if c != '\x1b':
+                name = self._char_to_keyname(c)
                 if name:
-                    self.keyboard.feed(name)
+                    self._stdin_press(name)
+                i += 1; continue
+            if i + 1 >= n:
+                if stale:
+                    self._stdin_press('esc')
+                    i += 1; continue
+                break
+            nxt = buf[i + 1]
+            if nxt == '[':
+                if buf.startswith('\x1b[M', i):
+                    if n - i < 6:
+                        if stale: i += 3; continue
+                        break
+                    self._handle_x10(ord(buf[i+3])-32, ord(buf[i+4])-33, ord(buf[i+5])-33)
+                    i += 6; continue
+                m = _CSI_RE.match(buf, i)
+                if m:
+                    self._on_csi(m.group(1), m.group(3))
+                    i = m.end(); continue
+                if n - i < 64 and not stale:
+                    break
+                i = _CSI_PARTIAL_RE.match(buf, i).end(); continue
+            if nxt == 'O':
+                if n - i < 3:
+                    if stale:
+                        self._stdin_press('esc')
+                        i += 1; continue
+                    break
+                name = _SS3_KEYS.get(buf[i + 2])
+                if name:
+                    self._stdin_press(name)
+                i += 3; continue
+            self._stdin_press('esc')
             i += 1
+        left = buf[i:]
+        if not left:
+            self._buf_t = 0.0
+        elif i > 0 or not self._buf_t:
+            self._buf_t = now
+        self._buf = left
 
-        self._buf = buf[i:]
+    def _on_csi(self, params, final):
+        if params[:1] == '<' and final in 'Mm':
+            p = params[1:].split(';')
+            if len(p) == 3 and all(x.isdigit() for x in p):
+                self._handle_sgr(int(p[0]), int(p[1]) - 1, int(p[2]) - 1, final)
+            return
+        if not params and final in 'IO':
+            self._set_focus(final == 'I')
+            return
+        if params[:1] == '?':
+            if final == 'u' and self._kitty_state == 'probing':
+                self._kitty_state = 'on'
+                self._write("\x1b[>11u")
+            elif final == 'c' and self._kitty_state == 'probing':
+                self._kitty_state = 'off'
+            return
+        if final == 'Z':
+            self._term_event('tab', ('t', 'tab'), 1)
+            return
+        if final not in 'u~' and final not in _ARROW_LETTERS:
+            return
+        f = params.split(';')
+        try:
+            code = int(f[0].split(':')[0]) if f[0] else 1
+            ev = 1
+            if len(f) > 1 and ':' in f[1]:
+                e = f[1].split(':')[1]
+                ev = int(e) if e else 1
+        except ValueError:
+            return
+        if final == 'u':
+            name, ident = _kitty_name(code), ('t', code)
+        elif final == '~':
+            name = _TILDE_KEYS.get(code); ident = ('t', name)
+        else:
+            name = _ARROW_LETTERS[final]; ident = ('t', name)
+        if name:
+            self._term_event(name, ident, ev)
+
+    def _set_focus(self, value):
+        with self.lock:
+            self.focused = value
+        if not value and self._kb_is_fallback:
+            self._release_all()
 
     @staticmethod
     def _char_to_keyname(ch):
@@ -267,6 +436,8 @@ class inp():
         is_motion = btn & 32
         button    = btn & 3
         if is_scroll:
+            if button > 1:
+                return
             self._mouse_wheel += 1 if button == 0 else -1
             self._fire_mouse('wheel', x, y, self._mouse_wheel)
         elif action == 'M':
@@ -292,42 +463,46 @@ class inp():
     def _fire_mouse(self, event, x, y, data):
         for etype, cb in list(self._mouse_cbs):
             if etype in (event, 'any'):
-                cb(x, y, data)
+                try:
+                    cb(x, y, data)
+                except Exception:
+                    sys.stderr.write("input_handler: onmouse callback for %r raised:\n" % event)
+                    traceback.print_exc()
 
     #CENTRAL UPDATE
     def update(self):
-        # keyboard
-        with self.lock:
-            press_q   = self._press_queue[:]
-            release_q = self._release_queue[:]
-            self._press_queue.clear()
-            self._release_queue.clear()
-            for key_name, _ in press_q:
-                self._pressed_keys.add(key_name)
-            for key_name, _ in release_q:
-                self._pressed_keys.discard(key_name)
-            focused = self.focused
-
-        if focused:
-            for key_name, event in press_q:
-                for cb, accepts in list(self._press_cbs.get(key_name, [])):
-                    try:
-                        cb(event) if accepts else cb()
-                    except Exception:
-                        sys.stderr.write("input_handler: onpress callback for %r raised:\n" % key_name)
-                        traceback.print_exc()
-            for key_name, event in release_q:
-                for cb, accepts in list(self._release_cbs.get(key_name, [])):
-                    try:
-                        cb(event) if accepts else cb()
-                    except Exception:
-                        sys.stderr.write("input_handler: onrelease callback for %r raised:\n" % key_name)
-                        traceback.print_exc()
-
-        # mouse
+        now = time.monotonic()
         self._mouse_wheel = 0
         self._buf += self._read_raw()
-        self._parse_mouse()
+        self._parse_input(now)
+        if self._kitty_state == 'probing' and now - self._kitty_t > 1.5:
+            self._kitty_state = 'off'
+        self._flush_releases(now)
+
+        with self.lock:
+            events = list(self._events)
+            self._events.clear()
+            focused = self.focused
+
+        if events:
+            for ident, event in events:
+                if event.event_type == 'down':
+                    self._down[ident] = event.name
+                else:
+                    self._down.pop(ident, None)
+            self._pressed_keys = set(self._down.values())
+
+        if focused:
+            for ident, event in events:
+                down = event.event_type == 'down'
+                table = self._press_cbs if down else self._release_cbs
+                for cb, accepts in list(table.get(event.name, ())):
+                    try:
+                        cb(event) if accepts else cb()
+                    except Exception:
+                        sys.stderr.write("input_handler: %s callback for %r raised:\n"
+                                         % ('onpress' if down else 'onrelease', event.name))
+                        traceback.print_exc()
 
     #KEYBOARD API
     def held(self, key=None, caps=False):
@@ -362,6 +537,10 @@ class inp():
         return (key, callback, 'release')
 
     def stop(self, handle):
+        if handle and isinstance(handle[0], tuple):
+            for h in handle:
+                self.stop(h)
+            return
         key, cb, kind = handle
         target = self._press_cbs if kind == 'press' else self._release_cbs
         target[key] = [entry for entry in target[key] if entry[0] is not cb]
@@ -403,17 +582,35 @@ class inp():
     def resumefocus(self):
         self._enable_focus_reporting()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.cleanup()
+
     def cleanup(self):
-        self._disable_mouse()
-        if self.wf:
-            self._disable_focus_reporting()
-        self.keyboard.unhook_all()
+        if self._cleaned:
+            return
+        self._cleaned = True
+        if self._term:
+            self._disable_mouse()
+            if self.wf:
+                self._disable_focus_reporting()
+            if self._kitty_state == 'on':
+                self._write("\x1b[<u")
+            self._kitty_state = None
+        try:
+            self.keyboard.unhook_all()
+        except Exception:
+            pass
         if _WINDOWS:
             if self._win_saved_in is not None:
                 _kernel32.SetConsoleMode(
                     _kernel32.GetStdHandle(_STD_INPUT_HANDLE),
-                    ctypes.c_ulong(self._win_saved_in))
+                    self._win_saved_in)
+                self._win_saved_in = None
             if self._win_saved_out is not None:
                 _kernel32.SetConsoleMode(
                     _kernel32.GetStdHandle(_STD_OUTPUT_HANDLE),
-                    ctypes.c_ulong(self._win_saved_out))
+                    self._win_saved_out)
+                self._win_saved_out = None
