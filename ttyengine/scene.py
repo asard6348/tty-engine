@@ -16,6 +16,7 @@ def wrap_property(component_attr: str, prop: property) -> property:
     return property(fget, fset if prop.fset else None)
 
 from . import components as _components
+from .ascii_styler import Styler
 _comps = []
 _attrs = {}
 _temps = []
@@ -207,7 +208,9 @@ class Scene:
         self._camx = 0
         self._camy = 0
         self._bgcolor = (0, 0, 0)
-        self.recomp = re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07?|\x1b[()]?[A-Za-z0-9])')
+        self.fgcolor = (204, 204, 204) # default text color; the world keeps it (and bgcolor) in sync with its session
+        self.styler = Styler(self) # styling API; style() defaults to this scene's bgcolor/fgcolor
+        self.recomp =re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07?|\x1b[()]?[A-Za-z0-9])')
         self._lastz = 0
         self._firstz = 0
 

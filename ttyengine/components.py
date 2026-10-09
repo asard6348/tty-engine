@@ -7,6 +7,8 @@
 import math, re, sys, statistics, inspect
 
 #GLOBAL
+_RESET_FG = '\033[22;23;24;39m' # default foreground + no bold/italic/underline (background is left alone)
+
 def _argslen(cb):
     params = inspect.signature(cb).parameters
     l = len(params) - (1 if hasattr(cb, '__self__') else 0)
@@ -814,7 +816,7 @@ class rendering():
         bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
                    f'{self.scene.bgcolor[1]};'
                    f'{self.scene.bgcolor[2]}m')
-        result = '\033[39m'
+        result = _RESET_FG
         ci = 0
         active_style  = ''
         needs_restyle = False
@@ -836,7 +838,7 @@ class rendering():
                 for char in part:
                     if ci >= end:
                         if active_style:
-                            result += '\033[39m'
+                            result += _RESET_FG
                         return result
                     if ci >= start:
                         if not in_crop:
@@ -854,7 +856,7 @@ class rendering():
                     ci += 1
 
         if active_style:
-            result += '\033[39m'
+            result += _RESET_FG
         return result
 
     def render_rows(self, text, ox, oy, xoff, yoff, erase=False, exclude_rects=None):
@@ -1509,20 +1511,6 @@ class explosion():
         self.scene = obj.scene
         self.radius = kwargs.get('exradius', 10)
         self.force = kwargs.get('exforce', 5)
-
-    def circle(self, radius, char='o'):
-        rx = round(radius * (1/self.t.aspect))
-        ry = round(radius)
-        if rx<1 or ry<1:
-            return char
-        rows = []
-        for dy in range(-ry, ry + 1):
-            row = ''
-            for dx in range(-rx, rx + 1):
-                val = (dx / rx) ** 2 + (dy / ry) ** 2
-                row += char if abs(val - 1) < 0.15 else ' '
-            rows.append(row)
-        return '\n'.join(rows)
 
     def explode(self, x=None, y=None, radius=None, force=None):
         r = radius if radius is not None else self.radius

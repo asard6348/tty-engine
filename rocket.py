@@ -54,7 +54,7 @@ class fade():
         else:
             self.obj._fadeprogress = 1
         self.t = self.obj.transform
-        self.s = session.style
+        self.s = world.scene.styler.style # blends towards the scene's current bgcolor (it changes during flash())
         def inh(parts):
             if parts[0] == self.obj:
                 return
@@ -119,7 +119,7 @@ class explode():
         t = self.bomb.transform
         ex = self.bomb.explosion
         delta = max(0, self.timer/self.begin)
-        t.text = session.style(ex.circle((ex.radius/2)*(1-delta), 'X'), alpha=min(1,ex.force/20)*delta, color='orange', bgcolor=scene.bgcolor)
+        t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=t.aspect), alpha=min(1,ex.force/20)*delta, color='orange', bgcolor=scene.bgcolor)
         t.x, t.y = self.pos
         t.x -= t.xlen()/2
         t.y += t.ylen()/2

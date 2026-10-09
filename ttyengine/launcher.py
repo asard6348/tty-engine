@@ -82,11 +82,11 @@ def latency(samples=1000):
 
 #MODULES
 def attemptimports():
-    global scene, Terminal, inp, style, fill
+    global scene, Terminal, inp, Styler
     from . import scene
     from blessed import Terminal
     from .input_handler import inp
-    from .ascii_styler import style, fill
+    from .ascii_styler import Styler
 attempt(attemptimports)
 
 #WINDOWS INTIALIZATION
@@ -140,10 +140,20 @@ class World():
                 'session': self.world.session,
             }
             self.handle = handle(**getargs(handle, self.handleargs))
+            if not hasattr(self.handle, 'priority'):
+                self.priority = 0
             start = getattr(self.handle, 'start', None)
             self.startargs = getargs(start, self.handleargs)
             self.world.handles.append(self)
             if start: start(**self.startargs)
+        @property
+        def priority(self):
+            # Execution order inside the loop: higher runs first, equal priorities keep launch order.
+            # Lives on the handle object itself, so a class can declare `priority = 5` and change it at runtime.
+            return getattr(self.handle, 'priority', 0)
+        @priority.setter
+        def priority(self, value):
+            self.handle.priority = value
         def func(self, key: str):
             fu = getattr(self.handle, key, None)
             method_cache_attr = f"_{key}_method"
@@ -162,6 +172,9 @@ class World():
         def cancel(self):
             self.world.handles = [h for h in self.world.handles if h is not self]
 
+    def ordered_handles(self):
+        return sorted(self.handles, key=lambda h: -h.priority)
+
     def launch(self, handle, safe=True):
         return (attempt(lambda: self.Handle(handle, self))
                 if safe else self.Handle(handle, self))
@@ -173,13 +186,19 @@ class World():
         if self.session is not None:
             if self not in self.session.worlds:
                 self.session.worlds.append(self)
-                self.scene.bgcolor = self.session.bgcolor
+                self.sync_colors()
                 if front: self.front()
                 else: self.back()
                 self.sort()
                 self.session.latency = max(latency())
                 with self.session._resume:
                     self.session._resume.notify_all()
+
+    def sync_colors(self):
+        # the scene follows the session's background and text colors (also called when the session changes them)
+        if self.session is not None:
+            self.scene.bgcolor = self.session.bgcolor
+            self.scene.fgcolor = self.session.fgcolor
 
     def unregister(self):
         if self.session is not None:
@@ -219,33 +238,67 @@ class World():
 
 #SESSION CLASS
 class Session():
-    def __init__(self, watchfocus=True, trackmotion=True):
+    # Session(**kwargs): the APIs to instantiate (pass False to skip one) ...
+    APIS = {'inp': True, 'style': True}
+    # ... and the initial value of the session settings
+    SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True,
+                'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True}
+
+    def __init__(self, watchfocus=True, trackmotion=True, **kwargs):
+        unknown = [k for k in kwargs if k not in self.APIS and k not in self.SETTINGS]
+        if unknown:
+            raise TypeError(f"Session() got unexpected keyword argument(s): {', '.join(unknown)}")
         self.worlds = []
         self.World = lambda front=True, **kwargs: World(session=self, autoreg=True, front=front, **kwargs)
         self.term = Terminal()
-        self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion)
-        self.fill = fill
+        self.apis = {name: kwargs.get(name, default) for name, default in self.APIS.items()}
+        self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion) if self.apis['inp'] else None
+        self.fill = Styler.fill
         self.running = False
         self._pause = False
-        self.pausephysics = False
-        self.pauserendering = False
         self._latency = max(latency())
         self._termxoffset = 0
         self._termyoffset = 0
+        # the styler itself lives on the scene (scene.py); this one only backs session.styler while no world exists
+        self._idle_scene = scene.Scene() if self.apis['style'] else None
         bg = self.term.get_bgcolor(bits=8)
-        self.bgcolor = bg if bg != (-1, -1, -1) else (0, 0, 0)
+        self._bgcolor = bg if bg != (-1, -1, -1) else (0, 0, 0)
         fg = self.term.get_fgcolor(bits=8)
-        self.fgcolor = fg if fg != (-1, -1, -1) else (204, 204, 204)
+        self._fgcolor = fg if fg != (-1, -1, -1) else (204, 204, 204)
+        self._sync_colors()
         self._resume = threading.Condition()
-        self.optimize = True
-        self.mouse = True
-        self.vsync = True
-        self.autoterm = True
-        self.autodim = True
-        self.autobg = True
-        self.outerbg = True
-        self.clearonstop = True
-        self.autofps = True
+        for name, default in self.SETTINGS.items():
+            setattr(self, name, kwargs.get(name, default))
+
+    @property
+    def bgcolor(self):
+        return self._bgcolor
+    @bgcolor.setter
+    def bgcolor(self, value):
+        self._bgcolor = value
+        self._sync_colors()
+
+    @property
+    def fgcolor(self):
+        return self._fgcolor
+    @fgcolor.setter
+    def fgcolor(self, value):
+        self._fgcolor = value
+        self._sync_colors()
+
+    def _sync_colors(self):
+        for w in self.worlds:
+            w.sync_colors()
+        if self._idle_scene is not None:
+            self._idle_scene.bgcolor = self._bgcolor
+            self._idle_scene.fgcolor = self._fgcolor
+
+    @property
+    def styler(self):
+        # styling API of the front-most world's scene (scene.bgcolor / session.fgcolor are picked up automatically)
+        if not self.apis['style']:
+            return None
+        return (self.worlds[-1].scene if self.worlds else self._idle_scene).styler
 
     @property
     def pause(self):
@@ -288,16 +341,10 @@ class Session():
         self._termyoffset = value
 
     def style(self, *args, **kwargs):
-        args = list(args)
-        if 'bg' not in kwargs:
-            bg = args.pop(7) if len(args) > 7 else self.bgcolor
-        else:
-            bg = kwargs.pop('bg')
-        if 'fg' not in kwargs:
-            fg = args.pop(8) if len(args) > 8 else self.fgcolor
-        else:
-            fg = kwargs.pop('fg')
-        return style(*args, bg=bg, fg=fg, **kwargs)
+        # shortcut for session.styler.style(...)
+        if not self.apis['style']:
+            raise RuntimeError("the style API is disabled for this Session (Session(style=False))")
+        return self.styler.style(*args, **kwargs)
 
     def run_attempt(self, **kwargs):
         if(not self.running):
@@ -341,7 +388,7 @@ class Session():
 
                     if(not self._pause):
                         bef = time.perf_counter()
-                        self.inp.update()
+                        if self.inp: self.inp.update()
                         fillbuffer = ""
                         removebuffer = ""
                         drawbuffer = ""
@@ -371,7 +418,7 @@ class Session():
                                 world.scene.dimx = world.scene.termx
                                 world.scene.dimy = world.scene.termy
 
-                            for handle in list(world.handles):
+                            for handle in world.ordered_handles():
                                 if handle.pause: continue
                                 update = handle.func('update')
                                 if update:
@@ -405,7 +452,7 @@ class Session():
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
 
-                            for handle in list(world.handles):
+                            for handle in world.ordered_handles():
                                 if handle.pause: continue
                                 final = handle.func('final')
                                 if final:
@@ -455,8 +502,9 @@ class Session():
                         with self._resume:
                             self._resume.wait_for(lambda: not self._pause and len(self.worlds) > 0)
 
-                self.inp.stop_all()
-                self.inp.cleanup()
+                if self.inp:
+                    self.inp.stop_all()
+                    self.inp.cleanup()
                 if self.optimize: self.term.reset()
                 if self.clearonstop:
                     sys.stdout.write("\033[H\033[2J\033[3J")
