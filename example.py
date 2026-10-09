@@ -12,15 +12,15 @@ def dev(Session=Session): #DEBUG
     sys.stdout.write(f"\033]0;TTY Simulator\007")
     sys.stdout.flush()
     #DEBUGGER
-    #from ttyengine.debugger import debug
-    #debugger, dinfo = debug(title='Debugger')
+    #main_session.debug(title='Debugger')
 
     #SCENE BEHAVIOURS
     class explode():
         def __init__(self, scene, x,y,radius=25,force=200,timer=0.5):
             self.pos = (x,y)
-            self.bomb = scene.obj().create(x=x, y=y, exradius=radius, exforce=force) # bomb
-            self.bomb.explosion.explode()
+            self.bomb = scene.obj().create(x=x, y=y, force=force*radius, cap=force, radius=radius, position=(x,y)) # bomb
+            self.bomb.force.apply()
+            self.power = force
             self.begin = timer
             self.timer = self.begin
         def update(self, scene, handle, session):
@@ -30,9 +30,9 @@ def dev(Session=Session): #DEBUG
                 return
             self.timer -= 1/scene.framerate
             t = self.bomb.transform
-            ex = self.bomb.explosion
+            ex = self.bomb.force
             delta = (self.timer/self.begin) if self.begin != 0 else 0
-            t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=t.aspect), alpha=max(0,min(1,ex.force/20)*delta), color='orange', bgcolor=scene.bgcolor)
+            t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=t.aspect), alpha=max(0,min(1,self.power/20)*delta), color='orange', bgcolor=scene.bgcolor)
             t.x, t.y = self.pos
             t.x -= t.xlen()/2
             t.y += t.ylen()/2
@@ -51,7 +51,7 @@ def dev(Session=Session): #DEBUG
             self.camspeed = 0.7
             self.void = -100
             #scene.bgcolor = (255,255,255)
-            scene.gravity = (0,-0.05)
+            scene.gravity = (0,0)#-0.05)
             #scene.drag = 1
             self.pencolor = None#(0,255,255)
         
@@ -64,7 +64,7 @@ def dev(Session=Session): #DEBUG
             self.tarx = 0*sc.dimx/2
             self.tary = -sc.dimy/2
 
-            self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
+            '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
                             )
             self.plr = obj().create(plrtext,0,0,hitbox=True,renderspaces=False)
@@ -90,7 +90,7 @@ def dev(Session=Session): #DEBUG
             ip=20
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
-                ip+=20
+                ip+=20'''
 
             '''c = {'g': style("█",(24,30,24),reset=False)*2,
                  'dp': style("█",(143,8,112),reset=False)*2,
@@ -147,21 +147,21 @@ def dev(Session=Session): #DEBUG
             self.pen = obj().create(penchar='█')
             self.penc = 0
             def on_click_pen(mx, my, data):
-                self.pen.pen._x = mx + sc.camx
-                self.pen.pen._y = sc.camy - my
+                self.pen.pen.x = mx + sc.camx
+                self.pen.pen.y = sc.camy - my
                 self.pen.pen.down(char=style(self.pen.pen.char, color=(self.penc+13 if data==0 else 'gray') if not self.pencolor else self.pencolor))
                 self.penc = 0 if self.penc >= 13 else self.penc + 1
                 if data == 2:
                     self.pen.pen.cancel()
             def on_release_pen(mx, my, data):
                 if data == 2:
-                    if self.pen.pen.current_obj: self.pen.pen.current_obj.discard()
-                    self.pen.pen.commit(r=0, hitbox=False)
+                    self.pen.pen.drop()
+                    self.pen.pen.cutcommit(r=0, hitbox=False)
                 self.pen.pen.up(dynamic=True)
             inp.onmouse('click', on_click_pen)
             inp.onmouse('release', on_release_pen)
 
-            self.push = sc.obj().create(exradius=40, exforce=30, show=False)
+            self.push = sc.obj().create(force=30*40, cap=30, radius=40, show=False)
             self.push.transform.text = sc.styler.shapes.circle(5, style('X', 'red'), aspect=self.push.transform.aspect)
 
             def onpress(): # key press events
@@ -219,7 +219,7 @@ def dev(Session=Session): #DEBUG
                     self.push.transform.x = ax - self.push.transform.xc()
                     self.push.transform.y = ay + self.push.transform.yc()
                     self.push.rendering.show = True
-                    self.push.explosion.explode(ax,ay)
+                    self.push.force.apply(ax,ay)
                 else:
                     self.push.rendering.show = False
                 if(k('up')): sc.dimyoffset += 1#self.tary += self.camspeed/2
@@ -262,10 +262,7 @@ def dev(Session=Session): #DEBUG
                     r=0, when=lambda o: hasattr(o, 'physics')
                 )
             
-            try: # debug info register
-                dinfo.clear()
-                dinfo.extend([sc.recomp.sub('', x) for x in sc.dinfo])
-            except: pass
+            self.session.dinfo = [sc.recomp.sub('', x) for x in sc.dinfo]
 
     #LAUNCH THE SCENES
     main_handle = main_world.launch(main)

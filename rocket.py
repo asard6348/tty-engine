@@ -1,8 +1,5 @@
 from ttyengine.launcher import Session, attempt
 import math, random
-from ttyengine.debugger import debug
-dinfo = None
-#_d, dinfo = debug()
 
 lost = False
 plr = None
@@ -103,8 +100,8 @@ class explode():
         self.exp = explode
         self.cb = callback
     def start(self, scene):
-        self.bomb = scene.obj().create(z=10, exradius=self.radi, exforce=self.forc) # bomb
-        if self.exp: self.bomb.explosion.explode()
+        self.bomb = scene.obj().create(z=10, force=self.forc * self.radi, cap=self.forc, radius=self.radi) # bomb
+        if self.exp: self.bomb.force.apply(*self.pos)
     def final(self, scene, handle, session):
         if self.delay > 0:
             self.delay -= 1/scene.framerate
@@ -117,9 +114,9 @@ class explode():
             return
         self.timer -= 1/scene.framerate
         t = self.bomb.transform
-        ex = self.bomb.explosion
+        ex = self.bomb.force
         delta = max(0, self.timer/self.begin)
-        t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=t.aspect), alpha=min(1,ex.force/20)*delta, color='orange', bgcolor=scene.bgcolor)
+        t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=t.aspect), alpha=min(1,ex.cap/20)*delta, color='orange', bgcolor=scene.bgcolor)
         t.x, t.y = self.pos
         t.x -= t.xlen()/2
         t.y += t.ylen()/2
@@ -385,10 +382,6 @@ class player():
         if not self.lsinfo:
             p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*plr.physics.mass
 
-        if dinfo is not None and False:
-            dinfo.clear()
-            dinfo.extend(scene.bgcolor)
-
 class background():
     def start(self):
         self.density = 0.08
@@ -428,7 +421,6 @@ class background():
 
 def d():
     se = Session()
-    if dinfo is not None: se.inp.focused = False
     w = se.World()
     h = w.launch(player)
     hbg = w.launch(background)

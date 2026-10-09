@@ -1,4 +1,4 @@
-import os, sys, time, threading, traceback, contextlib, inspect, ctypes, re
+import os, sys, time, threading, traceback, contextlib, inspect, ctypes, re, socket, subprocess, tempfile, shlex
 
 def highlight_traceback(tb_str: str) -> str:
     RESET, BOLD, RED, GREEN, YELLOW, CYAN, MAGENTA = (
@@ -60,6 +60,81 @@ def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, ou
             except: pass
             try: os._exit(0)
             except: exit()
+
+DEBUG_HOLD = '\033]777;hold\007'
+DEBUG_RECEIVER = r"""
+import sys, socket, codecs
+if sys.platform == "win32":
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    if __BACK__:
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd: ctypes.windll.user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 19)
+out = sys.stdout
+title = __TITLE__
+if title is not None:
+    out.write("\033]0;" + title + "\007")
+out.write("\033[?1049l\033[?1049h\033[?25l\033[2J\033[H")
+out.flush()
+sock = socket.socket()
+sock.connect(("127.0.0.1", __PORT__))
+decode = codecs.getincrementaldecoder("utf-8")("replace").decode
+hold = False
+while True:
+    data = sock.recv(65536)
+    if not data:
+        break
+    text = decode(data)
+    if "\033]777;hold\007" in text:
+        text = text.replace("\033]777;hold\007", "")
+        hold = True
+    out.write(text)
+    out.flush()
+out.write("\033[?25h")
+out.flush()
+if hold:
+    try: input()
+    except Exception: pass
+"""
+
+def spawn_console(script):
+    if sys.platform == "win32":
+        for cmd in (['conhost.exe', sys.executable, '-c', script], [sys.executable, '-c', script]):
+            try:
+                return subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+            except FileNotFoundError:
+                continue
+        return None
+    if sys.platform == "darwin":
+        fd, path = tempfile.mkstemp(prefix='ttyengine_debug_', suffix='.py')
+        with os.fdopen(fd, 'w') as f:
+            f.write(script)
+        command = f'{shlex.quote(sys.executable)} {shlex.quote(path)}; rm -f {shlex.quote(path)}; exit'
+        command = command.replace('\\', '\\\\').replace('"', '\\"')
+        return subprocess.Popen(['osascript', '-e', f'tell application "Terminal" to do script "{command}"'],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for term in ['x-terminal-emulator', 'gnome-terminal', 'xterm', 'konsole']:
+        try:
+            return subprocess.Popen([term, '-e', sys.executable, '-c', script],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, close_fds=True)
+        except FileNotFoundError:
+            continue
+    return None
+
+def format_dinfo(value):
+    if value is None:
+        lines = []
+    elif isinstance(value, str):
+        lines = value.split('\n')
+    elif isinstance(value, dict):
+        lines = [line for k, v in value.items() for line in f'{k}: {v}'.split('\n')]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        lines = [line for v in value for line in str(v).split('\n')]
+    else:
+        lines = str(value).split('\n')
+    return '\033[H' + '\033[K\n'.join(lines) + '\033[K\033[J'
 
 def getargs(func, args):
     if not callable(func): return {}
@@ -251,6 +326,8 @@ class Session():
         self.fill = Styler.fill
         self.running = False
         self._pause = False
+        self._dinfo = None
+        self._debug = None
         self._latency = max(latency())
         self._termxoffset = 0
         self._termyoffset = 0
@@ -286,6 +363,82 @@ class Session():
         if self._idle_scene is not None:
             self._idle_scene.bgcolor = self._bgcolor
             self._idle_scene.fgcolor = self._fgcolor
+
+    @property
+    def dinfo(self):
+        return self._dinfo
+    @dinfo.setter
+    def dinfo(self, value):
+        self._dinfo = value
+        self._debug_push()
+
+    def debug(self, title=None, back=False):
+        if self._debug is not None:
+            return True
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            server.bind(('127.0.0.1', 0))
+            server.listen(1)
+            script = (DEBUG_RECEIVER
+                      .replace('__PORT__', str(server.getsockname()[1]))
+                      .replace('__TITLE__', repr(title))
+                      .replace('__BACK__', repr(bool(back))))
+            proc = spawn_console(script)
+            if proc is None:
+                return False
+            server.settimeout(5)
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                try: proc.kill()
+                except Exception: pass
+                return False
+        finally:
+            server.close()
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        conn.settimeout(1.0)
+        try: sys.stdout.reconfigure(encoding='utf-8')
+        except Exception: pass
+        self._debug = {'proc': proc, 'conn': conn, 'last': None, 'hold': False}
+        if self.inp and self.inp.wf:
+            self.inp.focused = False
+        self._debug_push()
+        return True
+
+    def undebug(self):
+        d, self._debug = self._debug, None
+        if d is None:
+            return
+        try: d['conn'].close()
+        except OSError: pass
+        if sys.platform != 'darwin' and not d['hold']:
+            try: d['proc'].kill()
+            except Exception: pass
+        if self.inp and self.inp.wf:
+            self.inp.focused = True
+
+    def _debug_send(self, frame):
+        try:
+            self._debug['conn'].sendall(frame.encode('utf-8'))
+            return True
+        except (OSError, ValueError):
+            self.undebug()
+            return False
+
+    def _debug_push(self):
+        d = self._debug
+        if d is None:
+            return
+        frame = format_dinfo(self._dinfo)
+        if frame != d['last'] and self._debug_send(frame):
+            d['last'] = frame
+
+    def _debug_trace(self):
+        d = self._debug
+        if d is None:
+            return
+        d['hold'] = True
+        self._debug_send('\033[H\033[2J\033[3J' + highlight_traceback(traceback.format_exc()) + DEBUG_HOLD)
 
     @property
     def styler(self):
@@ -418,6 +571,10 @@ class Session():
 
                         dim_changed = any([w.scene.checkres() for w in self.worlds if not w.pause]) or changed_optimized
                         if dim_changed:
+                            for w in self.worlds:
+                                for o in w.scene.objs:
+                                    if hasattr(o, 'rendering'):
+                                        o.rendering.redraw()
                             if self.outerbg:
                                 fillbuffer += self.fill(
                                     self.bgcolor,
@@ -467,7 +624,6 @@ class Session():
                             for o in list(objs):
                                 if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:
-                                        o.rendering._markdirty()
                                         rem, draw = o.rendering.render(False, True, exclude_rects)
                                         removebuffer += rem
                                         if o.rendering.show: drawbuffer += draw
@@ -501,6 +657,7 @@ class Session():
                 if self.clearonstop:
                     sys.stdout.write("\033[H\033[2J\033[3J")
                     sys.stdout.flush()
+                self.undebug()
 
     def run(self, **kwargs):
-        attempt(lambda: self.run_attempt(**kwargs), lambda: contextlib.ExitStack().close())
+        attempt(lambda: self.run_attempt(**kwargs), self._debug_trace)

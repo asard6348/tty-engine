@@ -73,7 +73,7 @@ class obj:
                         ch = compins._changed
                     else:
                         ch.update({k: v})
-            elif not ow or k not in ow:
+            elif k not in _attrs:
                 setattr(self, k, v)
 
         compinsattr = comp.__name__
@@ -95,7 +95,7 @@ class obj:
                             ch = c._changed
                         else:
                             ch.update({k: v})
-                else:
+                elif k not in _attrs:
                     setattr(self, k, v)
 
     def kwargs(self):

@@ -1,9 +1,9 @@
-from ttyengine import launcher, debugger
+from ttyengine import launcher
 import time
 
 ses = launcher.Session()
 wor = ses.World()
-#_d,dinfo = debugger.debug()
+#ses.debug()
 
 class main:
     def start(self, scene, session):

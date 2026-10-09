@@ -8,6 +8,8 @@ import math, re, sys, statistics, inspect
 
 #GLOBAL
 _RESET_FG = '\033[22;23;24;39m'
+_NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
+_NEIGHBOURS8 = _NEIGHBOURS4 + ((-1, -1), (1, -1), (-1, 1), (1, 1))
 
 def _argslen(cb):
     params = inspect.signature(cb).parameters
@@ -144,6 +146,11 @@ class transform(_change_callback):
         self._parse_pixels_key = None
         self._parse_pixels_val = None
         self._centroid_cache = {}
+        self._rotmap = None
+        self._rotcells = {}
+        self._onchangecb = {}
+        self._changing = False
+        self.rotate(self._rotation, init=True)
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -336,37 +343,52 @@ class transform(_change_callback):
         angle = math.radians(angle_degrees)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
+        ASPECT = self.aspect
 
-        def cal(txt):
+        def cal(txt, record=False):
             crows = self.scene.recomp.sub('', txt).splitlines()
             if not crows:
+                if record:
+                    self._rotmap = None
+                    self._rotcells = {}
                 return ''
             height = len(crows)
             width  = max(len(r) for r in crows) if crows else 0
             cx, cy = width / 2, height / 2
 
             new_pixels = {}
+            cells = {}
             for (x, y), (char, style) in self.parse_pixels(txt).items():
                 rel_x, rel_y = x - cx, y - cy
-                ASPECT = self.aspect
                 rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
                 ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
                 nx = int(round(rx_n / ASPECT + cx))
                 ny = int(round(ry_n + cy))
                 if (nx, ny) not in new_pixels or new_pixels[(nx, ny)][0] == ' ':
                     new_pixels[(nx, ny)] = (char, style)
+                if record and char != ' ':
+                    cells.setdefault((nx, ny), []).append((x, y))
 
             if not new_pixels:
+                if record:
+                    self._rotmap = None
+                    self._rotcells = {}
                 return ''
-
             all_xs = [p[0] for p in new_pixels]
             ns_ys  = [p[1] for p in new_pixels if new_pixels[p][0] != ' ']
             if not ns_ys:
+                if record:
+                    self._rotmap = None
+                    self._rotcells = {}
                 return ''
-            return self.build_rows(new_pixels, min(all_xs), max(all_xs), min(ns_ys), max(ns_ys))
+            min_x, min_y = min(all_xs), min(ns_ys)
+            if record:
+                self._rotmap = (cx, cy, min_x, min_y, ASPECT, cos_a, sin_a)
+                self._rotcells = cells
+            return self.build_rows(new_pixels, min_x, max(all_xs), min_y, max(ns_ys))
 
         self.vtext = cal(self.vrtext)
-        self._text = cal(self._rtext)
+        self._text = cal(self._rtext, True)
         self._xlen_cache = None
         self._ylen_cache = None
 
@@ -375,194 +397,180 @@ class transform(_change_callback):
         self.vx = round(orig_cx - rot_cx)
         self.vy = -round(orig_cy - rot_cy)
 
-    def _get_rot_cache(self):
-        key = (round(self._rotation * 20), hash(self._rtext))
-        if getattr(self, '_rot_cache_key', None) == key:
-            return self._rot_cache_val
-        crows = self.scene.recomp.sub('', self._rtext).splitlines()
-        if not crows:
-            self._rot_cache_key = key
-            self._rot_cache_val = ({}, 0, 0, 0, 0)
-            return self._rot_cache_val
-        height_r = len(crows)
-        width_r = max(len(r) for r in crows)
-        cx_r, cy_r = width_r / 2, height_r / 2
-        angle = math.radians(self._rotation)
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        ASPECT = self.aspect
-        rot_positions = {}
-        for ri, row in enumerate(crows):
-            for ci, char in enumerate(row):
-                if char not in (' ', '\n'):
-                    rel_x = ci - cx_r
-                    rel_y = ri - cy_r
-                    rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
-                    ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
-                    nx = int(round(rx_n / ASPECT + cx_r))
-                    ny = int(round(ry_n + cy_r))
-                    if (nx, ny) not in rot_positions:
-                        rot_positions[(nx, ny)] = (ci, ri)
-        min_x = min(p[0] for p in rot_positions) if rot_positions else 0
-        min_y = min(p[1] for p in rot_positions) if rot_positions else 0
-        val = (rot_positions, min_x, min_y, cx_r, cy_r)
-        self._rot_cache_key = key
-        self._rot_cache_val = val
-        return val
-
-    def world_to_rtext(self, wx, wy):
-        rot_positions, min_x, min_y, cx_r, cy_r = self._get_rot_cache()
-        if not rot_positions:
-            return None
-        ox = round(self._x + self.vx)
-        oy = round(self._y + self.vy)
-        nx = wx - ox + min_x
-        ny = oy - wy + min_y
-        result = rot_positions.get((nx, ny))
-        if result is not None:
-            return result
-        for ddx, ddy in ((-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)):
-            result = rot_positions.get((nx + ddx, ny + ddy))
-            if result is not None:
-                return result
-        return None
+    def _origin(self):
+        return round(self._x + self.vx), round(self._y + self.vy)
 
     def rtext_to_world(self, ci, ri):
-        rot_positions, min_x, min_y, cx_r, cy_r = self._get_rot_cache()
-        if not rot_positions:
+        m = self._rotmap
+        if m is None:
             return None
-        angle = math.radians(self._rotation)
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        ASPECT = self.aspect
-        rel_x = ci - cx_r
-        rel_y = ri - cy_r
+        cx, cy, min_x, min_y, ASPECT, cos_a, sin_a = m
+        rel_x = ci - cx
+        rel_y = ri - cy
         rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
         ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
-        nx = int(round(rx_n / ASPECT + cx_r))
-        ny = int(round(ry_n + cy_r))
-        ox = round(self._x + self.vx)
-        oy = round(self._y + self.vy)
-        wx = ox + (nx - min_x)
-        wy = oy - (ny - min_y)
-        return wx, wy
+        nx = int(round(rx_n / ASPECT + cx))
+        ny = int(round(ry_n + cy))
+        ox, oy = self._origin()
+        return ox + (nx - min_x), oy - (ny - min_y)
+
+    def world_to_rtext_all(self, wx, wy):
+        m = self._rotmap
+        if m is None:
+            return []
+        ox, oy = self._origin()
+        return self._rotcells.get((wx - ox + m[2], oy - wy + m[3]), [])
+
+    def world_to_rtext(self, wx, wy):
+        found = self.world_to_rtext_all(wx, wy)
+        return found[0] if found else None
+
+    def world_to_rtextf(self, wx, wy):
+        m = self._rotmap
+        if m is None:
+            return None
+        cx, cy, min_x, min_y, ASPECT, cos_a, sin_a = m
+        ox, oy = self._origin()
+        rx_n = (wx - ox + min_x - cx) * ASPECT
+        ry_n = oy - wy + min_y - cy
+        rel_x = (rx_n * cos_a + ry_n * sin_a) / ASPECT
+        rel_y = -rx_n * sin_a + ry_n * cos_a
+        return rel_x + cx, rel_y + cy
+
+    def cutline(self, p0, p1):
+        a = self.world_to_rtextf(*p0)
+        b = self.world_to_rtextf(*p1)
+        if a is None or b is None:
+            return set()
+        width, height = self._rotmap[0] * 2, self._rotmap[1] * 2
+        if (max(a[0], b[0]) < -1 or min(a[0], b[0]) > width
+                or max(a[1], b[1]) < -1 or min(a[1], b[1]) > height):
+            return set()
+        steps = max(1, int(math.ceil(max(abs(b[0] - a[0]), abs(b[1] - a[1])) * 2)))
+        pixels = self.parse_pixels(self.vrtext)
+        walls = set()
+        for i in range(steps + 1):
+            u = i / steps
+            c = (round(a[0] + (b[0] - a[0]) * u), round(a[1] + (b[1] - a[1]) * u))
+            if c in pixels and pixels[c][0] != ' ':
+                walls.add(c)
+        return walls
+
+    def _clear(self, cells):
+        styled = self.parse_pixels(self.vrtext)
+        hit = [c for c in cells if c in styled and styled[c][0] != ' ']
+        if not hit:
+            return False
+        styled = dict(styled)
+        for c in hit:
+            styled[c] = (' ', '')
+        ref = next((p for p, (char, _) in styled.items() if char != ' '), None)
+        before = self.rtext_to_world(*ref) if ref is not None else None
+        xs = [p[0] for p in styled]
+        ys = [p[1] for p in styled]
+        self.rtext = self.build_rows(styled, min(xs), max(xs), min(ys), max(ys))
+        after = self.rtext_to_world(*ref) if ref is not None else None
+        if before is not None and after is not None:
+            if before[0] != after[0]:
+                self.x = self._x + before[0] - after[0]
+            if before[1] != after[1]:
+                self.y = self._y + before[1] - after[1]
+        return True
 
     def cut(self, wx, wy, r=1):
-        styled_pixels = self.parse_pixels(self.vrtext)
-        changed = False
+        cells = []
         for dy in range(-(r - 1), r):
             for dx in range(-(r - 1), r):
-                result = self.world_to_rtext(wx + dx, wy + dy)
-                if result is None:
-                    continue
-                ci, ri = result
-                if (ci, ri) in styled_pixels and styled_pixels[(ci, ri)][0] != ' ':
-                    styled_pixels[(ci, ri)] = (' ', '')
-                    changed = True
-        if changed:
-            coords = list(styled_pixels)
-            xs = [p[0] for p in coords]
-            ys = [p[1] for p in coords]
-            self.rtext = self.build_rows(styled_pixels, min(xs), max(xs), min(ys), max(ys))
-        return changed
+                cells.extend(self.world_to_rtext_all(wx + dx, wy + dy))
+        return self._clear(cells)
 
     def cutpoints(self, points, r=1):
-        styled_pixels = self.parse_pixels(self.vrtext)
-        changed = False
+        cells = []
         for wx, wy in points:
-            for dy in range(-(r-1), r):
-                for dx in range(-(r-1), r):
-                    result = self.world_to_rtext(wx+dx, wy+dy)
-                    if result and styled_pixels.get(result, (' ',''))[0] != ' ':
-                        styled_pixels[result] = (' ', '')
-                        changed = True
-        if changed:
-            coords = list(styled_pixels)
-            xs = [p[0] for p in coords]
-            ys = [p[1] for p in coords]
-            self.rtext = self.build_rows(styled_pixels, min(xs), max(xs), min(ys), max(ys))
-        return changed
+            for dy in range(-(r - 1), r):
+                for dx in range(-(r - 1), r):
+                    cells.extend(self.world_to_rtext_all(wx + dx, wy + dy))
+        return self._clear(cells)
+
+    def _notify_whole(self, callback):
+        if callable(callback):
+            l = _argslen(callback)
+            if l > 1: callback([self.obj], self.obj)
+            elif l > 0: callback([self.obj])
+            else: callback()
+
+    def _fragments(self, coords, diagonal=True, walls=()):
+        walls = set(walls)
+        neighbours = _NEIGHBOURS8 if diagonal else _NEIGHBOURS4
+        remaining = set(coords)
+        components = []
+        while remaining:
+            group = set()
+            stack = [next(iter(remaining))]
+            while stack:
+                pos = stack.pop()
+                if pos not in remaining:
+                    continue
+                remaining.remove(pos)
+                group.add(pos)
+                cx, cy = pos
+                for dx, dy in neighbours:
+                    nxt = (cx + dx, cy + dy)
+                    if nxt not in remaining:
+                        continue
+                    if dx and dy and (cx + dx, cy) in walls and (cx, cy + dy) in walls:
+                        continue
+                    stack.append(nxt)
+            components.append(group)
+        return components
 
     def _spawn_from_components(self, components, pixels, callback=None):
-        rot_positions, rot_min_x, rot_min_y, cx_r, cy_r = self._get_rot_cache()
-        angle = math.radians(self._rotation)
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        ASPECT = self.aspect
-        ox = round(self._x + self.vx)
-        oy = round(self._y + self.vy)
+        rotation = self._rotation
+        ox, oy = self._x, self._y
 
         spawns = []
+        anchors = []
+        pivot = self._rotmap
         for group in components:
-            min_x = min_y = None
-            max_x = max_y = None
-            sum_wx = sum_wy = 0
-            sum_ci = sum_ri = 0
-            group_pixels = {}
-
-            for ci, ri in group:
-                if min_x is None or ci < min_x: min_x = ci
-                if max_x is None or ci > max_x: max_x = ci
-                if min_y is None or ri < min_y: min_y = ri
-                if max_y is None or ri > max_y: max_y = ri
-                group_pixels[(ci, ri)] = pixels[(ci, ri)]
-                rel_x = ci - cx_r
-                rel_y = ri - cy_r
-                rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
-                ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
-                nx = int(round(rx_n / ASPECT + cx_r))
-                ny = int(round(ry_n + cy_r))
-                sum_wx += ox + (nx - rot_min_x)
-                sum_wy += oy - (ny - rot_min_y)
-                sum_ci += ci
-                sum_ri += ri
-
-            n = len(group)
-            wcx = sum_wx / n
-            wcy = sum_wy / n
-            fcx = (max_x - min_x + 1) / 2.0
-            fcy = (max_y - min_y + 1) / 2.0
-            frag_orig_cx = sum_ci / n - min_x
-            frag_orig_cy = sum_ri / n - min_y
-
-            sum_frx = sum_fry = 0
-            frag_rot_min_x = frag_rot_min_y = None
-            for ci, ri in group:
-                li  = ci - min_x
-                lri = ri - min_y
-                rel_x = li  - fcx
-                rel_y = lri - fcy
-                rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
-                ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
-                frx = int(round(rx_n / ASPECT + fcx))
-                fry = int(round(ry_n + fcy))
-                sum_frx += frx
-                sum_fry += fry
-                if frag_rot_min_x is None or frx < frag_rot_min_x: frag_rot_min_x = frx
-                if frag_rot_min_y is None or fry < frag_rot_min_y: frag_rot_min_y = fry
-
-            frag_rot_cx = sum_frx / n
-            frag_rot_cy = sum_fry / n
-            vx_new = round(frag_orig_cx - frag_rot_cx)
-            vy_new = -round(frag_orig_cy - frag_rot_cy)
-            fx = wcx - vx_new - (frag_rot_cx - frag_rot_min_x)
-            fy = wcy - vy_new + (frag_rot_cy - frag_rot_min_y)
+            xs = [p[0] for p in group]
+            ys = [p[1] for p in group]
+            min_x, max_x = min(xs), max(xs) + 1
+            min_y, max_y = min(ys), max(ys) + 1
+            if pivot is not None and rotation % 360:
+                min_x, max_x = min(min_x, round(2 * pivot[0]) - max_x), max(max_x, round(2 * pivot[0]) - min_x)
+                min_y, max_y = min(min_y, round(2 * pivot[1]) - max_y), max(max_y, round(2 * pivot[1]) - min_y)
+            target = {w for w in (self.rtext_to_world(ci, ri) for ci, ri in group) if w is not None}
 
             kw = self.obj.kwargs()
-            kw.pop('mass', None)
+            for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy'):
+                kw.pop(key, None)
             spawns.append({
                 **kw,
-                'text': self.build_rows(group_pixels, min_x, max_x, min_y, max_y),
-                'x': fx,
-                'y': fy,
-                'rotation': self._rotation,
+                'text': self.build_rows({p: pixels[p] for p in group}, min_x, max_x - 1, min_y, max_y - 1),
+                'x': ox + min_x,
+                'y': oy - min_y,
+                'rotation': rotation,
             })
+            anchors.append(([(ci - min_x, ri - min_y) for ci, ri in group], target))
 
         obj_ref = self.obj
-        def do_split(spawns=spawns, obj_ref=obj_ref, cb=callback):
+        def do_split(spawns=spawns, anchors=anchors, obj_ref=obj_ref, cb=callback):
             parts = []
-            for kw in spawns:
-                parts.append(obj_ref.scene.obj().create(**kw))
+            for kw, (local, target) in zip(spawns, anchors):
+                part = obj_ref.scene.obj().create(**kw)
+                ft = part.transform
+                if target:
+                    placed = {w for w in (ft.rtext_to_world(*p) for p in local) if w is not None}
+                    if placed:
+                        dx = round(sum(w[0] for w in target) / len(target) - sum(w[0] for w in placed) / len(placed))
+                        dy = round(sum(w[1] for w in target) / len(target) - sum(w[1] for w in placed) / len(placed))
+                        best = min(
+                            ((sx, sy) for sx in range(dx - 1, dx + 2) for sy in range(dy - 1, dy + 2)),
+                            key=lambda s: len({(wx + s[0], wy + s[1]) for wx, wy in placed} ^ target)
+                        )
+                        ft.x = ft.x + best[0]
+                        ft.y = ft.y + best[1]
+                parts.append(part)
             if callable(cb):
                 l = _argslen(cb)
                 if l > 1: cb(parts, obj_ref)
@@ -576,100 +584,49 @@ class transform(_change_callback):
         do_split()
         return do_split
 
-    def split(self, callback=None):
+    def split(self, callback=None, diagonal=True):
         if getattr(self.obj, 'transform', None) is not self:
             return
         pixels = self.parse_pixels(self.vrtext)
         coords = {pos for pos, (char, _) in pixels.items() if char != ' '}
         if not coords:
-            if callable(callback):
-                l = _argslen(callback)
-                if l > 1: callback([self.obj], self.obj)
-                elif l > 0: callback([self.obj])
-                else: callback()
+            self._notify_whole(callback)
             self.obj.discard()
             return
 
-        remaining = set(coords)
-        components = []
-        while remaining:
-            start = next(iter(remaining))
-            group = set()
-            stack = [start]
-            while stack:
-                pos = stack.pop()
-                if pos not in remaining:
-                    continue
-                remaining.remove(pos)
-                group.add(pos)
-                cx, cy = pos
-                for dx, dy in ((-1,0),(1,0),(0,-1),(0,1)):
-                    if (cx+dx, cy+dy) in remaining:
-                        stack.append((cx+dx, cy+dy))
-            components.append(group)
-
+        components = self._fragments(coords, diagonal)
         if len(components) < 2:
-            if callable(callback):
-                l = _argslen(callback)
-                if l > 1: callback([self.obj], self.obj)
-                elif l > 0: callback([self.obj])
-                else: callback()
+            self._notify_whole(callback)
             return
 
         self._split_cb = self._spawn_from_components(components, pixels, callback)
         return self._split_cb
 
-    def split_at(self, wall_pixels, callback=None):
+    def split_at(self, wall_pixels, callback=None, diagonal=True):
         if getattr(self.obj, 'transform', None) is not self:
             return
         pixels = self.parse_pixels(self.vrtext)
         coords = {pos for pos, (char, _) in pixels.items() if char != ' '}
 
-        valid_walls = wall_pixels & coords
+        valid_walls = set(wall_pixels) & coords
         if not valid_walls:
-            if callable(callback):
-                l = _argslen(callback)
-                if l > 1: callback([self.obj], self.obj)
-                elif l > 0: callback([self.obj])
-                else: callback()
+            self._notify_whole(callback)
             return
 
-        remaining = coords - valid_walls
-        components = []
-        while remaining:
-            start = next(iter(remaining))
-            group = set()
-            stack = [start]
-            while stack:
-                pos = stack.pop()
-                if pos not in remaining:
-                    continue
-                remaining.remove(pos)
-                group.add(pos)
-                cx, cy = pos
-                for dx, dy in ((-1,0),(1,0),(0,-1),(0,1)):
-                    if (cx+dx, cy+dy) in remaining:
-                        stack.append((cx+dx, cy+dy))
-            components.append(group)
-
+        components = self._fragments(coords - valid_walls, diagonal, valid_walls)
         if len(components) < 2:
-            if callable(callback):
-                l = _argslen(callback)
-                if l > 1: callback([self.obj], self.obj)
-                elif l > 0: callback([self.obj])
-                else: callback()
+            self._notify_whole(callback)
             return
 
+        neighbours = _NEIGHBOURS8 if diagonal else _NEIGHBOURS4
         for wp in valid_walls:
             cx, cy = wp
             nearest = None
             for comp in components:
-                for dx, dy in ((-1,0),(1,0),(0,-1),(0,1)):
-                    if (cx+dx, cy+dy) in comp:
-                        nearest = comp
-                        break
-                if nearest: break
-            if nearest:
+                if any((cx + dx, cy + dy) in comp for dx, dy in neighbours):
+                    nearest = comp
+                    break
+            if nearest is not None:
                 nearest.add(wp)
 
         self._split_cb = self._spawn_from_components(components, pixels, callback)
@@ -766,9 +723,6 @@ class rendering():
     _default = True
     def on_discard(self):
         self.scene.discards.append(self.remove(write=False))
-        for other in self.scene.objs:
-            if hasattr(other, 'rendering'):
-                other.rendering._markdirty()
 
     def __init__(self, obj, **kwargs):
         self.t = obj.transform
@@ -781,8 +735,6 @@ class rendering():
         self._show = kwargs.get('show', True)
         self.renderspaces = kwargs.get('renderspaces', False)
         self.z = kwargs.get('z', 0)
-        self._dirty = True
-        self.t.onchange(self._markdirty)
 
     @property
     def show(self):
@@ -791,7 +743,6 @@ class rendering():
     @show.setter
     def show(self, value):
         self._show = value
-        self._markdirty()
 
     @property
     def z(self):
@@ -803,8 +754,8 @@ class rendering():
         if self._z > self.scene._lastz: self.scene._lastz = self._z
         if self._z < self.scene._firstz: self.scene._firstz = self._z
 
-    def _markdirty(self):
-        self._dirty = True
+    def redraw(self):
+        self.ptext = ''
 
     def front(self):
         self.z = self.scene._lastz +1
@@ -976,32 +927,33 @@ class rendering():
         bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
                    f'{self.scene.bgcolor[1]};{self.scene.bgcolor[2]}m')
         ir = self.scene.iround
-        acx = ir(((self.t.x) + (self.t.vx)) - ir(self.scene.camx))
-        acy = -ir(((self.t.y) + (self.t.vy)) - ir(self.scene.camy))
-        actext = self.t.vtext
-        acxoff = self.scene.dimxoffset
-        acyoff = self.scene.dimyoffset
-        
-        px, py, ptext, pxoff, pyoff = self.px, self.py, self.ptext, self.pxoff, self.pyoff
-        remove_output = ''
-        if px != acx or py != acy or ptext != actext or pxoff != acxoff or pyoff != acyoff or self._dirty:
-            remove_output = f'{bgcolor}{self.render_rows(ptext, px, py, acxoff, acyoff, erase=True, exclude_rects=exclude_rects)}\033[0m'
-        elif not self._dirty:
+        if self._show:
+            current = (
+                ir(((self.t.x) + (self.t.vx)) - ir(self.scene.camx)),
+                -ir(((self.t.y) + (self.t.vy)) - ir(self.scene.camy)),
+                self.t.vtext,
+                self.scene.dimxoffset,
+                self.scene.dimyoffset,
+            )
+        else:
+            current = (0, 0, '', 0, 0)
+        previous = (self.px, self.py, self.ptext, self.pxoff, self.pyoff)
+        if current == previous:
             return ('', '') if split else ''
-        draw_output = f'{bgcolor}{self.render_rows(actext, acx, acy, acxoff, acyoff, erase=False, exclude_rects=exclude_rects)}\033[0m'
+        acx, acy, actext, acxoff, acyoff = current
+        px, py, ptext, pxoff, pyoff = previous
 
-        self.px    = acx
-        self.py    = acy
-        self.ptext = actext
-        self.pxoff = acxoff
-        self.pyoff = acyoff
-        self._dirty = False
+        remove_output = ''
+        if ptext:
+            remove_output = f'{bgcolor}{self.render_rows(ptext, px, py, pxoff, pyoff, erase=True, exclude_rects=exclude_rects)}\033[0m'
+        draw_output = ''
+        if actext:
+            draw_output = f'{bgcolor}{self.render_rows(actext, acx, acy, acxoff, acyoff, erase=False, exclude_rects=exclude_rects)}\033[0m'
+
+        self.px, self.py, self.ptext, self.pxoff, self.pyoff = current
 
         if write:
-            if self._show:
-                sys.stdout.write(remove_output + draw_output)
-            else:
-                sys.stdout.write(remove_output)
+            sys.stdout.write(remove_output + draw_output)
             sys.stdout.flush()
         return (remove_output, draw_output) if split else remove_output + draw_output
 
@@ -1361,8 +1313,7 @@ class pen():
         self._pixels = {}
         self._ox = 0
         self._oy = 0
-        self._pcut_x = 0
-        self._pcut_y = 0
+        self._pcut = None
         self._cut_walls = {}
 
     @property
@@ -1389,24 +1340,38 @@ class pen():
 
     def down(self, x=None, y=None, char=None, **kwargs):
         if self.active:
-            return
+            return self.current_obj
         self.active = True
         self._pixels = {}
-        if x: self._x = x
-        if y: self._y = y
+        if x is not None: self._x = x
+        if y is not None: self._y = y
         self._ox = round(self._x)
         self._oy = round(self._y)
         self._px = self._ox
         self._py = self._oy
         self._pchar = char or self.char
         self._pixels[(0, 0)] = self._pchar
-        kwargs.update({k: v for k,v in {'text': self._pchar, 'x': x or self._ox, 'y': y or self._oy}.items() if k not in kwargs})
+        for key, value in (('text', self._pchar), ('x', self._ox), ('y', self._oy)):
+            kwargs.setdefault(key, value)
         self.current_obj = self.scene.obj().create(**kwargs)
+        return self.current_obj
+
+    def commit(self, **kwargs):
+        if self.current_obj is None or self.current_obj not in self.scene.objs:
+            return None
+        return self.current_obj.create(**kwargs)
 
     def up(self, **kwargs):
+        finished = self.commit(**kwargs)
         self.active = False
-        if self.current_obj is not None:
-            self.current_obj.create(**kwargs)
+        self.current_obj = None
+        self._pixels = {}
+        return finished
+
+    def drop(self):
+        if self.current_obj is not None and self.current_obj in self.scene.objs:
+            self.current_obj.discard()
+        self.active = False
         self.current_obj = None
         self._pixels = {}
 
@@ -1426,10 +1391,7 @@ class pen():
         self._rebuild()
 
     def _line(self, x0, y0, x1, y1):
-        ASPECT = 1/self.obj.transform.aspect
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0) * ASPECT
-        steps = max(int(max(dx, dy)), 1)
+        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
         seen = set()
         points = []
         for i in range(steps + 1):
@@ -1441,7 +1403,7 @@ class pen():
         return points
 
     def _rebuild(self):
-        if not self._pixels or self.current_obj is None:
+        if not self._pixels or self.current_obj is None or self.current_obj not in self.scene.objs:
             return
 
         xs = [p[0] for p in self._pixels]
@@ -1456,97 +1418,134 @@ class pen():
                 row += self._pixels.get((col_x, row_y), ' ')
             rows.append(row)
 
-        self.current_obj.transform.x = self._ox + min_x
-        self.current_obj.transform.y = self._oy + max_y
-
-        self.current_obj.transform.rtext = '\n'.join(rows)
+        t = self.current_obj.transform
+        t.x = self._ox + min_x
+        t.y = self._oy + max_y
+        t.rtext = '\n'.join(rows)
 
     def cut(self, wx, wy, r=0, when=True):
-        for ix, iy in self._line(self._pcut_x, self._pcut_y, round(wx), round(wy)):
-            for o in list(self.scene.objs):
-                if o is self.obj or not hasattr(o, 'transform') or not (when(o) if callable(when) else when):
-                    continue
-                if r == 0:
-                    result = o.transform.world_to_rtext(ix, iy)
-                    if result is not None:
-                        ci, ri = result
-                        plain = self.scene.recomp.sub('', o.transform._rtext).splitlines()
-                        if 0 <= ri < len(plain) and 0 <= ci < len(plain[ri]) and plain[ri][ci] != ' ':
-                            if id(o) not in self._cut_walls:
-                                self._cut_walls[id(o)] = (o, set())
-                            self._cut_walls[id(o)][1].add((ci, ri))
-                else:
-                    if o.transform.cut(ix, iy, r=r):
-                        if id(o) not in self._cut_walls:
-                            self._cut_walls[id(o)] = (o, None)
-        self._pcut_x = round(wx)
-        self._pcut_y = round(wy)
+        end = (round(wx), round(wy))
+        start = self._pcut if self._pcut is not None else end
+        self._pcut = end
+        cut = False
+        for o in list(self.scene.objs):
+            if o is self.obj or not hasattr(o, 'transform') or not (when(o) if callable(when) else when):
+                continue
+            t = o.transform
+            if r == 0:
+                walls = t.cutline(start, end)
+                if walls:
+                    entry = self._cut_walls.setdefault(id(o), (o, set()))
+                    if entry[1] is not None:
+                        entry[1].update(walls)
+                    cut = True
+            else:
+                for ix, iy in self._line(*start, *end):
+                    if t.cut(ix, iy, r=r):
+                        self._cut_walls.setdefault(id(o), (o, None))
+                        cut = True
+        return cut
 
-    def commit(self, r=0, callback=None, **kwargs):
+    def cutcommit(self, r=0, callback=None, diagonal=True, **kwargs):
         cut_objs = []
-        for o, wall_pixels in self._cut_walls.values():
+        for o, wall_pixels in list(self._cut_walls.values()):
             if o not in self.scene.objs:
                 continue
             o.create(**kwargs)
-            if r == 0:
-                o.transform.split_at(wall_pixels, callback=callback)
+            if r == 0 and wall_pixels:
+                o.transform.split_at(wall_pixels, callback=callback, diagonal=diagonal)
             else:
-                o.transform.split(callback=callback)
+                o.transform.split(callback=callback, diagonal=diagonal)
             cut_objs.append(o)
         self._cut_walls = {}
+        self._pcut = None
         return cut_objs
 
     def cancel(self):
-        self._pcut_x = 0
-        self._pcut_y = 0
+        self._pcut = None
         self._cut_walls = {}
 
-class explosion():
-    _owned = ['exradius', 'exforce']
+class force():
+    _owned = ['affect', 'cap', 'force', 'position', 'radius', 'torque']
     _required = [transform]
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
         self.t = obj.transform
         self.scene = obj.scene
-        self.radius = kwargs.get('exradius', 10)
-        self.force = kwargs.get('exforce', 5)
+        self.affect = kwargs.get('affect', None)
+        self.cap = kwargs.get('cap', None)
+        self.force = kwargs.get('force', 0)
+        self.position = kwargs.get('position', None)
+        self.radius = kwargs.get('radius', None)
+        self.torque = kwargs.get('torque', True)
 
-    def explode(self, x=None, y=None, radius=None, force=None):
-        r = radius if radius is not None else self.radius
-        f = force if force is not None else self.force
-        ex = x if x is not None else self.t.x
-        ey = y if y is not None else self.t.y
+    @staticmethod
+    def _resolve(value, o):
+        if callable(value):
+            return value(o) if _argslen(value) else value()
+        return value
 
-        for o in list(self.scene.objs):
-            if o is self.obj or not hasattr(o, 'transform') or not hasattr(o, 'physics'):
-                continue
-            if not o.physics.dynamic:
-                continue
-            
-            ox = o.transform.x + o.transform.xc()
-            oy = o.transform.y - o.transform.yc()
-            dx = ox - ex
-            dy = oy - ey
-            ASPECT = self.t.aspect
-            dist = math.sqrt((dx * ASPECT) ** 2 + dy ** 2)
-            if dist > r or dist == 0:
+    @staticmethod
+    def _center(o):
+        t = o.transform
+        return t.x + t.vx + t.xc(), t.y + t.vy - t.yc()
+
+    def targets(self):
+        affect = self.affect
+        if affect is None:
+            candidates = list(self.scene.objs)
+        elif hasattr(affect, 'transform'):
+            candidates = [affect]
+        else:
+            candidates = list(affect)
+        alive = {id(o) for o in self.scene.objs}
+        return [
+            o for o in candidates
+            if o is not self.obj and id(o) in alive
+            and hasattr(o, 'transform') and hasattr(o, 'physics') and o.physics.dynamic
+        ]
+
+    def apply(self, x=None, y=None):
+        affected = []
+        aspect = self.t.aspect
+        for o in self.targets():
+            cx, cy = self._center(o)
+            if self.position is None:
+                px, py = self._center(self.obj)
+            else:
+                px, py = self._resolve(self.position, o)
+            if x is not None: px = x
+            if y is not None: py = y
+            dx = cx - px
+            dy = cy - py
+            dist = math.sqrt((dx * aspect) ** 2 + dy ** 2)
+            if self.radius is not None and dist > self.radius:
                 continue
 
-            strength = f * (1 - dist / r)
-            fx = (dx / dist) * strength
-            fy = (dy / dist) * strength
+            value = self._resolve(self.force, o)
+            if isinstance(value, (tuple, list)):
+                fx, fy = value
+            else:
+                if dist == 0 or not value:
+                    continue
+                strength = value / (4 * math.pi * dist)
+                if self.cap is not None:
+                    strength = max(-self.cap, min(self.cap, strength))
+                direction = math.atan2(dy, dx * aspect)
+                fx = strength * math.cos(direction) / aspect
+                fy = strength * math.sin(direction)
+
             o.physics.xvel += fx
             o.physics.yvel += fy
 
-            if not o.physics.hitbox:
+            if self.torque and dist and not o.physics.hitbox:
                 arm_x = o.transform.xc()
                 arm_y = o.transform.yc()
-
                 hit_x = -dx / (dist / (arm_x + 1e-6))
-                hit_y =  dy / (dist / (arm_y + 1e-6))
+                hit_y = dy / (dist / (arm_y + 1e-6))
                 hit_x = max(-arm_x, min(arm_x, hit_x))
                 hit_y = max(-arm_y, min(arm_y, hit_y))
-
-                torque = hit_x * fy - hit_y * fx
-                o.physics.avel += torque
+                o.physics.avel += hit_x * fy - hit_y * fx
+            affected.append(o)
+        return affected
