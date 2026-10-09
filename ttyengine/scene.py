@@ -208,8 +208,8 @@ class Scene:
         self._camx = 0
         self._camy = 0
         self._bgcolor = (0, 0, 0)
-        self.fgcolor = (204, 204, 204) # default text color; the world keeps it (and bgcolor) in sync with its session
-        self.styler = Styler(self) # styling API; style() defaults to this scene's bgcolor/fgcolor
+        self.fgcolor = (204, 204, 204)
+        self.styler = Styler(self)
         self.recomp =re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07?|\x1b[()]?[A-Za-z0-9])')
         self._lastz = 0
         self._firstz = 0

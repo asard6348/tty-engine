@@ -7,7 +7,7 @@ except Exception:
     keyboard = None
 
 try:
-    from blessed import Terminal # lets inp() work without the launcher
+    from blessed import Terminal
 except Exception:
     Terminal = None
 
@@ -175,7 +175,7 @@ class inp():
         atexit.register(lambda: ref() and ref().cleanup())
 
         if term is None and Terminal is not None and _is_tty():
-            term = Terminal() # standalone use: no launcher handed us one
+            term = Terminal()
         self.term = term # triggers setter
 
     @property
@@ -559,11 +559,9 @@ class inp():
         return removed
 
     def offpress(self, key, caps=False):
-        # remove every onpress callback of `key` (caps=True: of both its lower and upper case); returns how many
         return self._clear_key(self._press_cbs, key, caps)
 
     def offrelease(self, key, caps=False):
-        # remove every onrelease callback of `key` (caps=True: of both its lower and upper case); returns how many
         return self._clear_key(self._release_cbs, key, caps)
 
     def stop(self, handle):
@@ -602,15 +600,14 @@ class inp():
         self._mouse_cbs.append(handle)
         return handle
 
-    def stopmouse(self, handle): # stop the one onmouse registration `handle` was returned for
-        # also takes a list/tuple of handles; returns True if something was removed
+    def stopmouse(self, handle):
         if isinstance(handle, (list, tuple)) and handle and isinstance(handle[0], tuple):
             return any([self.stopmouse(h) for h in handle])
         before = len(self._mouse_cbs)
         self._mouse_cbs = [h for h in self._mouse_cbs if h is not handle]
         return len(self._mouse_cbs) != before
 
-    def offmouse(self, handle): # same as stopmouse, kept for existing code
+    def offmouse(self, handle):
         return self.stopmouse(handle)
 
     #FOCUS API

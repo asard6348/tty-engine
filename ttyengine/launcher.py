@@ -148,8 +148,6 @@ class World():
             if start: start(**self.startargs)
         @property
         def priority(self):
-            # Execution order inside the loop: higher runs first, equal priorities keep launch order.
-            # Lives on the handle object itself, so a class can declare `priority = 5` and change it at runtime.
             return getattr(self.handle, 'priority', 0)
         @priority.setter
         def priority(self, value):
@@ -195,7 +193,6 @@ class World():
                     self.session._resume.notify_all()
 
     def sync_colors(self):
-        # the scene follows the session's background and text colors (also called when the session changes them)
         if self.session is not None:
             self.scene.bgcolor = self.session.bgcolor
             self.scene.fgcolor = self.session.fgcolor
@@ -238,9 +235,7 @@ class World():
 
 #SESSION CLASS
 class Session():
-    # Session(**kwargs): the APIs to instantiate (pass False to skip one) ...
     APIS = {'inp': True, 'style': True}
-    # ... and the initial value of the session settings
     SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True,
                 'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True}
 
@@ -259,7 +254,6 @@ class Session():
         self._latency = max(latency())
         self._termxoffset = 0
         self._termyoffset = 0
-        # the styler itself lives on the scene (scene.py); this one only backs session.styler while no world exists
         self._idle_scene = scene.Scene() if self.apis['style'] else None
         bg = self.term.get_bgcolor(bits=8)
         self._bgcolor = bg if bg != (-1, -1, -1) else (0, 0, 0)
@@ -295,7 +289,6 @@ class Session():
 
     @property
     def styler(self):
-        # styling API of the front-most world's scene (scene.bgcolor / session.fgcolor are picked up automatically)
         if not self.apis['style']:
             return None
         return (self.worlds[-1].scene if self.worlds else self._idle_scene).styler
@@ -341,7 +334,6 @@ class Session():
         self._termyoffset = value
 
     def style(self, *args, **kwargs):
-        # shortcut for session.styler.style(...)
         if not self.apis['style']:
             raise RuntimeError("the style API is disabled for this Session (Session(style=False))")
         return self.styler.style(*args, **kwargs)

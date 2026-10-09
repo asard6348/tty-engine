@@ -65,14 +65,8 @@ _figlet_cache = {}
 
 
 class Styler:
-    """Text styling API.
-
-    `_style` is the plain styling function; `style` is the same function with the `bg` and `fg`
-    arguments filled in automatically from `source` (a Scene, which mirrors its Session's colors)
-    whenever the caller does not pass them.
-    """
     def __init__(self, source=None, bgcolor=DEFAULT_BG, fgcolor=DEFAULT_FG):
-        self.source = source # anything exposing .bgcolor and .fgcolor
+        self.source = source
         self._bgcolor = bgcolor
         self._fgcolor = fgcolor
         self.shapes = Shapes
@@ -137,7 +131,6 @@ class Styler:
 
     @staticmethod
     def hsv(hue, saturation=1.0, value=1.0):
-        """Hue (degrees, wraps around 360), saturation and value (0..1) -> (r, g, b) with 0..255 channels."""
         s = max(0.0, min(1.0, saturation))
         v = max(0.0, min(1.0, value))
         r, g, b = colorsys.hsv_to_rgb((hue % 360) / 360, s, v)
@@ -145,8 +138,6 @@ class Styler:
 
     @staticmethod
     def getcolor(text:str, back=False, default=None):
-        # `default` is the color to report when the text carries no escape of that kind
-        # (_style() passes its own bg/fg here so the module-level constants are only a last resort).
         fallback = default if default is not None else (DEFAULT_BG if back else DEFAULT_FG)
         target = "\033[48;2;" if back else "\033[38;2;"
         if target not in text:
@@ -174,9 +165,6 @@ class Styler:
             transparent_bg = False
             if bgcolor_rgb is None:
                 bgcolor_rgb, match_bgcolor = getcolor(text, True, bg_rgb)
-                # No background was given and the text has none either: there is nothing to
-                # blend, so stay transparent and let the scene background show through
-                # (previously this blended against black and painted a black box).
                 transparent_bg = not match_bgcolor
             if transparent_bg:
                 ansi_bgcolor = ""
@@ -200,7 +188,6 @@ class Styler:
         else:
             ansi_color = ""
         if clean:
-            # re-styling keeps the text attributes it already had
             bold      = bold      or '\033[1m' in text
             italic    = italic    or '\033[3m' in text
             underline = underline or '\033[4m' in text
@@ -229,7 +216,6 @@ class Styler:
         return styled_text
 
     def style(self, *args, **kwargs):
-        """`_style` with bg/fg defaulting to the source's bgcolor/fgcolor (positions 7 and 8 count as passed)."""
         if len(args) <= 7 and 'bg' not in kwargs:
             kwargs['bg'] = self.bgcolor
         if len(args) <= 8 and 'fg' not in kwargs:
@@ -264,12 +250,6 @@ class Styler:
 
 
 class Shapes:
-    """Text shape generators. Each returns a multi-line string (empty cells are spaces).
-
-    `char` may be a styled string, e.g. Styler.style('X', 'red').
-    `aspect` is the width/height ratio of a character cell (Transform.aspect, 0.5 by default);
-    it keeps round shapes round on screen.
-    """
     @staticmethod
     def ellipse(rx, ry, char='o', filled=False, thickness=0.15):
         rx = round(rx)
@@ -288,12 +268,10 @@ class Shapes:
 
     @staticmethod
     def circle(radius, char='o', aspect=0.5, filled=False, thickness=0.15):
-        """Circle of `radius` rows (the width is stretched by 1/aspect). Ring by default, `filled` for a disc."""
         return Shapes.ellipse(radius * (1 / aspect), radius, char, filled, thickness)
 
     @staticmethod
     def block(width, height=None, char='█', hollow=False, aspect=0.5):
-        """Rectangle. Without `height` it is made square on screen (height = width * aspect)."""
         width = max(1, round(width))
         height = max(1, round(width * aspect) if height is None else round(height))
         rows = []
@@ -306,7 +284,6 @@ class Shapes:
 
     @staticmethod
     def triangle(height, base=None, char='█', filled=True, aspect=0.5, direction='up'):
-        """Isosceles triangle. `base` defaults to the width that looks as wide as it is tall."""
         height = max(1, round(height))
         if base is None:
             base = height / aspect
@@ -342,7 +319,6 @@ class Shapes:
         return '\n'.join([char] * length) if vertical else char * length
 
 
-# Module-level shortcuts so `from ttyengine.ascii_styler import style, fill` keeps working.
 _default_styler = Styler()
 rgb = Styler.rgb
 hsv = Styler.hsv

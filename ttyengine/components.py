@@ -7,7 +7,7 @@
 import math, re, sys, statistics, inspect
 
 #GLOBAL
-_RESET_FG = '\033[22;23;24;39m' # default foreground + no bold/italic/underline (background is left alone)
+_RESET_FG = '\033[22;23;24;39m'
 
 def _argslen(cb):
     params = inspect.signature(cb).parameters

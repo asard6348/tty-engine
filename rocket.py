@@ -54,7 +54,7 @@ class fade():
         else:
             self.obj._fadeprogress = 1
         self.t = self.obj.transform
-        self.s = world.scene.styler.style # blends towards the scene's current bgcolor (it changes during flash())
+        self.s = world.scene.styler.style
         def inh(parts):
             if parts[0] == self.obj:
                 return
