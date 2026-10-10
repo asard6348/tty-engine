@@ -93,7 +93,7 @@ def dev(Session=Session): #DEBUG
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
                 ip+=20'''
 
-            c = {'g': style("█",(24,30,24),reset=False)*2,
+            '''c = {'g': style("█",(24,30,24),reset=False)*2,
                  'dp': style("█",(143,8,112),reset=False)*2,
                  'w': style("█",'white',reset=False)*2,
                  'v': style("█",(161,50,201),reset=False)*2,
@@ -141,7 +141,7 @@ def dev(Session=Session): #DEBUG
 {c['g']*8}{c['y']*2}
 {c['y']}{c['g']*4}{c['y']*3}
   {c['y']*4}
-"""),dynamic=True)
+"""),dynamic=True)'''
             
             if not hasattr(self, 'plr'): self.plr = None
 

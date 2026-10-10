@@ -10,6 +10,8 @@ import math, re, sys, statistics, inspect
 _RESET_FG = '\033[22;23;24;39m'
 _NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
 _NEIGHBOURS8 = _NEIGHBOURS4 + ((-1, -1), (1, -1), (-1, 1), (1, 1))
+_NEIGHBOURS_HALF = ((1, 0), (0, 1), (1, 1), (-1, 1))
+_SGR = re.compile(r'\x1b\[([0-9;]*)m')
 
 def _argslen(cb):
     params = inspect.signature(cb).parameters
@@ -146,9 +148,12 @@ class transform(_change_callback):
         self._parse_pixels_key = None
         self._parse_pixels_val = None
         self._centroid_cache = {}
+        self._bg_cache = {}
         self._rotmap = None
         self._rotcells = {}
         self._rotsrc = {}
+        self._rotsize = (0, 0)
+        self._rotorigin = (0, 0)
         self._onchangecb = {}
         self._changing = False
         self.rotate(self._rotation, init=True)
@@ -258,6 +263,27 @@ class transform(_change_callback):
         self._change('rotation', old)
         self._change('text', oldt)
 
+    def _has_background(self, style):
+        cached = self._bg_cache.get(style)
+        if cached is not None:
+            return cached
+        found = False
+        for match in _SGR.finditer(style):
+            params = [int(v) if v else 0 for v in match.group(1).split(';')]
+            i = 0
+            while i < len(params):
+                v = params[i]
+                if v == 48 or 40 <= v <= 47 or 100 <= v <= 107:
+                    found = True
+                    break
+                if v == 38:
+                    i += 2 if i + 1 < len(params) and params[i + 1] == 5 else 4
+                i += 1
+            if found:
+                break
+        self._bg_cache[style] = found
+        return found
+
     def _pixel_centroid(self, txt):
         cached = self._centroid_cache.get(id(txt))
         if cached is not None and cached[0] == txt:
@@ -345,69 +371,172 @@ class transform(_change_callback):
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
         ASPECT = self.aspect
+        floor = math.floor
 
-        def cal(txt, record=False):
-            crows = self.scene.recomp.sub('', txt).splitlines()
-            if not crows:
-                if record:
-                    self._rotmap = None
-                    self._rotcells = {}
-                    self._rotsrc = {}
-                return ''
-            height = len(crows)
-            width  = max(len(r) for r in crows) if crows else 0
-            cx, cy = width / 2, height / 2
+        def layout(source):
+            glyphs = [p for p, px in source.items() if px[0] != ' ']
+            if not glyphs:
+                return None
+            count = len(glyphs)
+            cx = sum(p[0] for p in glyphs) / count
+            cy = sum(p[1] for p in glyphs) / count
 
-            corners = [(sx * width / 2 * ASPECT, sy * height / 2) for sx in (-1, 1) for sy in (-1, 1)]
-            rxs = [px * cos_a - py * sin_a for px, py in corners]
-            rys = [px * sin_a + py * cos_a for px, py in corners]
-            x0 = int(math.floor(min(rxs) / ASPECT + cx)) - 1
-            x1 = int(math.ceil(max(rxs) / ASPECT + cx)) + 1
-            y0 = int(math.floor(min(rys) + cy)) - 1
-            y1 = int(math.ceil(max(rys) + cy)) + 1
+            spots = []
+            for ci, ri in glyphs:
+                u = (ci - cx) * ASPECT
+                v = ri - cy
+                fx = cx + (u * cos_a - v * sin_a) / ASPECT
+                fy = cy + (u * sin_a + v * cos_a)
+                gx = floor(fx + 0.5 + 1e-7)
+                gy = floor(fy + 0.5 + 1e-7)
+                spots.append((((fx - gx) * ASPECT) ** 2 + (fy - gy) ** 2, ri, ci, fx, fy, gx, gy))
+            spots.sort()
 
-            source = self.parse_pixels(txt)
+            placed = {}
+            loose = []
+            for spot in spots:
+                cell = (spot[5], spot[6])
+                if cell in placed:
+                    loose.append(spot)
+                else:
+                    placed[cell] = (spot[2], spot[1])
+            for _, ri, ci, fx, fy, gx, gy in loose:
+                reach_x = 2
+                reach_y = 1
+                best = None
+                while best is None:
+                    for ny in range(gy - reach_y, gy + reach_y + 1):
+                        for nx in range(gx - reach_x, gx + reach_x + 1):
+                            if (nx, ny) in placed:
+                                continue
+                            rx = (nx - cx) * ASPECT
+                            ry = ny - cy
+                            hit = (floor((rx * cos_a + ry * sin_a) / ASPECT + cx + 0.5 + 1e-7),
+                                   floor(-rx * sin_a + ry * cos_a + cy + 0.5 + 1e-7)) in source
+                            cost = ((nx - fx) * ASPECT) ** 2 + (ny - fy) ** 2 - 0.02 * (nx - fx) * ASPECT + (0 if hit else 1)
+                            key = (round(cost, 6), ny, -nx)
+                            if best is None or key < best:
+                                best = key
+                    reach_x *= 2
+                    reach_y *= 2
+                placed[(-best[2], best[1])] = (ci, ri)
+
+            where = {src: cell for cell, src in placed.items()}
+            extra = {}
+            for (ci, ri), a in where.items():
+                for dx, dy in _NEIGHBOURS_HALF:
+                    b = where.get((ci + dx, ri + dy))
+                    if b is None:
+                        continue
+                    ex = b[0] - a[0]
+                    ey = b[1] - a[1]
+                    if -1 <= ex <= 1 and -1 <= ey <= 1:
+                        continue
+                    steps = max(abs(ex), abs(ey))
+                    for k in range(1, steps):
+                        f = k / steps
+                        cell = (floor(a[0] + ex * f + 0.5 + 1e-7), floor(a[1] + ey * f + 0.5 + 1e-7))
+                        if cell not in placed and cell not in extra:
+                            extra[cell] = (ci, ri) if f < 0.5 else (ci + dx, ri + dy)
+
+            around = {}
+            for group in (placed, extra):
+                for x, y in group:
+                    for dx, dy in _NEIGHBOURS4:
+                        c = (x + dx, y + dy)
+                        around[c] = around.get(c, 0) + 1
+            for (nx, ny), n in around.items():
+                if n < 4 or (nx, ny) in placed or (nx, ny) in extra:
+                    continue
+                rx = (nx - cx) * ASPECT
+                ry = ny - cy
+                ci = floor((rx * cos_a + ry * sin_a) / ASPECT + cx + 0.5 + 1e-7)
+                ri = floor(-rx * sin_a + ry * cos_a + cy + 0.5 + 1e-7)
+                px = source.get((ci, ri))
+                if px is not None and px[0] != ' ':
+                    extra[(nx, ny)] = (ci, ri)
+
+            min_x = min(c[0] for c in placed)
+            max_x = max(c[0] for c in placed)
+            min_y = min(c[1] for c in placed)
+            max_y = max(c[1] for c in placed)
+            for cell in extra:
+                if cell[0] < min_x:
+                    min_x = cell[0]
+                if cell[0] > max_x:
+                    max_x = cell[0]
+                if cell[1] < min_y:
+                    min_y = cell[1]
+                if cell[1] > max_y:
+                    max_y = cell[1]
+            for (ci, ri), px in source.items():
+                if px[0] != ' ':
+                    continue
+                gx = floor(cx + (((ci - cx) * ASPECT) * cos_a - (ri - cy) * sin_a) / ASPECT + 0.5 + 1e-7)
+                if gx < min_x:
+                    min_x = gx
+                if gx > max_x:
+                    max_x = gx
+            return glyphs, cx, cy, placed, extra, min_x, max_x, min_y, max_y
+
+        def render(source, lay, record=False, size=(0, 0)):
+            glyphs, cx, cy, placed, extra, min_x, max_x, min_y, max_y = lay
             new_pixels = {}
             cells = {}
             sources = {}
-            for ny in range(y0, y1 + 1):
-                ry_n = ny - cy
-                for nx in range(x0, x1 + 1):
-                    rx_n = (nx - cx) * ASPECT
-                    ci = int(math.floor((rx_n * cos_a + ry_n * sin_a) / ASPECT + cx + 0.5))
-                    ri = int(math.floor(-rx_n * sin_a + ry_n * cos_a + cy + 0.5))
-                    pixel = source.get((ci, ri))
-                    if pixel is None:
-                        continue
-                    new_pixels[(nx, ny)] = pixel
-                    if record and pixel[0] != ' ':
-                        cells[(nx, ny)] = [(ci, ri)]
-                        sources.setdefault((ci, ri), []).append((nx, ny))
-
-            ns_ys = [p[1] for p in new_pixels if new_pixels[p][0] != ' ']
-            if not ns_ys:
-                if record:
-                    self._rotmap = None
-                    self._rotcells = {}
-                    self._rotsrc = {}
-                return ''
-            all_xs = [p[0] for p in new_pixels]
-            min_x, min_y = min(all_xs), min(ns_ys)
+            for group in (placed, extra):
+                for cell, src in group.items():
+                    new_pixels[cell] = source[src]
+                    if record:
+                        cells[cell] = [src]
+                        sources.setdefault(src, []).append(cell)
+            if any(px[0] == ' ' and px[1] and self._has_background(px[1]) for px in source.values()):
+                for ny in range(min_y, max_y + 1):
+                    ry = ny - cy
+                    for nx in range(min_x, max_x + 1):
+                        if (nx, ny) in new_pixels:
+                            continue
+                        rx = (nx - cx) * ASPECT
+                        ci = floor((rx * cos_a + ry * sin_a) / ASPECT + cx + 0.5 + 1e-7)
+                        ri = floor(-rx * sin_a + ry * cos_a + cy + 0.5 + 1e-7)
+                        px = source.get((ci, ri))
+                        if px is not None and px[0] == ' ' and px[1] and self._has_background(px[1]):
+                            new_pixels[(nx, ny)] = px
             if record:
                 self._rotmap = (cx, cy, min_x, min_y, ASPECT, cos_a, sin_a)
                 self._rotcells = cells
                 self._rotsrc = sources
-            return self.build_rows(new_pixels, min_x, max(all_xs), min_y, max(ns_ys))
+                self._rotsize = size
+                self._rotorigin = (min_x, min_y)
+            return self.build_rows(new_pixels, min_x, max_x, min_y, max_y)
 
-        self.vtext = cal(self.vrtext)
-        self._text = cal(self._rtext, True)
+        plain = self._rtext
+        crows = plain.splitlines()
+        plain_source = self.parse_pixels(plain)
+        plain_layout = layout(plain_source) if crows else None
+        styled_source = self.parse_pixels(self.vrtext)
+        if plain_layout is None:
+            styled_layout = layout(styled_source) if self.vrtext.splitlines() else None
+        elif [p for p, px in styled_source.items() if px[0] != ' '] == plain_layout[0]:
+            styled_layout = plain_layout
+        else:
+            styled_layout = layout(styled_source)
+
+        self.vtext = render(styled_source, styled_layout) if styled_layout is not None else ''
+        if plain_layout is not None:
+            self._text = render(plain_source, plain_layout, True, (max(len(r) for r in crows), len(crows)))
+        else:
+            self._text = ''
+            self._rotmap = None
+            self._rotcells = {}
+            self._rotsrc = {}
+            self._rotsize = (0, 0)
+            self._rotorigin = (0, 0)
         self._xlen_cache = None
         self._ylen_cache = None
 
-        orig_cx, orig_cy = self._pixel_centroid(self._rtext)
-        rot_cx,  rot_cy  = self._pixel_centroid(self._text)
-        self.vx = round(orig_cx - rot_cx)
-        self.vy = -round(orig_cy - rot_cy)
+        self.vx = self._rotorigin[0]
+        self.vy = -self._rotorigin[1]
 
     def _origin(self):
         return round(self._x + self.vx), round(self._y + self.vy)
@@ -458,7 +587,7 @@ class transform(_change_callback):
         b = self.world_to_rtextf(*p1)
         if a is None or b is None:
             return set()
-        width, height = self._rotmap[0] * 2, self._rotmap[1] * 2
+        width, height = self._rotsize
         if (max(a[0], b[0]) < -1 or min(a[0], b[0]) > width
                 or max(a[1], b[1]) < -1 or min(a[1], b[1]) > height):
             return set()
@@ -553,15 +682,11 @@ class transform(_change_callback):
 
         spawns = []
         anchors = []
-        pivot = self._rotmap
         for group in components:
             xs = [p[0] for p in group]
             ys = [p[1] for p in group]
             min_x, max_x = min(xs), max(xs) + 1
             min_y, max_y = min(ys), max(ys) + 1
-            if pivot is not None and rotation % 360:
-                min_x, max_x = min(min_x, round(2 * pivot[0]) - max_x), max(max_x, round(2 * pivot[0]) - min_x)
-                min_y, max_y = min(min_y, round(2 * pivot[1]) - max_y), max(max_y, round(2 * pivot[1]) - min_y)
             target = {self._cell_world(c) for p in group for c in self._rotsrc.get(p, ())}
 
             kw = self.obj.kwargs()
