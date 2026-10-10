@@ -528,6 +528,16 @@ class transform(_change_callback):
         rotation = self._rotation
         ox, oy = self._x, self._y
 
+        group_of = {pos: gi for gi, group in enumerate(components) for pos in group}
+        hidden = set()
+        for stack in self._rotcells.values():
+            members = [pos for pos in stack if pos in group_of]
+            if len({group_of[pos] for pos in members}) > 1:
+                owner = group_of.get(stack[0], group_of[members[0]])
+                hidden.update(pos for pos in members if group_of[pos] != owner)
+        components = [group - hidden for group in components]
+        components = [group for group in components if group]
+
         spawns = []
         anchors = []
         pivot = self._rotmap
@@ -697,6 +707,15 @@ class transform(_change_callback):
     def yc(self, text=None):
         return self.ylen(text) / 2
 
+    def extent(self):
+        rows = self._text.splitlines()
+        cols = [i for row in rows for i, char in enumerate(row) if char != ' ']
+        if not cols:
+            return self._x + self.vx, self._y + self.vy, 0, 0
+        lo, hi = min(cols), max(cols) + 1
+        return (self._x + self.vx + (lo + hi) / 2, self._y + self.vy - len(rows) / 2,
+                (hi - lo) / 2, len(rows) / 2)
+
     def forward(self, move=1, offset=0, angle=None):
         angle = math.radians((self._rotation if angle is None else angle) + offset)
         x = math.sin(angle) * move
@@ -722,6 +741,9 @@ class rendering():
     _required = [transform]
     _default = True
     def on_discard(self):
+        rect = self.rect()
+        if rect:
+            self.scene.dirtyrects.append(rect)
         self.scene.discards.append(self.remove(write=False))
 
     def __init__(self, obj, **kwargs):
@@ -756,6 +778,34 @@ class rendering():
 
     def redraw(self):
         self.ptext = ''
+
+    def _current(self):
+        if not self._show:
+            return (0, 0, '', 0, 0)
+        ir = self.scene.iround
+        return (
+            ir(((self.t.x) + (self.t.vx)) - ir(self.scene.camx)),
+            -ir(((self.t.y) + (self.t.vy)) - ir(self.scene.camy)),
+            self.t.vtext,
+            self.scene.dimxoffset,
+            self.scene.dimyoffset,
+        )
+
+    def changed(self):
+        return bool(self.t.rtext) and self._current() != (self.px, self.py, self.ptext, self.pxoff, self.pyoff)
+
+    def _rect(self, x, y, text):
+        if not text:
+            return None
+        rows = self.scene.recomp.sub('', text).split('\n')
+        return (x, y, x + max(len(row) for row in rows), y + len(rows))
+
+    def rect(self):
+        return self._rect(self.px, self.py, self.ptext)
+
+    def rects(self):
+        current = self._current()
+        return [r for r in (self.rect(), self._rect(current[0], current[1], current[2])) if r]
 
     def front(self):
         self.z = self.scene._lastz +1
@@ -926,17 +976,7 @@ class rendering():
             return ('', '') if split else ''
         bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
                    f'{self.scene.bgcolor[1]};{self.scene.bgcolor[2]}m')
-        ir = self.scene.iround
-        if self._show:
-            current = (
-                ir(((self.t.x) + (self.t.vx)) - ir(self.scene.camx)),
-                -ir(((self.t.y) + (self.t.vy)) - ir(self.scene.camy)),
-                self.t.vtext,
-                self.scene.dimxoffset,
-                self.scene.dimyoffset,
-            )
-        else:
-            current = (0, 0, '', 0, 0)
+        current = self._current()
         previous = (self.px, self.py, self.ptext, self.pxoff, self.pyoff)
         if current == previous:
             return ('', '') if split else ''
@@ -1146,13 +1186,15 @@ class physics(_change_callback):
         center = (statistics.mean(xi), statistics.mean(yi))
         arms = []
         for ia, a in enumerate(self._axises):
-            poss = o.transform[a] if pos is None else (pos[ia] if isinstance(pos, list) else pos)
-            xc = o.transform[a + 'c']()
-            if xc == 0:
+            cx, cy, hx, hy = o.transform.extent()
+            half = (hx, hy)[ia]
+            if half == 0:
                 arms.append(0.0)
                 continue
-            ratio = (center[ia] - (poss + xc if ia != 1 else poss - xc)) / xc
-            arms.append(round(ratio, 1))
+            mid = (cx, cy)[ia]
+            if pos is not None:
+                mid += (pos[ia] if isinstance(pos, list) else pos) - o.transform[a]
+            arms.append(round((center[ia] - mid) / half, 1))
         return arms
 
     def physics(self, axises=None, aspect=None):
@@ -1488,8 +1530,7 @@ class force():
 
     @staticmethod
     def _center(o):
-        t = o.transform
-        return t.x + t.vx + t.xc(), t.y + t.vy - t.yc()
+        return o.transform.extent()[:2]
 
     def targets(self):
         affect = self.affect
@@ -1540,8 +1581,7 @@ class force():
             o.physics.yvel += fy
 
             if self.torque and dist and not o.physics.hitbox:
-                arm_x = o.transform.xc()
-                arm_y = o.transform.yc()
+                arm_x, arm_y = o.transform.extent()[2:]
                 hit_x = -dx / (dist / (arm_x + 1e-6))
                 hit_y = dy / (dist / (arm_y + 1e-6))
                 hit_x = max(-arm_x, min(arm_x, hit_x))

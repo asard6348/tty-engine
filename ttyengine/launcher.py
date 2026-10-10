@@ -123,6 +123,26 @@ def spawn_console(script):
             continue
     return None
 
+def redraw_overlaps(renderers, dirty):
+    pending = []
+    for r in renderers:
+        if r.changed():
+            dirty.extend(r.rects())
+        else:
+            rect = r.rect()
+            if rect:
+                pending.append((r, rect))
+    grown = bool(dirty)
+    while grown and pending:
+        grown = False
+        for item in list(pending):
+            r, rect = item
+            if any(rect[0] < d[2] and d[0] < rect[2] and rect[1] < d[3] and d[1] < rect[3] for d in dirty):
+                r.redraw()
+                pending.remove(item)
+                dirty.append(rect)
+                grown = True
+
 def format_dinfo(value):
     if value is None:
         lines = []
@@ -621,6 +641,10 @@ class Session():
                                 if not w.pause and getattr(w, 'layer', 0) > world_layer
                             ]
                             objs = sorted(world.scene.objs, key=lambda ko: ko.rendering.z if hasattr(ko, 'rendering') else 0)
+                            dirty = world.scene.dirtyrects
+                            world.scene.dirtyrects = []
+                            if not world.pauserendering and not self.pauserendering:
+                                redraw_overlaps([o.rendering for o in objs if hasattr(o, 'rendering')], dirty)
                             for o in list(objs):
                                 if hasattr(o, 'rendering'):
                                     if not world.pauserendering and not self.pauserendering:
