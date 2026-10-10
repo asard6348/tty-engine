@@ -1259,7 +1259,7 @@ class physics(_change_callback):
         return self.xvel / self.mass * A, self.yvel / self.mass
 
     def _omega(self):
-        return math.radians(self.avel / self.mass)
+        return -math.radians(self.avel / self.mass)
 
     def _impulse(self, jx, jy, rx=0.0, ry=0.0):
         A = self.t.aspect
@@ -1267,7 +1267,7 @@ class physics(_change_callback):
         self.yvel += jy
         inv = self._invinertia()
         if inv and (rx or ry):
-            self.avel += math.degrees((rx * jy - ry * jx) * inv)
+            self.avel -= math.degrees((rx * jy - ry * jx) * inv) * self.mass
 
     def _arm(self, point):
         A = self.t.aspect
@@ -1421,6 +1421,41 @@ class physics(_change_callback):
         ys = [p[1] for p in pixels]
         return (mx, max(min(ys) - 0.5, min(max(ys) + 0.5, cy)))
 
+    def _gradient(self, pixels, center, sign):
+        A = self.t.aspect
+        cx, cy = center
+        sx = sy = 0.0
+        for x in range(math.ceil(cx - 2.5), math.floor(cx + 2.5) + 1):
+            for y in range(math.ceil(cy - 2.5), math.floor(cy + 2.5) + 1):
+                if (x, y) in pixels:
+                    sx += (x - cx) * A
+                    sy += y - cy
+        length = math.hypot(sx, sy)
+        if length < 1e-9:
+            return None
+        return sign * sx / length, sign * sy / length
+
+    def _contact_normal(self, other, point, nx, ny, inside):
+        shift = 0.5 if inside else -0.5
+        cx, cy = point
+        if abs(nx) > abs(ny):
+            cx += shift * (1 if nx > 0 else -1)
+        else:
+            cy += shift * (1 if ny > 0 else -1)
+        center = (round(cx * 2) / 2, round(cy * 2) / 2)
+        go = self._gradient(other.getpixels(), center, -1)
+        gs = self._gradient(self.getpixels(), center, 1)
+        best = None
+        for g in (go, gs):
+            if g is None:
+                continue
+            d = g[0] * nx + g[1] * ny
+            if best is None or d > best[0]:
+                best = (d, g)
+        if best is None or best[0] < 0.25:
+            return nx, ny
+        return best[1]
+
     def _mtv(self, other_pixels):
         mine = self.getpixels()
         A = self.t.aspect
@@ -1480,7 +1515,9 @@ class physics(_change_callback):
                             continue
                         touch[ia] = True
                         group = self.cluster(p2, dx, dy) if p2.dynamic else None
-                        self._solve(p2, group, self._contact_point(contact, -dx, -dy), -dx, -dy)
+                        point = self._contact_point(contact, -dx, -dy)
+                        cn = self._contact_normal(p2, point, -dx, -dy, False)
+                        self._solve(p2, group, point, cn[0], cn[1])
         self.touch = tuple(touch)
         if abs(self._xvel) < 1e-9: self._xvel = 0
         if abs(self._yvel) < 1e-9: self._yvel = 0
@@ -1527,7 +1564,8 @@ class physics(_change_callback):
                             continue
                         group = self.cluster(obj2p, d[0], d[1]) if obj2p.dynamic else None
                         point = self._contact_point(intersection, -d[0], -d[1])
-                        self._solve(obj2p, group, point, -d[0], -d[1])
+                        cn = self._contact_normal(obj2p, point, -d[0], -d[1], True)
+                        self._solve(obj2p, group, point, cn[0], cn[1])
                     break
 
                 self.t[a] += c * step
