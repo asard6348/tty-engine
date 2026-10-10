@@ -134,25 +134,30 @@ class inp():
         self._kitty_state   = None
         self._kitty_t       = 0.0
         self._kb_is_fallback = False
+        self._kb_hook = None
         self.keyboard = None
 
-        if keyboard is not None:
+        # Tier 1: the `keyboard` library (needs root on Linux/macOS and a local
+        # keyboard, so it is skipped when either is missing).
+        if keyboard is not None and self._keyboard_usable():
             try:
+                self._kb_hook = keyboard.hook(self._kb_event_raw, suppress=False)
                 self.keyboard = keyboard
-                self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
             except Exception:
                 self.keyboard = None
 
+        # Tier 2/3: terminal input. Kitty keyboard protocol (true press/release)
+        # if the terminal answers the probe, else term.inkey (press-only, held()
+        # is emulated and only stays True while key repeats keep arriving).
         if self.keyboard is None:
             self.keyboard = _FallbackKeyboard()
             self._kb_is_fallback = True
             self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
             if not self.quiet:
                 sys.stderr.write(
-                    "input_handler: no low-level keyboard access (needs root on "
-                    "Linux), using terminal key input instead -- full "
-                    "press/release if the terminal supports the kitty keyboard "
-                    "protocol, otherwise press-only with an emulated held().\n"
+                    "input_handler: low-level keyboard unavailable, using terminal "
+                    "input: kitty keyboard protocol if supported, otherwise "
+                    "term.inkey (press-only, held() needs key repeat).\n"
                 )
 
         # ── mouse (raw VT sequence parser) ────────────────────────────────
@@ -178,11 +183,30 @@ class inp():
             term = Terminal()
         self.term = term # triggers setter
 
+    @staticmethod
+    def _keyboard_usable():
+        if _WINDOWS:
+            return True
+        try:
+            if os.geteuid() != 0:          # keyboard lib needs root on Linux/macOS
+                return False
+        except AttributeError:
+            return False
+        # a global hook sees the *machine's* keyboard, not an SSH client's
+        if os.environ.get('SSH_CONNECTION') or os.environ.get('SSH_TTY'):
+            return False
+        return True
+
+    def _uses_inkey(self):
+        return callable(getattr(self._term, 'inkey', None))
+
     @property
     def backend(self):
         if not self._kb_is_fallback:
             return 'keyboard'
-        return 'kitty' if self._kitty_state == 'on' else 'terminal'
+        if self._kitty_state == 'on':
+            return 'kitty'
+        return 'inkey' if self._uses_inkey() else 'terminal'
 
     #TERMINAL SETUP
     @property
@@ -300,7 +324,29 @@ class inp():
             self._term_press(name)
 
     #MOUSE
+    def _read_inkey(self):
+        # Drain term.inkey and glue the keystrokes back into the raw stream, so
+        # mouse / focus / kitty replies still go through the same parser.
+        ink = self._term.inkey
+        out = []
+        for _ in range(512):
+            try:
+                ks = ink(timeout=0, esc_delay=0)
+            except TypeError:           # older blessed: no esc_delay argument
+                try:
+                    ks = ink(timeout=0)
+                except Exception:
+                    break
+            except Exception:
+                break
+            if not ks:
+                break
+            out.append(str(ks))
+        return ''.join(out)
+
     def _read_raw(self):
+        if self._kb_is_fallback and self._uses_inkey():
+            return self._read_inkey()
         if _WINDOWS:
             chars = []
             while msvcrt.kbhit():
