@@ -51,7 +51,8 @@ def dev(Session=Session): #DEBUG
             self.camspeed = 0.7
             self.void = -100
             #scene.bgcolor = (255,255,255)
-            scene.gravity = (0,-0.05)
+            scene.gravity = (0,0)#-0.05)
+            scene.drag = 0.97
             #scene.drag = 1
             self.pencolor = None#(0,255,255)
         
@@ -64,7 +65,7 @@ def dev(Session=Session): #DEBUG
             self.tarx = 0*sc.dimx/2
             self.tary = -sc.dimy/2
 
-            self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
+            '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
                             )
             self.plr = obj().create(plrtext,0,0,hitbox=True,renderspaces=False)
@@ -90,9 +91,9 @@ def dev(Session=Session): #DEBUG
             ip=20
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
-                ip+=20
+                ip+=20'''
 
-            '''c = {'g': style("█",(24,30,24),reset=False)*2,
+            c = {'g': style("█",(24,30,24),reset=False)*2,
                  'dp': style("█",(143,8,112),reset=False)*2,
                  'w': style("█",'white',reset=False)*2,
                  'v': style("█",(161,50,201),reset=False)*2,
@@ -140,7 +141,7 @@ def dev(Session=Session): #DEBUG
 {c['g']*8}{c['y']*2}
 {c['y']}{c['g']*4}{c['y']*3}
   {c['y']*4}
-"""),dynamic=True)'''
+"""),dynamic=True)
             
             if not hasattr(self, 'plr'): self.plr = None
 

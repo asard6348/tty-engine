@@ -203,8 +203,8 @@ class Scene:
         self._last = {}
         self._getlast(True)
         self.solids = []
-        self.gravity = (0, -0.05)
-        self.drag = 0.97
+        self.gravity = (0, 0)
+        self.drag = 1
         self.precision = 0.1
         self._camx = 0
         self._camy = 0
