@@ -1003,6 +1003,7 @@ class physics(_change_callback):
         'xvel', 'yvel', 'avel',
         'dynamic',
         'bounciness',
+        'friction',
         'mass', 'automass',
         'solid',
         'hitbox',
@@ -1033,6 +1034,7 @@ class physics(_change_callback):
         self._avel = kwargs.get('avel', 0)
         self.dynamic = kwargs.get('dynamic', True)
         self.bounciness = kwargs.get('bounciness', 0)
+        self.friction = kwargs.get('friction', 0)
         self.mass = kwargs.get('mass', None)
         self.automass = kwargs.get('automass', self.mass is None)
         def masscal(prop='text'):
@@ -1047,6 +1049,8 @@ class physics(_change_callback):
         self.touch = (False, False)
         self._touch_callbacks = []
         self._pixel_cache = None
+        self._bounds_cache = None
+        self._body_cache = None
         self.t.onchange(self._dirty)
 
     def __getitem__(self, key):
@@ -1103,6 +1107,8 @@ class physics(_change_callback):
 
     def _dirty(self):
         self._pixel_cache = None
+        self._bounds_cache = None
+        self._body_cache = None
 
     def ontouch(self, callback, when=None, once=False):
         l = _argslen(callback)
@@ -1144,18 +1150,29 @@ class physics(_change_callback):
 
         if default_call:
             self._pixel_cache = pixels
+            self._bounds_cache = None
         return pixels
 
-    def collides(self, objs, x=None, y=None, text=None):
+    def bounds(self, pixels=None):
+        if pixels is None:
+            pixels = self.getpixels()
+            if self._bounds_cache is not None:
+                return self._bounds_cache
+        if not pixels:
+            result = None
+        else:
+            xs = [p[0] for p in pixels]
+            ys = [p[1] for p in pixels]
+            result = (min(xs), max(xs), min(ys), max(ys))
+        if pixels is self._pixel_cache:
+            self._bounds_cache = result
+        return result
+
+    def collides(self, objs, x=None, y=None, text=None, full=False):
         pixels1 = self.getpixels(x, y, text)
         if not pixels1:
             return {}
-
-        # bbox of self for fast rejection
-        p1_xs = [p[0] for p in pixels1]
-        p1_ys = [p[1] for p in pixels1]
-        bx1_min, bx1_max = min(p1_xs), max(p1_xs)
-        by1_min, by1_max = min(p1_ys), max(p1_ys)
+        b1 = self.bounds(pixels1)
 
         if not isinstance(objs, list):
             objs = [objs]
@@ -1164,82 +1181,297 @@ class physics(_change_callback):
         for obj2 in objs:
             if obj2 is self.obj:
                 continue
-            pixels2 = obj2.physics.getpixels()
-            if not pixels2:
+            p2 = obj2.physics
+            b2 = p2.bounds()
+            if b2 is None or b2[1] < b1[0] or b2[0] > b1[1] or b2[3] < b1[2] or b2[2] > b1[3]:
                 continue
-            # bbox pre-rejection
-            p2_xs = [p[0] for p in pixels2]
-            p2_ys = [p[1] for p in pixels2]
-            if (max(p2_xs) < bx1_min or min(p2_xs) > bx1_max or
-                    max(p2_ys) < by1_min or min(p2_ys) > by1_max):
-                continue
-            intersection = pixels1 & pixels2
+            intersection = pixels1 & p2.getpixels()
             if intersection:
                 result[obj2] = intersection
-                if not self.phantom:
+                if not self.phantom and not full:
                     break
         return result
 
-    def armratio(self, points, o, pos=None):
-        xi = [p[0] for p in points]
-        yi = [p[1] for p in points]
-        center = (statistics.mean(xi), statistics.mean(yi))
-        arms = []
-        for ia, a in enumerate(self._axises):
-            cx, cy, hx, hy = o.transform.extent()
-            half = (hx, hy)[ia]
-            if half == 0:
-                arms.append(0.0)
+    def overlaps(self, pixels=None):
+        pixels = self.getpixels() if pixels is None else pixels
+        b1 = self.bounds(pixels)
+        found = {}
+        if b1 is None:
+            return found
+        for obj2 in self.scene.solids:
+            if obj2 is self.obj:
                 continue
-            mid = (cx, cy)[ia]
-            if pos is not None:
-                mid += (pos[ia] if isinstance(pos, list) else pos) - o.transform[a]
-            arms.append(round((center[ia] - mid) / half, 1))
-        return arms
+            p2 = getattr(obj2, 'physics', None)
+            if p2 is None or p2.phantom or not p2.solid:
+                continue
+            b2 = p2.bounds()
+            if b2 is None or b2[1] < b1[0] or b2[0] > b1[1] or b2[3] < b1[2] or b2[2] > b1[3]:
+                continue
+            inter = pixels & p2.getpixels()
+            if inter:
+                found[obj2] = inter
+        return found
+
+    def body(self):
+        if self._body_cache is None:
+            pixels = self.getpixels()
+            n = len(pixels)
+            if n == 0:
+                self._body_cache = (0.0, 0.0, 1.0)
+            else:
+                A = self.t.aspect
+                cx = sum(p[0] for p in pixels) / n
+                cy = sum(p[1] for p in pixels) / n
+                spread = sum(((p[0] - cx) * A) ** 2 + (p[1] - cy) ** 2 for p in pixels) / n
+                self._body_cache = (cx, cy, spread + (A * A + 1) / 12)
+        return self._body_cache
+
+    def _invinertia(self):
+        if self.hitbox or not self.dynamic or not self.solid:
+            return 0.0
+        return 1.0 / (self.mass * self.body()[2])
+
+    def _velocity(self):
+        A = self.t.aspect
+        return self.xvel / self.mass * A, self.yvel / self.mass
+
+    def _omega(self):
+        return math.radians(self.avel / self.mass)
+
+    def _impulse(self, jx, jy, rx=0.0, ry=0.0):
+        A = self.t.aspect
+        self.xvel += jx / A
+        self.yvel += jy
+        inv = self._invinertia()
+        if inv and (rx or ry):
+            self.avel += math.degrees((rx * jy - ry * jx) * inv)
+
+    def _arm(self, point):
+        A = self.t.aspect
+        cx, cy, _ = self.body()
+        return (point[0] - cx) * A, point[1] - cy
+
+    def _shifted(self, dx, dy):
+        return {(p[0] + dx, p[1] + dy) for p in self.getpixels()}
+
+    def _blocked(self, dx, dy, exclude=()):
+        shifted = self._shifted(dx, dy)
+        b = self.bounds()
+        hits = []
+        for obj2 in self.scene.solids:
+            if obj2 is self.obj or obj2 in exclude:
+                continue
+            p2 = getattr(obj2, 'physics', None)
+            if p2 is None or p2.phantom or not p2.solid:
+                continue
+            b2 = p2.bounds()
+            if b2 is None or b2[1] < b[0] + dx or b2[0] > b[1] + dx or b2[3] < b[2] + dy or b2[2] > b[3] + dy:
+                continue
+            if shifted & p2.getpixels():
+                hits.append(obj2)
+        return hits
+
+    def cluster(self, start, dx, dy):
+        members = [start]
+        seen = {id(start.obj), id(self.obj)}
+        queue = [start]
+        while queue:
+            body = queue.pop()
+            if not body.dynamic:
+                return None
+            for obj2 in body._blocked(dx, dy, exclude=[m.obj for m in members] + [self.obj]):
+                p2 = obj2.physics
+                if id(obj2) in seen:
+                    continue
+                if not p2.dynamic:
+                    return None
+                seen.add(id(obj2))
+                members.append(p2)
+                queue.append(p2)
+        return members
+
+    def _solve(self, other, group, point, nx, ny, restitution=None):
+        A = self.t.aspect
+        ra = self._arm(point)
+        va = self._velocity()
+        wa = self._omega()
+        vax = va[0] - wa * ra[1]
+        vay = va[1] + wa * ra[0]
+
+        if group is None:
+            rb = (0.0, 0.0)
+            vbx = vby = 0.0
+            invmb = 0.0
+            invib = 0.0
+            e_other = other.bounciness
+            mu_other = other.friction
+            single = None
+        else:
+            single = group[0] if len(group) == 1 else None
+            total = sum(m.mass for m in group)
+            invmb = 1.0 / total
+            if single is not None:
+                rb = single._arm(point)
+                vb = single._velocity()
+                wb = single._omega()
+                vbx = vb[0] - wb * rb[1]
+                vby = vb[1] + wb * rb[0]
+                invib = single._invinertia()
+            else:
+                rb = (0.0, 0.0)
+                vbx = sum(m.xvel / m.mass * A * m.mass for m in group) / total
+                vby = sum(m.yvel for m in group) / total
+                invib = 0.0
+            e_other = max(m.bounciness for m in group)
+            mu_other = max(m.friction for m in group)
+
+        vn = (vax - vbx) * nx + (vay - vby) * ny
+        if vn >= 0:
+            return False
+
+        e = max(self.bounciness, e_other) if restitution is None else restitution
+        if -vn < 0.25:
+            e = 0.0
+
+        inva = 1.0 / self.mass
+        ia = self._invinertia()
+        can = (ra[0] * ny - ra[1] * nx) ** 2 * ia
+        cbn = (rb[0] * ny - rb[1] * nx) ** 2 * invib
+        denom = inva + invmb + can + cbn
+        j = -(1 + e) * vn / denom
+
+        self._impulse(j * nx, j * ny, *ra)
+        self._apply_other(group, single, -j * nx, -j * ny, rb)
+
+        mu = max(self.friction, mu_other)
+        if mu:
+            tx, ty = -ny, nx
+            va = self._velocity()
+            wa = self._omega()
+            vax = va[0] - wa * ra[1]
+            vay = va[1] + wa * ra[0]
+            if group is None:
+                vbx = vby = 0.0
+            elif single is not None:
+                vb = single._velocity()
+                wb = single._omega()
+                vbx = vb[0] - wb * rb[1]
+                vby = vb[1] + wb * rb[0]
+            else:
+                vbx = sum(m.xvel * A / 1.0 for m in group) / total
+                vby = sum(m.yvel for m in group) / total
+            vt = (vax - vbx) * tx + (vay - vby) * ty
+            cat = (ra[0] * ty - ra[1] * tx) ** 2 * ia
+            cbt = (rb[0] * ty - rb[1] * tx) ** 2 * invib
+            jt = -vt / (inva + invmb + cat + cbt)
+            limit = mu * j
+            jt = max(-limit, min(limit, jt))
+            self._impulse(jt * tx, jt * ty, *ra)
+            self._apply_other(group, single, -jt * tx, -jt * ty, rb)
+        return True
+
+    def _apply_other(self, group, single, jx, jy, rb):
+        if group is None:
+            return
+        if single is not None:
+            single._impulse(jx, jy, *rb)
+            return
+        total = sum(m.mass for m in group)
+        for m in group:
+            share = m.mass / total
+            m._impulse(jx * share, jy * share)
+
+    def _contact_point(self, intersection):
+        n = len(intersection)
+        return (sum(p[0] for p in intersection) / n, sum(p[1] for p in intersection) / n)
+
+    def _mtv(self, other_pixels):
+        mine = self.getpixels()
+        A = self.t.aspect
+        best = None
+        for dx, dy, cost in ((1, 0, A), (-1, 0, A), (0, 1, 1.0), (0, -1, 1.0)):
+            for k in range(1, 64):
+                if not ({(p[0] + dx * k, p[1] + dy * k) for p in mine} & other_pixels):
+                    score = k * cost - (0.01 if dy == 1 else 0)
+                    if best is None or score < best[0]:
+                        best = (score, dx, dy, k)
+                    break
+        return best
+
+    def _depenetrate(self):
+        for _ in range(12):
+            found = self.overlaps()
+            if not found:
+                return
+            obj2 = max(found, key=lambda o: len(found[o]))
+            p2 = obj2.physics
+            best = self._mtv(p2.getpixels())
+            if best is None:
+                return
+            _, dx, dy, k = best
+            if p2.dynamic:
+                mine_share = int(min(k, max(1, math.ceil(k * p2.mass / (self.mass + p2.mass)))))
+                theirs_share = k - mine_share
+            else:
+                mine_share, theirs_share = k, 0
+            self.t.x += dx * mine_share
+            self.t.y += dy * mine_share
+            if theirs_share:
+                p2.t.x -= dx * theirs_share
+                p2.t.y -= dy * theirs_share
+            for body, sign in ((self, 1), (p2, -1)):
+                if body is p2 and not theirs_share:
+                    continue
+                if dx and body.xvel * dx * sign < 0:
+                    body.xvel = 0
+                if dy and body.yvel * dy * sign < 0:
+                    body.yvel = 0
+
+    def _probe(self):
+        touch = [False, False]
+        if self.solid and not self.phantom:
+            for ia in (0, 1):
+                for s in (1, -1):
+                    d = (s, 0) if ia == 0 else (0, s)
+                    hits = self._blocked(*d)
+                    if not hits:
+                        continue
+                    touch[ia] = True
+                    g = self.scene.gravity[ia]
+                    vel = self[self._axises[ia] + 'vel']
+                    if g and (1 if g > 0 else -1) == s and vel * s > 0:
+                        static = True
+                        for obj2 in hits:
+                            p2 = obj2.physics
+                            if self.cluster(p2, d[0], d[1]) is not None:
+                                static = False
+                                break
+                        if static:
+                            self[self._axises[ia] + 'vel'] = 0
+        self.touch = tuple(touch)
 
     def physics(self, axises=None, aspect=None):
         axises = self._axises if axises is None else axises
-        aspect = self.aspect if aspect is None else aspect
-        self._dirty()
         actualmass = self.mass
+        self._dirty()
 
-        for ia, a in enumerate(axises): # per-axis step
-            opp_ia = 1 - ia
+        for ia, a in enumerate(axises):
             self[a + 'vel'] *= self.scene.drag
             self[a + 'vel'] += self.scene.gravity[ia] * actualmass
             c = 1 if self[a + 'vel'] > 0 else -1 if self[a + 'vel'] < 0 else 0
-            #c *= aspect[ia] if ia < len(aspect) and aspect[ia] else 1
             ch = abs(self[a + 'vel']) / actualmass
-            tch = list(self.touch)
-            if abs(self[a + 'vel']) > actualmass * 0.1:
-                tch[ia] = False
-            self.touch = tuple(tch)
+            d = (c, 0) if ia == 0 else (0, c)
 
-            while ch > 0: # step
+            while ch > 0:
                 step = min(self.scene.precision, ch)
                 t = {a: self.t[a] + c * step}
-                collisions = self.collides(self.scene.solids, **t)
+                collisions = self.collides(self.scene.solids, full=True, **t)
 
-                # phantom: full sweep for callbacks
-                if self.phantom:
-                    pixels1 = self.getpixels(**t)
-                    for solid_obj in self.scene.solids:
-                        if solid_obj is self.obj or solid_obj in collisions:
-                            continue
-                        solid_p = getattr(solid_obj, 'physics', None)
-                        if solid_p is None:
-                            continue
-                        pixels2 = solid_p.getpixels()
-                        intersection = pixels1 & pixels2
-                        if intersection:
-                            collisions[solid_obj] = intersection
-
-                physical_col = None
+                physical = []
                 for obj2, intersection in list(collisions.items()):
                     obj2p = getattr(obj2, 'physics', None)
                     if obj2p is None:
                         continue
-                    # callbacks
                     for cb in list(self._touch_callbacks):
                         cb(obj2, intersection)
                     if getattr(self.obj, 'physics', None) is not self:
@@ -1250,93 +1482,51 @@ class physics(_change_callback):
                         return
                     if getattr(obj2, 'physics', None) is not obj2p:
                         continue
-                    # only resolve physics when both solid and neither phantom
                     if self.solid and not self.phantom and not obj2p.phantom:
-                        if physical_col is None:
-                            physical_col = (obj2, obj2p, intersection)
+                        physical.append((obj2, obj2p, intersection))
 
-                if physical_col is not None:
-                    obj2, obj2p, intersection = physical_col
-                    othermass = obj2p.mass
-                    totalmass = actualmass + othermass
-
-                    pos_list = [self.t.x, self.t.y]
-                    pos_list[ia] = self.t[a] + c * step
-                    td = self.armratio(intersection, self.obj, pos_list) # arm ratio
-                    otd = self.armratio(intersection, obj2)
-
-                    vel_self_before = self[a + 'vel'] # torque
-                    vel_obj2_before = obj2p[a + 'vel']
-                    resting = self.touch[ia] and abs(self[a + 'vel']) / actualmass < 0.5
-                    if obj2p.dynamic and not obj2p.hitbox and not resting:
-                        obj2p.avel += actualmass * (otd[opp_ia] * (
-                            (vel_obj2_before - vel_self_before) if ia == 1
-                            else -(vel_obj2_before - vel_self_before)))
-                    if not self.hitbox and not resting:
-                        self.avel += actualmass * (td[opp_ia] * (
-                            (vel_self_before - vel_obj2_before) if ia == 1
-                            else -(vel_self_before - vel_obj2_before)))
-
-                    if obj2p.dynamic: # linear push
-                        av1 = self[a + 'vel'] / actualmass
-                        av2 = obj2p[a + 'vel'] / othermass
-                        new_av1 = ((actualmass - othermass) * av1 + (1 + self.bounciness) * othermass * av2) / totalmass
-                        new_av2 = ((othermass - actualmass) * av2 + (1 + obj2p.bounciness) * actualmass * av1) / totalmass
-                        self[a + 'vel'] = new_av1 * actualmass
-                        obj2p[a + 'vel'] = new_av2 * othermass
-                    else:
-                        e = max(self.bounciness, obj2p.bounciness)
-                        self[a + 'vel'] *= -e
-
-                    tch = list(self.touch)
-                    tch[ia] = True
-                    self.touch = tuple(tch)
-                    break # only break on physical collision
+                if physical:
+                    for obj2, obj2p, intersection in physical:
+                        if getattr(obj2, 'physics', None) is not obj2p:
+                            continue
+                        group = self.cluster(obj2p, d[0], d[1]) if obj2p.dynamic else None
+                        point = self._contact_point(intersection)
+                        self._solve(obj2p, group, point, -d[0], -d[1])
+                    break
 
                 self.t[a] += c * step
                 ch -= step
 
-        # depenetration
-        cols = self.collides(self.scene.solids)
-        if self.solid and cols and not self.phantom:
-            non_phantom = {o: px for o, px in cols.items() if not o.physics.phantom}
-            if non_phantom:
-                all_inter = set()
-                for px in non_phantom.values():
-                    all_inter |= px
-                my_px = self.getpixels()
-                my_cx  = sum(p[0] for p in my_px)    / len(my_px)
-                my_cy  = sum(p[1] for p in my_px)    / len(my_px)
-                inter_cx = sum(p[0] for p in all_inter) / len(all_inter)
-                inter_cy = sum(p[1] for p in all_inter) / len(all_inter)
-                inter_w = max(p[0] for p in all_inter) - min(p[0] for p in all_inter) + 1
-                inter_h = max(p[1] for p in all_inter) - min(p[1] for p in all_inter) + 1
-                if inter_w <= inter_h:
-                    self.t.x += inter_w * (1 if my_cx >= inter_cx else -1)
-                else:
-                    self.t.y += inter_h * (1 if my_cy >= inter_cy else -1)
+        self._depenetrate()
 
-        self.avel *= self.scene.drag # rotation
-        self.t.rotation += self.avel / actualmass
-        cols = self.collides(self.scene.solids)
-        if cols and self.solid and not self.phantom:
-            non_phantom = {o: px for o, px in cols.items() if not o.physics.phantom}
-            if non_phantom:
-                obj2 = next(iter(non_phantom))
-                intersection = non_phantom[obj2]
-                td = self.armratio(intersection, self.obj)
-                self.t.rotation -= self.avel / actualmass
-                self.avel *= -self.bounciness # bounce
-                orx, ory = self.xvel, self.yvel
-                self.t.x += self.xvel / actualmass
-                self.t.y += self.yvel / actualmass
-                self.t.rotation += self.avel / actualmass
-                if self.collides(self.scene.solids) and self.solid: # slide
-                    self.t.x -= orx / actualmass
-                    self.t.y -= ory / actualmass
-                    self.t.rotation -= self.avel / actualmass
-                    self.xvel -= self.avel * td[1] / actualmass
-                    self.yvel += self.avel * td[0] / actualmass
+        self.avel *= self.scene.drag
+        degrees = self.avel / actualmass
+        if degrees:
+            pieces = max(1, int(math.ceil(abs(degrees) / 3)))
+            da = degrees / pieces
+            check = self.solid and not self.phantom and not self.hitbox
+            for _ in range(pieces):
+                self.t.rotation += da
+                hit = self.overlaps() if check else None
+                if not hit:
+                    continue
+                contacts = []
+                for obj2, intersection in hit.items():
+                    mtv = self._mtv(obj2.physics.getpixels())
+                    if mtv is None:
+                        continue
+                    contacts.append((obj2.physics, self._contact_point(intersection), mtv[1], mtv[2]))
+                self.t.rotation -= da
+                applied = False
+                for obj2p, point, nx, ny in contacts:
+                    group = [obj2p] if obj2p.dynamic else None
+                    if self._solve(obj2p, group, point, nx, ny):
+                        applied = True
+                if applied:
+                    break
+                self.t.rotation += da
+
+        self._probe()
 
 class pen():
     _owned = ['penchar', 'penx', 'peny']

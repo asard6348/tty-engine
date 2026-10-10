@@ -32,8 +32,9 @@ class ginf():
         self.upd()
 
 class fade():
-    def __init__(self, obj, delay=0, time=2, alpha=1, bgalpha=1, callback=None, appear=False):
+    def __init__(self, obj, delay=0, time=2, alpha=1, bgalpha=1, callback=None, appear=False, discard=False):
         self.obj = obj
+        self.dis = discard
         self.delay = delay
         self._st = time
         self.time = time
@@ -59,7 +60,7 @@ class fade():
                 handle.cancel()
             for p in parts:
                 p._fadeprogress = self.obj._fadeprogress
-                world.launch(lambda: fade(p, self.delay, self._st, self.alpha, self.bgalpha, self.cb, self.appear))
+                world.launch(lambda p=p: fade(p, self.delay, self._st, self.alpha, self.bgalpha, self.cb, self.appear, self.dis))
         self.t.onsplit(inh)
         self.lerp(self.obj._fadeprogress)
     def lerp(self, progress, init=False):
@@ -83,6 +84,7 @@ class fade():
             self.lerp(0)
             delattr(self.obj, '_fading')
             if self.cb: self.cb()
+            if self.dis: self.obj.discard()
             handle.cancel()
             return
         self.time -= 1/scene.framerate
@@ -163,7 +165,7 @@ class asteroid():
         x, y = pt.forward(r(70, 100), 0, dr)
         al = r(7, 10)/10
         self.a = scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10))
-        self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al, 'callback': self.a.discard}
+        self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al, 'discard': True}
         self.a.imast = True
         self.a.ast = True
         def ont(obj2, inter):
