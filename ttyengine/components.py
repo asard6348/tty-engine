@@ -148,6 +148,7 @@ class transform(_change_callback):
         self._centroid_cache = {}
         self._rotmap = None
         self._rotcells = {}
+        self._rotsrc = {}
         self._onchangecb = {}
         self._changing = False
         self.rotate(self._rotation, init=True)
@@ -351,40 +352,51 @@ class transform(_change_callback):
                 if record:
                     self._rotmap = None
                     self._rotcells = {}
+                    self._rotsrc = {}
                 return ''
             height = len(crows)
             width  = max(len(r) for r in crows) if crows else 0
             cx, cy = width / 2, height / 2
 
+            corners = [(sx * width / 2 * ASPECT, sy * height / 2) for sx in (-1, 1) for sy in (-1, 1)]
+            rxs = [px * cos_a - py * sin_a for px, py in corners]
+            rys = [px * sin_a + py * cos_a for px, py in corners]
+            x0 = int(math.floor(min(rxs) / ASPECT + cx)) - 1
+            x1 = int(math.ceil(max(rxs) / ASPECT + cx)) + 1
+            y0 = int(math.floor(min(rys) + cy)) - 1
+            y1 = int(math.ceil(max(rys) + cy)) + 1
+
+            source = self.parse_pixels(txt)
             new_pixels = {}
             cells = {}
-            for (x, y), (char, style) in self.parse_pixels(txt).items():
-                rel_x, rel_y = x - cx, y - cy
-                rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
-                ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
-                nx = int(round(rx_n / ASPECT + cx))
-                ny = int(round(ry_n + cy))
-                if (nx, ny) not in new_pixels or new_pixels[(nx, ny)][0] == ' ':
-                    new_pixels[(nx, ny)] = (char, style)
-                if record and char != ' ':
-                    cells.setdefault((nx, ny), []).append((x, y))
+            sources = {}
+            for ny in range(y0, y1 + 1):
+                ry_n = ny - cy
+                for nx in range(x0, x1 + 1):
+                    rx_n = (nx - cx) * ASPECT
+                    ci = int(math.floor((rx_n * cos_a + ry_n * sin_a) / ASPECT + cx + 0.5))
+                    ri = int(math.floor(-rx_n * sin_a + ry_n * cos_a + cy + 0.5))
+                    pixel = source.get((ci, ri))
+                    if pixel is None:
+                        continue
+                    new_pixels[(nx, ny)] = pixel
+                    if record and pixel[0] != ' ':
+                        cells[(nx, ny)] = [(ci, ri)]
+                        sources.setdefault((ci, ri), []).append((nx, ny))
 
-            if not new_pixels:
-                if record:
-                    self._rotmap = None
-                    self._rotcells = {}
-                return ''
-            all_xs = [p[0] for p in new_pixels]
-            ns_ys  = [p[1] for p in new_pixels if new_pixels[p][0] != ' ']
+            ns_ys = [p[1] for p in new_pixels if new_pixels[p][0] != ' ']
             if not ns_ys:
                 if record:
                     self._rotmap = None
                     self._rotcells = {}
+                    self._rotsrc = {}
                 return ''
+            all_xs = [p[0] for p in new_pixels]
             min_x, min_y = min(all_xs), min(ns_ys)
             if record:
                 self._rotmap = (cx, cy, min_x, min_y, ASPECT, cos_a, sin_a)
                 self._rotcells = cells
+                self._rotsrc = sources
             return self.build_rows(new_pixels, min_x, max(all_xs), min_y, max(ns_ys))
 
         self.vtext = cal(self.vrtext)
@@ -400,19 +412,23 @@ class transform(_change_callback):
     def _origin(self):
         return round(self._x + self.vx), round(self._y + self.vy)
 
-    def rtext_to_world(self, ci, ri):
+    def _cell_world(self, cell):
         m = self._rotmap
-        if m is None:
-            return None
-        cx, cy, min_x, min_y, ASPECT, cos_a, sin_a = m
-        rel_x = ci - cx
-        rel_y = ri - cy
-        rx_n = rel_x * ASPECT * cos_a - rel_y * sin_a
-        ry_n = rel_x * ASPECT * sin_a + rel_y * cos_a
-        nx = int(round(rx_n / ASPECT + cx))
-        ny = int(round(ry_n + cy))
         ox, oy = self._origin()
-        return ox + (nx - min_x), oy - (ny - min_y)
+        return ox + (cell[0] - m[2]), oy - (cell[1] - m[3])
+
+    def rtext_to_world(self, ci, ri):
+        if self._rotmap is None:
+            return None
+        cells = self._rotsrc.get((ci, ri))
+        if not cells:
+            return None
+        return self._cell_world(min(cells))
+
+    def worldcells(self):
+        if self._rotmap is None:
+            return set()
+        return {self._cell_world(c) for c in self._rotcells}
 
     def world_to_rtext_all(self, wx, wy):
         m = self._rotmap
@@ -464,7 +480,7 @@ class transform(_change_callback):
         styled = dict(styled)
         for c in hit:
             styled[c] = (' ', '')
-        ref = next((p for p, (char, _) in styled.items() if char != ' '), None)
+        ref = next((p for p, (char, _) in styled.items() if char != ' ' and self._rotsrc.get(p)), None)
         before = self.rtext_to_world(*ref) if ref is not None else None
         xs = [p[0] for p in styled]
         ys = [p[1] for p in styled]
@@ -527,16 +543,13 @@ class transform(_change_callback):
     def _spawn_from_components(self, components, pixels, callback=None):
         rotation = self._rotation
         ox, oy = self._x, self._y
-
-        group_of = {pos: gi for gi, group in enumerate(components) for pos in group}
-        hidden = set()
-        for stack in self._rotcells.values():
-            members = [pos for pos in stack if pos in group_of]
-            if len({group_of[pos] for pos in members}) > 1:
-                owner = group_of.get(stack[0], group_of[members[0]])
-                hidden.update(pos for pos in members if group_of[pos] != owner)
-        components = [group - hidden for group in components]
-        components = [group for group in components if group]
+        parent = getattr(self.obj, 'physics', None)
+        motion = None
+        if parent is not None:
+            A = self.aspect
+            pcx, pcy, _ = parent.body()
+            motion = (parent.xvel / parent.mass * A, parent.yvel / parent.mass, parent._omega(),
+                      parent.avel / parent.mass, pcx, pcy)
 
         spawns = []
         anchors = []
@@ -549,11 +562,13 @@ class transform(_change_callback):
             if pivot is not None and rotation % 360:
                 min_x, max_x = min(min_x, round(2 * pivot[0]) - max_x), max(max_x, round(2 * pivot[0]) - min_x)
                 min_y, max_y = min(min_y, round(2 * pivot[1]) - max_y), max(max_y, round(2 * pivot[1]) - min_y)
-            target = {w for w in (self.rtext_to_world(ci, ri) for ci, ri in group) if w is not None}
+            target = {self._cell_world(c) for p in group for c in self._rotsrc.get(p, ())}
 
             kw = self.obj.kwargs()
-            for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy'):
+            for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy', 'xvel', 'yvel', 'avel'):
                 kw.pop(key, None)
+            if parent is not None:
+                kw.update(dynamic=parent.dynamic, bounciness=parent.bounciness, friction=parent.friction)
             spawns.append({
                 **kw,
                 'text': self.build_rows({p: pixels[p] for p in group}, min_x, max_x - 1, min_y, max_y - 1),
@@ -561,25 +576,33 @@ class transform(_change_callback):
                 'y': oy - min_y,
                 'rotation': rotation,
             })
-            anchors.append(([(ci - min_x, ri - min_y) for ci, ri in group], target))
+            anchors.append(target)
 
         obj_ref = self.obj
-        def do_split(spawns=spawns, anchors=anchors, obj_ref=obj_ref, cb=callback):
+        def do_split(spawns=spawns, anchors=anchors, obj_ref=obj_ref, cb=callback, motion=motion):
             parts = []
-            for kw, (local, target) in zip(spawns, anchors):
+            for kw, target in zip(spawns, anchors):
                 part = obj_ref.scene.obj().create(**kw)
                 ft = part.transform
-                if target:
-                    placed = {w for w in (ft.rtext_to_world(*p) for p in local) if w is not None}
-                    if placed:
-                        dx = round(sum(w[0] for w in target) / len(target) - sum(w[0] for w in placed) / len(placed))
-                        dy = round(sum(w[1] for w in target) / len(target) - sum(w[1] for w in placed) / len(placed))
-                        best = min(
-                            ((sx, sy) for sx in range(dx - 1, dx + 2) for sy in range(dy - 1, dy + 2)),
-                            key=lambda s: len({(wx + s[0], wy + s[1]) for wx, wy in placed} ^ target)
-                        )
-                        ft.x = ft.x + best[0]
-                        ft.y = ft.y + best[1]
+                placed = ft.worldcells()
+                if target and placed:
+                    dx = round(sum(w[0] for w in target) / len(target) - sum(w[0] for w in placed) / len(placed))
+                    dy = round(sum(w[1] for w in target) / len(target) - sum(w[1] for w in placed) / len(placed))
+                    best = min(
+                        ((sx, sy) for sx in range(dx - 1, dx + 2) for sy in range(dy - 1, dy + 2)),
+                        key=lambda s: len({(wx + s[0], wy + s[1]) for wx, wy in placed} ^ target)
+                    )
+                    ft.x = ft.x + best[0]
+                    ft.y = ft.y + best[1]
+                fp = getattr(part, 'physics', None)
+                if fp is not None and motion is not None:
+                    vx, vy, omega, spin, pcx, pcy = motion
+                    fcx, fcy, _ = fp.body()
+                    A = ft.aspect
+                    rx, ry = (fcx - pcx) * A, fcy - pcy
+                    fp.xvel = (vx - omega * ry) / A * fp.mass
+                    fp.yvel = (vy + omega * rx) * fp.mass
+                    fp.avel = spin * fp.mass
                 parts.append(part)
             if callable(cb):
                 l = _argslen(cb)
@@ -1227,7 +1250,7 @@ class physics(_change_callback):
         return self._body_cache
 
     def _invinertia(self):
-        if self.hitbox or not self.dynamic or not self.solid:
+        if self.hitbox or not self.dynamic or not self.solid or len(self.getpixels()) < 2:
             return 0.0
         return 1.0 / (self.mass * self.body()[2])
 
@@ -1255,9 +1278,11 @@ class physics(_change_callback):
         return {(p[0] + dx, p[1] + dy) for p in self.getpixels()}
 
     def _blocked(self, dx, dy, exclude=()):
-        shifted = self._shifted(dx, dy)
         b = self.bounds()
         hits = []
+        if b is None:
+            return hits
+        shifted = self._shifted(dx, dy)
         for obj2 in self.scene.solids:
             if obj2 is self.obj or obj2 in exclude:
                 continue
@@ -1338,7 +1363,9 @@ class physics(_change_callback):
         can = (ra[0] * ny - ra[1] * nx) ** 2 * ia
         cbn = (rb[0] * ny - rb[1] * nx) ** 2 * invib
         denom = inva + invmb + can + cbn
-        j = -(1 + e) * vn / denom
+        gravity = self.scene.gravity
+        boost = e * max(0.0, -(gravity[0] * A * nx + gravity[1] * ny))
+        j = (-(1 + e) * vn + boost) / denom
 
         self._impulse(j * nx, j * ny, *ra)
         self._apply_other(group, single, -j * nx, -j * ny, rb)
@@ -1381,9 +1408,18 @@ class physics(_change_callback):
             share = m.mass / total
             m._impulse(jx * share, jy * share)
 
-    def _contact_point(self, intersection):
-        n = len(intersection)
-        return (sum(p[0] for p in intersection) / n, sum(p[1] for p in intersection) / n)
+    def _contact_point(self, pixels, nx=None, ny=None):
+        n = len(pixels)
+        mx = sum(p[0] for p in pixels) / n
+        my = sum(p[1] for p in pixels) / n
+        if nx is None:
+            return (mx, my)
+        cx, cy, _ = self.body()
+        if ny:
+            xs = [p[0] for p in pixels]
+            return (max(min(xs) - 0.5, min(max(xs) + 0.5, cx)), my)
+        ys = [p[1] for p in pixels]
+        return (mx, max(min(ys) - 0.5, min(max(ys) + 0.5, cy)))
 
     def _mtv(self, other_pixels):
         mine = self.getpixels()
@@ -1430,25 +1466,25 @@ class physics(_change_callback):
     def _probe(self):
         touch = [False, False]
         if self.solid and not self.phantom:
+            mine = self.getpixels()
             for ia in (0, 1):
                 for s in (1, -1):
-                    d = (s, 0) if ia == 0 else (0, s)
-                    hits = self._blocked(*d)
-                    if not hits:
-                        continue
-                    touch[ia] = True
-                    g = self.scene.gravity[ia]
-                    vel = self[self._axises[ia] + 'vel']
-                    if g and (1 if g > 0 else -1) == s and vel * s > 0:
-                        static = True
-                        for obj2 in hits:
-                            p2 = obj2.physics
-                            if self.cluster(p2, d[0], d[1]) is not None:
-                                static = False
-                                break
-                        if static:
-                            self[self._axises[ia] + 'vel'] = 0
+                    dx, dy = (s, 0) if ia == 0 else (0, s)
+                    for obj2 in self._blocked(dx, dy):
+                        p2 = obj2.physics
+                        theirs = p2.getpixels()
+                        if not mine.isdisjoint(theirs):
+                            continue
+                        contact = [p for p in mine if (p[0] + dx, p[1] + dy) in theirs]
+                        if not contact:
+                            continue
+                        touch[ia] = True
+                        group = self.cluster(p2, dx, dy) if p2.dynamic else None
+                        self._solve(p2, group, self._contact_point(contact, -dx, -dy), -dx, -dy)
         self.touch = tuple(touch)
+        if abs(self._xvel) < 1e-9: self._xvel = 0
+        if abs(self._yvel) < 1e-9: self._yvel = 0
+        if abs(self._avel) < 1e-9: self._avel = 0
 
     def physics(self, axises=None, aspect=None):
         axises = self._axises if axises is None else axises
@@ -1490,7 +1526,7 @@ class physics(_change_callback):
                         if getattr(obj2, 'physics', None) is not obj2p:
                             continue
                         group = self.cluster(obj2p, d[0], d[1]) if obj2p.dynamic else None
-                        point = self._contact_point(intersection)
+                        point = self._contact_point(intersection, -d[0], -d[1])
                         self._solve(obj2p, group, point, -d[0], -d[1])
                     break
 
@@ -1515,7 +1551,7 @@ class physics(_change_callback):
                     mtv = self._mtv(obj2.physics.getpixels())
                     if mtv is None:
                         continue
-                    contacts.append((obj2.physics, self._contact_point(intersection), mtv[1], mtv[2]))
+                    contacts.append((obj2.physics, self._contact_point(intersection, mtv[1], mtv[2]), mtv[1], mtv[2]))
                 self.t.rotation -= da
                 applied = False
                 for obj2p, point, nx, ny in contacts:
@@ -1526,6 +1562,7 @@ class physics(_change_callback):
                     break
                 self.t.rotation += da
 
+        self._depenetrate()
         self._probe()
 
 class pen():

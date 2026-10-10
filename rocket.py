@@ -316,13 +316,7 @@ class player():
                 #dlt = ph.mass/dph
                 #obj2.create(xvel=ph.xvel*dlt, yvel=ph.yvel*dlt, avel=ph.avel*dlt)
                 vanish_data = getattr(obj2, 'forvanish', None)
-                def regul(parts):
-                    for par in parts:
-                        pah = getattr(par, 'physics', None)
-                        if pah is None: continue
-                        dlt = pah.mass/ph.mass
-                        par.create(xvel=pah.xvel*dlt, yvel=pah.yvel*dlt, avel=pah.avel*dlt)
-                tr.split(regul)
+                tr.split()
                 if vanish_data:
                     world.launch(lambda: fade(obj2, **vanish_data))
             def dis():

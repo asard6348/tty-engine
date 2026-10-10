@@ -51,7 +51,7 @@ def dev(Session=Session): #DEBUG
             self.camspeed = 0.7
             self.void = -100
             #scene.bgcolor = (255,255,255)
-            scene.gravity = (0,0)#-0.05)
+            scene.gravity = (0,-0.05)
             #scene.drag = 1
             self.pencolor = None#(0,255,255)
         
@@ -64,7 +64,7 @@ def dev(Session=Session): #DEBUG
             self.tarx = 0*sc.dimx/2
             self.tary = -sc.dimy/2
 
-            '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
+            self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
                             )
             self.plr = obj().create(plrtext,0,0,hitbox=True,renderspaces=False)
@@ -90,7 +90,7 @@ def dev(Session=Session): #DEBUG
             ip=20
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
-                ip+=20'''
+                ip+=20
 
             '''c = {'g': style("█",(24,30,24),reset=False)*2,
                  'dp': style("█",(143,8,112),reset=False)*2,
@@ -166,7 +166,7 @@ def dev(Session=Session): #DEBUG
 
             def onpress(): # key press events
                 def w():
-                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] and self.plr.physics.yvel==0 else 0
+                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] and abs(self.plr.physics.yvel) < self.plr.physics.mass*0.2 else 0
                 def q():
                     self.session.running = False
                 def f():
