@@ -177,11 +177,12 @@ def latency(samples=1000):
 
 #MODULES
 def attemptimports():
-    global scene, Terminal, inp, Styler
+    global scene, Terminal, inp, Styler, Mixer
     from . import scene
     from blessed import Terminal
     from .input_handler import inp
     from .ascii_styler import Styler
+    from .sound import Mixer
 attempt(attemptimports)
 
 #WINDOWS INTIALIZATION
@@ -233,6 +234,7 @@ class World():
                 'handle': self,
                 'world': self.world,
                 'session': self.world.session,
+                'sound': getattr(self.world.session, 'sound', None),
             }
             self.handle = handle(**getargs(handle, self.handleargs))
             if not hasattr(self.handle, 'priority'):
@@ -330,11 +332,11 @@ class World():
 
 #SESSION CLASS
 class Session():
-    APIS = {'inp': True, 'style': True}
+    APIS = {'inp': True, 'style': True, 'sound': True}
     SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True,
                 'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True}
 
-    def __init__(self, watchfocus=True, trackmotion=True, **kwargs):
+    def __init__(self, watchfocus=True, trackmotion=True, ffmpeg=None, **kwargs):
         unknown = [k for k in kwargs if k not in self.APIS and k not in self.SETTINGS]
         if unknown:
             raise TypeError(f"Session() got unexpected keyword argument(s): {', '.join(unknown)}")
@@ -343,6 +345,7 @@ class Session():
         self.term = Terminal()
         self.apis = {name: kwargs.get(name, default) for name, default in self.APIS.items()}
         self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion) if self.apis['inp'] else None
+        self.sound = Mixer(listener=self._listener, ffmpeg=ffmpeg) if self.apis['sound'] else None
         self.fill = Styler.fill
         self.running = False
         self._pause = False
@@ -459,6 +462,12 @@ class Session():
             return
         d['hold'] = True
         self._debug_send('\033[H\033[2J\033[3J' + highlight_traceback(traceback.format_exc()) + DEBUG_HOLD)
+
+    def _listener(self):
+        if not self.worlds:
+            return None
+        sc = self.worlds[-1].scene
+        return (sc.camx + sc.dimx / 2.0, sc.camy - sc.dimy / 2.0)
 
     @property
     def styler(self):
@@ -677,6 +686,7 @@ class Session():
                 if self.inp:
                     self.inp.stop_all()
                     self.inp.cleanup()
+                if self.sound: self.sound.close()
                 if self.optimize: self.term.reset()
                 if self.clearonstop:
                     sys.stdout.write("\033[H\033[2J\033[3J")

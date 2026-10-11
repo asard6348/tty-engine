@@ -288,7 +288,7 @@ class player():
                 self.info['text'] = style('STARTED!', size=3, color='white', bgcolor='blue')
                 world.launch(lambda: fade(self.info, 0.5, 0.5, callback=self.info.discard))
                 world.launch(ginf)
-        session.inp.onpress('f', onf, True)
+        session.inp.onpress('f', onf, True, True)
         
         def shoot():
             t = plr.transform

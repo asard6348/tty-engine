@@ -521,8 +521,14 @@ class inp():
             self._fire_mouse('click', x, y, btn)
 
     def _fire_mouse(self, event, x, y, data):
-        for etype, cb in list(self._mouse_cbs):
+        for handle in list(self._mouse_cbs):
+            etype, cb, once = handle
             if etype in (event, 'any'):
+                if once:
+                    # skip if already removed (e.g. by stopmouse from another callback)
+                    if not any(h is handle for h in self._mouse_cbs):
+                        continue
+                    self._mouse_cbs = [h for h in self._mouse_cbs if h is not handle]
                 try:
                     cb(x, y, data)
                 except Exception:
@@ -556,7 +562,9 @@ class inp():
             for ident, event in events:
                 down = event.event_type == 'down'
                 table = self._press_cbs if down else self._release_cbs
-                for cb, accepts in list(table.get(event.name, ())):
+                for cb, accepts, token in list(table.get(event.name, ())):
+                    if token is not None and not self._consume(table, token):
+                        continue    # one-shot already fired / removed
                     try:
                         cb(event) if accepts else cb()
                     except Exception:
@@ -578,22 +586,37 @@ class inp():
             return any(k in self._pressed_keys for k in key)
         return list(self._pressed_keys)
 
-    def onpress(self, key, callback, caps=False):
+    @staticmethod
+    def _consume(table, token):
+        # Remove every entry carrying `token` (a once-group shared by the
+        # lower/upper registrations when caps=True). Returns True if any
+        # entry was still registered.
+        removed = False
+        for k, lst in list(table.items()):
+            kept = [e for e in lst if e[2] is not token]
+            if len(kept) != len(lst):
+                removed = True
+                table[k] = kept
+        return removed
+
+    def onpress(self, key, callback, caps=False, once=False):
         accepts = _accepts_arg(callback)
+        token = object() if once else None
         if caps:
-            self._press_cbs[key.lower()].append((callback, accepts))
-            self._press_cbs[key.upper()].append((callback, accepts))
+            self._press_cbs[key.lower()].append((callback, accepts, token))
+            self._press_cbs[key.upper()].append((callback, accepts, token))
             return (key.lower(), callback, 'press'), (key.upper(), callback, 'press')
-        self._press_cbs[key].append((callback, accepts))
+        self._press_cbs[key].append((callback, accepts, token))
         return (key, callback, 'press')
 
-    def onrelease(self, key, callback, caps=False):
+    def onrelease(self, key, callback, caps=False, once=False):
         accepts = _accepts_arg(callback)
+        token = object() if once else None
         if caps:
-            self._release_cbs[key.lower()].append((callback, accepts))
-            self._release_cbs[key.upper()].append((callback, accepts))
+            self._release_cbs[key.lower()].append((callback, accepts, token))
+            self._release_cbs[key.upper()].append((callback, accepts, token))
             return (key.lower(), callback, 'release'), (key.upper(), callback, 'release')
-        self._release_cbs[key].append((callback, accepts))
+        self._release_cbs[key].append((callback, accepts, token))
         return (key, callback, 'release')
 
     @staticmethod
@@ -639,10 +662,11 @@ class inp():
         # 0-left, 1-middle, 2-right
         return button in self._mouse_held
 
-    def onmouse(self, event, callback): # register a mouse event callback
+    def onmouse(self, event, callback, once=False): # register a mouse event callback
         # event: 'click' | 'release' | 'move' | 'wheel' | 'any'
         # callback: cb(x, y, data)  — data is button index or scroll delta
-        handle = (event, callback)
+        # once: if True, the callback is removed after it fires the first time
+        handle = (event, callback, once)
         self._mouse_cbs.append(handle)
         return handle
 
