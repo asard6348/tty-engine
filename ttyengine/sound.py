@@ -1,4 +1,4 @@
-import sys, os, re, glob, math, time, struct, random, shutil, queue, atexit, weakref, inspect, tempfile, ctypes, ctypes.util, threading, subprocess
+import sys, os, re, glob, math, time, struct, random, shutil, queue, atexit, weakref, inspect, tempfile, ctypes, ctypes.util, threading, subprocess, contextlib
 from array import array
 
 __all__ = ['Mixer', 'Sound', 'Voice', 'note_freq', 'decoders', 'find_ffmpeg', 'set_ffmpeg']
@@ -45,6 +45,89 @@ def _call(cb, arg):
         cb(arg)
     else:
         cb()
+
+
+def _seconds(value):
+    if value is None:
+        return None
+    return max(0.0, float(value))
+
+
+class _Session:
+    """The desktop user whose audio server a root process should talk to."""
+
+    def __init__(self, uid, gid, name, home, groups):
+        self.uid = uid
+        self.gid = gid
+        self.name = name
+        self.home = home
+        self.groups = groups
+        self.runtime = f'/run/user/{uid}'
+        self.socket = f'{self.runtime}/pulse/native'
+        cookie = os.path.join(home, '.config', 'pulse', 'cookie')
+        self.cookie = cookie if os.path.isfile(cookie) else None
+
+    def env(self):
+        env = {'XDG_RUNTIME_DIR': self.runtime, 'PULSE_SERVER': 'unix:' + self.socket}
+        if self.cookie:
+            env['PULSE_COOKIE'] = self.cookie
+        return env
+
+
+def _session_user():
+    # Audio servers (PulseAudio / PipeWire) live in the logged-in user's session. A process running as root
+    # (sudo, pkexec, a root shell) does not inherit that session, so it can neither find nor authenticate to it.
+    # Returns the session owner to connect as, or None when no workaround is needed or possible.
+    if sys.platform in ('win32', 'darwin') or not hasattr(os, 'geteuid') or os.geteuid() != 0:
+        return None
+    if os.environ.get('PULSE_SERVER') or os.path.exists('/run/user/0/pulse/native'):
+        return None
+    try:
+        import pwd
+    except ImportError:
+        return None
+    uids = []
+    for var in ('SUDO_UID', 'PKEXEC_UID'):
+        try:
+            uids.append(int(os.environ[var]))
+        except (KeyError, ValueError):
+            pass
+    for path in sorted(glob.glob('/run/user/*/pulse/native')):
+        try:
+            uids.append(int(path.split('/')[3]))
+        except ValueError:
+            pass
+    for uid in uids:
+        if uid == 0 or not os.path.exists(f'/run/user/{uid}/pulse/native'):
+            continue
+        try:
+            pw = pwd.getpwuid(uid)
+        except KeyError:
+            continue
+        try:
+            groups = os.getgrouplist(pw.pw_name, pw.pw_gid)
+        except OSError:
+            groups = [pw.pw_gid]
+        return _Session(uid, pw.pw_gid, pw.pw_name, pw.pw_dir, groups)
+    return None
+
+
+@contextlib.contextmanager
+def _session_env(session):
+    if session is None:
+        yield
+        return
+    changes = session.env()
+    saved = {k: os.environ.get(k) for k in changes}
+    os.environ.update(changes)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def note_freq(note):
@@ -422,10 +505,15 @@ class Sound:
 
 
 class Voice:
-    def __init__(self, mixer, sound, volume=1.0, pan=0.0, loop=False, on_end=None, speed=1.0, at=None):
+    def __init__(self, mixer, sound, volume=1.0, pan=0.0, loop=False, on_end=None, speed=1.0, at=None,
+                 loop_start=None, loop_end=None):
         self._mixer = mixer
         self._sound = sound
         self._pos = 0
+        self._loop_start = _seconds(loop_start)
+        self._loop_end = _seconds(loop_end)
+        if self._loop_start is not None and self._loop_end is not None and self._loop_end <= self._loop_start:
+            raise ValueError('loop_end must be greater than loop_start')
         self._speed = max(0.05, min(32.0, float(speed)))
         self._at = None
         self._hook = None
@@ -437,15 +525,20 @@ class Voice:
         self._target = self._volume
         self._rate = 0.0
         self._stop_after = False
+        self._restore = None
+        self._pending = None
         if loop is True:
             self._left = None
         elif loop:
             self._left = max(1, int(loop))
         else:
             self._left = 1
+        self._loops = self._left
         self.paused = False
         self.done = False
         self.on_end = on_end
+        self._complete = []
+        self._finished = False
         if at is not None:
             self.at = at
 
@@ -503,15 +596,62 @@ class Voice:
 
     @property
     def playing(self):
-        return not self.done
+        return not self.done and not self.paused
+
+    @property
+    def loop_start(self):
+        return self._loop_start
+    @loop_start.setter
+    def loop_start(self, seconds):
+        self._loop_start = _seconds(seconds)
+
+    @property
+    def loop_end(self):
+        return self._loop_end
+    @loop_end.setter
+    def loop_end(self, seconds):
+        self._loop_end = _seconds(seconds)
+
+    def _loop_frames(self, total):
+        # (start, end) of the repeated region in frames; an empty or inverted region falls back to the whole sound
+        rate = self._sound.rate
+        ls = 0 if self._loop_start is None else min(total, int(round(self._loop_start * rate)))
+        le = total if self._loop_end is None else min(total, int(round(self._loop_end * rate)))
+        if le <= ls:
+            return 0, total
+        return ls, le
 
     @property
     def position(self):
-        return self._pos / float(self._sound.rate)
+        pending = self._pending
+        pos = self._pos if pending is None else pending[0]
+        return pos / float(self._sound.rate)
+    @position.setter
+    def position(self, seconds):
+        self.move(seconds)
 
     @property
     def duration(self):
         return self._sound.duration
+
+    def oncomplete(self, callback, once=False):
+        if self._finished:
+            _call(callback, self)
+            return callback
+        self._complete.append([callback, bool(once)])
+        return callback
+
+    def offcomplete(self, callback):
+        self._complete = [e for e in self._complete if e[0] is not callback]
+
+    def _emit_complete(self):
+        for entry in list(self._complete):
+            if entry[1]:
+                self._complete = [e for e in self._complete if e is not entry]
+            try:
+                _call(entry[0], self)
+            except Exception:
+                pass
 
     def fade(self, target, seconds, stop=False):
         target = max(0.0, float(target))
@@ -526,8 +666,73 @@ class Voice:
         self._rate = abs(target - self._volume) / seconds
         return self
 
-    def stop(self, fade=0.0):
+    def kill(self, fade=0.0):
+        # ends the voice for good: it is removed from the mixer and on_end fires
         return self.fade(0.0, fade, True)
+
+    def stop(self, fade=0.0):
+        # pauses the voice and returns it to the beginning (and its original loop count and volume);
+        # play() or resume() starts it again from the top
+        if fade > 0 and self._volume > 0 and not self.paused and not self.done:
+            if self._stop_after != 'rewind':
+                self._restore = max(self._volume, self._target) if self._rate else self._volume
+            return self.fade(0.0, fade, 'rewind')
+        self._halt()
+        return self
+
+    def _halt(self):
+        restore, self._restore = self._restore, None
+        self._stop_after = False
+        self._rate = 0.0
+        if restore is not None:
+            self._volume = self._target = restore
+        self.paused = True
+        self._set_pending(0.0, True)
+
+    def play(self):
+        # (re)starts from the beginning, also after stop() or after the sound has finished on its own
+        mixer = self._mixer
+        restore, self._restore = self._restore, None
+        self._stop_after = False
+        self._rate = 0.0
+        if restore is not None:
+            self._volume = self._target = restore
+        self._finished = False
+        self._set_pending(0.0, True)
+        revive = self.done
+        with mixer._lock:
+            self.paused = False
+            if revive:
+                self.done = False
+                if self not in mixer._voices:
+                    mixer._voices.append(self)
+        if revive and self._at is not None:
+            self.at = self._at
+        mixer._ensure()
+        return self
+
+    def move(self, seconds, relative=False):
+        # jumps to a time in the sound, in seconds like position/duration; relative=True offsets from the current position
+        seconds = float(seconds)
+        if relative:
+            seconds += self.position
+        frames = min(max(seconds, 0.0) * self._sound.rate, float(self._sound.frames))
+        pending = self._pending
+        self._set_pending(frames, bool(pending and pending[1]))
+        return self
+
+    def _set_pending(self, frames, reset):
+        # applied by the mixer thread at the start of the next block, so it can't race with rendering
+        with self._mixer._lock:
+            self._pending = (frames, reset)
+
+    def _apply_pending(self):
+        with self._mixer._lock:
+            pending, self._pending = self._pending, None
+        if pending is not None:
+            self._pos = pending[0]
+            if pending[1]:
+                self._left = self._loops
 
     def pause(self):
         self.paused = True
@@ -834,11 +1039,22 @@ class _Pipe:
 
     def __init__(self, rate, block):
         self.p = None
+        session = _session_user()
+        env = None
+        extra = {}
+        if session is not None:
+            # run the player as the session user so the audio server accepts it
+            env = dict(os.environ, HOME=session.home, USER=session.name, LOGNAME=session.name, **session.env())
+            extra = {'user': session.uid, 'group': session.gid, 'extra_groups': session.groups}
         for cmd in _pipe_commands(rate):
             if not shutil.which(cmd[0]):
                 continue
+            args = dict(stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
             try:
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    proc = subprocess.Popen(cmd, **args, **extra)
+                except TypeError:
+                    proc = subprocess.Popen(cmd, **args)
             except OSError:
                 continue
             time.sleep(0.15)
@@ -877,6 +1093,9 @@ def _chain():
         return [_WinMM]
     if sys.platform == 'darwin':
         return [_CoreAudio]
+    if _session_user() is not None:
+        # as root, the pipe player (run as the session user) is the most dependable route into the user's audio server
+        return [_Pulse, _Pipe, _Alsa]
     return [_Pulse, _Alsa, _Pipe]
 
 
@@ -889,11 +1108,12 @@ def _open(spec, rate, block):
         candidates = [_BACKENDS[spec]]
     else:
         raise ValueError(f'unknown sound backend: {spec!r}')
-    for cls in candidates:
-        try:
-            return cls(rate, block)
-        except Exception:
-            continue
+    with _session_env(_session_user()):
+        for cls in candidates:
+            try:
+                return cls(rate, block)
+            except Exception:
+                continue
     return _Null(rate, block)
 
 
@@ -992,9 +1212,11 @@ class Mixer:
     def melody(self, notes, wave='square', volume=0.4, beat=1.0, attack=0.005, release=0.03):
         return Sound.melody(notes, wave, volume, beat, attack, release, self.rate)
 
-    def play(self, sound, volume=1.0, pan=0.0, loop=False, fade=0.0, on_end=None, speed=1.0, pitch=0.0, at=None):
+    def play(self, sound, volume=1.0, pan=0.0, loop=False, fade=0.0, on_end=None, speed=1.0, pitch=0.0, at=None,
+             loop_start=None, loop_end=None):
         snd = sound if isinstance(sound, Sound) else self.load(sound)
-        voice = Voice(self, snd.at_rate(self.rate), volume, pan, loop, on_end, speed * 2.0 ** (pitch / 12.0), at)
+        voice = Voice(self, snd.at_rate(self.rate), volume, pan, loop, on_end, speed * 2.0 ** (pitch / 12.0), at,
+                      loop_start, loop_end)
         if fade > 0:
             voice._volume = 0.0
             voice._target = volume
@@ -1009,14 +1231,14 @@ class Mixer:
         return voice
 
     def beep(self, freq=880.0, duration=0.12, wave='square', volume=0.3, **kwargs):
-        play = {k: kwargs.pop(k) for k in ('pan', 'fade', 'on_end', 'speed', 'pitch', 'at', 'loop') if k in kwargs}
+        play = {k: kwargs.pop(k) for k in ('pan', 'fade', 'on_end', 'speed', 'pitch', 'at', 'loop', 'loop_start', 'loop_end') if k in kwargs}
         return self.play(self.tone(freq, duration, wave, volume, **kwargs), **play)
 
     def stop_all(self, fade=0.0):
         with self._lock:
             voices = list(self._voices)
         for v in voices:
-            v.stop(fade)
+            v.kill(fade)
 
     def pause(self):
         self._paused = True
@@ -1117,10 +1339,12 @@ class Mixer:
         dt = frames / float(self.rate)
         master = self._volume
         ended = []
+        completed = []
         for v in voices:
             if v.done:
                 ended.append(v)
                 continue
+            v._apply_pending()
             if v.paused:
                 continue
             if v._rate:
@@ -1129,6 +1353,10 @@ class Mixer:
                 if abs(gap) <= step:
                     v._volume = v._target
                     v._rate = 0.0
+                    if v._stop_after == 'rewind':
+                        v._halt()
+                        v._apply_pending()
+                        continue
                     if v._stop_after:
                         v.done = True
                         ended.append(v)
@@ -1146,20 +1374,26 @@ class Mixer:
             speed = v._speed
             snd = v._sound
             total = snd.frames
+            ls, le = v._loop_frames(total)
             n = 0
             while n < frames:
-                if v._pos >= total:
-                    if total and (v._left is None or v._left > 1):
-                        if v._left is not None:
-                            v._left -= 1
-                        v._pos = v._pos % total
-                    else:
+                looping = total and (v._left is None or v._left > 1)
+                # while loops remain, a pass ends at the loop end; the final pass plays on to the end of the sound
+                limit = le if looping else total
+                if v._pos >= limit:
+                    completed.append(v)
+                    if not looping:
+                        v._finished = True
                         v.done = True
                         ended.append(v)
                         break
+                    if v._left is not None:
+                        v._left -= 1
+                    v._pos = ls + (v._pos - le) % (le - ls)
+                    continue
                 if speed == 1.0:
                     start = int(v._pos)
-                    take = min(total - start, frames - n)
+                    take = min(limit - start, frames - n)
                     end = start + take
                     if gl:
                         left[n:n + take] = [m + ((s * gl) >> 8) for m, s in zip(left[n:n + take], snd.left[start:end])]
@@ -1169,8 +1403,8 @@ class Mixer:
                     n += take
                 else:
                     pos = v._pos
-                    cnt = int((total - pos) / speed)
-                    if pos + cnt * speed < total:
+                    cnt = int((limit - pos) / speed)
+                    if pos + cnt * speed < limit:
                         cnt += 1
                     take = max(1, min(cnt, frames - n))
                     if gl or gr:
@@ -1189,6 +1423,9 @@ class Mixer:
                                                  for m, i, j, f in zip(right[n:n + take], ii, jj, fr)]
                     v._pos = pos + take * speed
                     n += take
+        for v in completed:
+            v._emit_complete()
+        ended = [v for v in ended if v.done]
         if ended:
             gone = set(map(id, ended))
             with self._lock:

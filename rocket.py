@@ -1,8 +1,35 @@
 from ttyengine.launcher import Session, attempt
-import math, random
+import math, random, os
+cwd = os.getcwd()
 
 lost = False
 plr = None
+
+game_id = 0
+
+tracked = []
+
+def track(o):
+    if o is None or o in tracked:
+        return o
+    tracked.append(o)
+    try:
+        o.ondiscard(lambda: tracked.remove(o) if o in tracked else None)
+    except Exception:
+        pass
+    return o
+
+def kill(o):
+    try:
+        if o is not None and hasattr(o, 'transform'):
+            o.discard()
+    except Exception:
+        pass
+
+def cleanup():
+    for o in list(tracked):
+        kill(o)
+    tracked.clear()
 
 ginfo = [0, 0]
 class ginf():
@@ -13,20 +40,22 @@ class ginf():
         new_txt = f'SHOTS :   {ginfo[0]}       HITS :   {ginfo[1]}'
         if new_txt != self._last_txt or self._lost != lost:
             self._last_txt = new_txt
+            self._lost = lost
             self.info.create(style(new_txt, color='darkorange', alpha=0.5 if lost else 1, size=1, width=500), z=30)
         t = self.info.transform
         t.x = sc.camx + sc.iround((sc.dimx - t.xlen()) / 2)
         t.y = sc.camy - sc.dimy + t.ylen()
     def start(self, scene, session):
         global lost
+        self.gid = game_id
         self.scene = scene
         self.style = session.style
-        self.info = scene.obj()
+        self.info = track(scene.obj())
         self._last_txt = None
         self._lost = lost
     def final(self, scene, handle):
-        if len(ginfo) < 2:
-            self.info.discard()
+        if self.gid != game_id or not hasattr(self.info, 'transform'):
+            kill(self.info)
             handle.cancel()
             return
         self.upd()
@@ -54,6 +83,8 @@ class fade():
         self.t = self.obj.transform
         self.s = world.scene.styler.style
         def inh(parts):
+            for p in parts:
+                track(p)
             if parts[0] == self.obj:
                 return
             else:
@@ -148,6 +179,11 @@ class flash():
 
 class asteroid():
     def start(self, scene, handle, session, world):
+        self.a = None
+        self.gid = game_id
+        if not hasattr(plr, 'transform'):
+            handle.cancel()
+            return
         r = random.randrange
         style = session.style
         pt = plr.transform
@@ -164,12 +200,13 @@ class asteroid():
         dr = r(-180, 180)
         x, y = pt.forward(r(70, 100), 0, dr)
         al = r(7, 10)/10
-        self.a = scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10))
+        self.a = track(scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10)))
         self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al, 'discard': True}
         self.a.imast = True
         self.a.ast = True
         def ont(obj2, inter):
             global lost
+            if self.gid != game_id: return
             if obj2.physics.phantom or hasattr(obj2, 'imast'): return
             if obj2 == plr:
                 self.a.physics.offtouch(ont)
@@ -197,6 +234,10 @@ class asteroid():
                 break
         self.a.physics.ontouch(ont)
     def update(self, handle):
+        if self.gid != game_id:
+            kill(self.a)
+            handle.cancel()
+            return
         try:
             t = self.a.transform
             p = self.a.physics
@@ -210,24 +251,24 @@ class asteroid():
             return
 
 class player():
-    def start(self, scene, session, world, handle):
+    def init(self, scene, session, world, handle, sound):
         global plr
         inp = session.inp
         style = session.style
-        #scene.framerate=1
-        #scene.bgcolor=(255,0,0)
         scene.gravity = (0,0)
         scene.drag = 1
         self.smcam = 5
         self.lsinfo = None
         self.lsy = 10
+        self.started = False
+        gid = game_id
 
-        plr = scene.obj().create(style('''
-    █    
-   ███   
-  ██ ██  
- ██   ██ 
-██     ██''', color='brightblue'),dynamic=True, hitbox=False, mass=50)
+        plr = track(scene.obj().create(style('''
+    █
+   ███
+  ██ ██
+ ██   ██
+██     ██''', color='brightblue'),dynamic=True, hitbox=False, mass=50))
         t = plr.transform
         p = plr.physics
         self.thrustspeed = 0.1*p.mass
@@ -235,6 +276,9 @@ class player():
         self.thrustbreak = 0.9
         def swslf(ps):
             global plr, lost, ginfo
+            if gid != game_id: return
+            for par in ps:
+                track(par)
             ac = None
             for par in ps:
                 if hasattr(par, 'physics') and (ac==None or par.physics.mass > ac.physics.mass):
@@ -255,13 +299,12 @@ class player():
             if (not plr or lost) and not self.lsinfo:
                 lost = True
                 self.smcam = 20
-                lsinfo = scene.obj().create(style('YOU LOST!', size=3, color='black', bgcolor='red'), z=20, renderspaces=True)
+                lsinfo = track(scene.obj().create(style('YOU LOST!', size=2, color='black', bgcolor='red')+'\n'+style('PRESS R TO RESET', color='black', bgcolor='red'), z=20, renderspaces=True))
                 lst = lsinfo.transform
-                lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2) if not plr else plr.transform.x-(lst.xlen()/2)
-                lst.y = scene.camy - scene.iround((scene.dimy) / 4) + scene.iround(lst.ylen() / 2) if not plr else plr.transform.y+self.lsy
+                lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
+                lst.y = scene.camy - scene.iround(scene.dimy / 4) + scene.iround(lst.ylen() / 2)
                 world.launch(lambda: fade(lsinfo, 0, 2, appear=True))
                 self.lsinfo = lsinfo
-                #handle.cancel()
                 return
         t.onsplit(swslf)
 
@@ -278,25 +321,17 @@ class player():
             return xdelta, ydelta
         self.camfollow = camfollow
         camfollow(t.x+t.xc(), t.y-t.yc())
-        
-        self.info = scene.obj().create(session.style('ZOOM OUT BY "CTRL" + "-", QUIT BY "Q", START GAME BY "F"', color='black', bgcolor='white'), renderspaces=True)
+
+        self.info = track(scene.obj().create(session.style('ZOOM OUT BY "CTRL" + "-", QUIT BY "Q", START GAME BY "F"', color='black', bgcolor='white'), renderspaces=True))
         self._ad = -1
-        def onf():
-            self._ad = 0
-            world.launch(lambda scene, session: flash(scene, session, time=0.5, st=(255,255,255)))
-            if hasattr(self.info, 'transform'):
-                self.info['text'] = style('STARTED!', size=3, color='white', bgcolor='blue')
-                world.launch(lambda: fade(self.info, 0.5, 0.5, callback=self.info.discard))
-                world.launch(ginf)
-        session.inp.onpress('f', onf, True, True)
-        
+
         def shoot():
             t = plr.transform
             p = plr.physics
             sx, sy = t.forward(t.ylen())
             spawn_x = t.x + t.xc() + sx
             spawn_y = t.y - t.yc() + sy
-            bullet = scene.obj().create(style('●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = t.rotation, mass=0, phantom=True)
+            bullet = track(scene.obj().create(style('●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = t.rotation, mass=0, phantom=True))
             bt = bullet.transform
             bp = bullet.physics
             for i, d in enumerate(t.forward(3)):
@@ -306,15 +341,11 @@ class player():
                 global lost
                 ph = obj2.physics
                 tr = obj2.transform
-                #if ph.phantom and not hasattr(obj2, 'ast'): return
                 if hasattr(obj2, 'imast'):
                     if not lost: ginfo[0] += 1
                     ph.phantom = True
                     delattr(obj2, 'imast')
-                #dph = ph.mass
                 tr.cutpoints(points)
-                #dlt = ph.mass/dph
-                #obj2.create(xvel=ph.xvel*dlt, yvel=ph.yvel*dlt, avel=ph.avel*dlt)
                 vanish_data = getattr(obj2, 'forvanish', None)
                 tr.split()
                 if vanish_data:
@@ -328,13 +359,43 @@ class player():
         self._shoot = shoot
         self._shoot_delay = 0
 
+    def start(self, scene, session, world, handle, sound):
+        inp = session.inp
+
+        self.init(scene, session, world, handle, sound)
+
         def close(): session.running = not session.running
         inp.onpress('q', close, True)
+
+        def onf():
+            if self.started:
+                return
+            self.started = True
+            self._ad = 0
+            world.launch(lambda scene, session: flash(scene, session, time=0.5, st=(255,255,255)))
+            if hasattr(self.info, 'transform'):
+                self.info['text'] = session.style('STARTED!', size=3, color='white', bgcolor='blue')
+                world.launch(lambda: fade(self.info, 0.5, 0.5, callback=self.info.discard))
+                world.launch(ginf)
+        inp.onpress('f', onf, True)
+
+        music = sound.play('rocket.mp3', loop=True) if os.path.exists(os.path.join(cwd, 'rocket.mp3')) else None
+
+        def reset_game():
+            global lost, game_id
+            if lost:
+                game_id += 1
+                cleanup()
+                if music: music.play()
+                ginfo[0] = 0
+                ginfo[1] = 0
+                lost = False
+                self.init(scene, session, world, handle, sound)
+        inp.onpress('r', reset_game, True)
 
     def update(self, scene, session, world, handle):
         global plr
         if not hasattr(plr, 'transform'):
-            handle.cancel()
             return
         inp = session.inp
         t = plr.transform
@@ -367,14 +428,14 @@ class player():
         if self._ad <= 0 and self._ad != -1:
             self._ad = 1
             world.launch(lambda: asteroid())
-            
+
         self.camfollow(t.x+t.xc(), t.y-t.yc(), self.smcam)
         if hasattr(self.info, 'transform'):
             self.info.transform.x, self.info.transform.y = 0+scene.camx, 0+scene.camy
         if hasattr(self.lsinfo, 'transform'):
             lst = self.lsinfo.transform
-            lst.x = t.x-(lst.xlen()/2)
-            lst.y = t.y+self.lsy
+            lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
+            lst.y = scene.camy - scene.iround(scene.dimy / 4) + scene.iround(lst.ylen() / 2)
         if not self.lsinfo:
             p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*plr.physics.mass
 
@@ -413,7 +474,7 @@ class background():
         self._spawn(scene, session, world,
                     x=scene.camx + r() * scene.dimx,
                     y=scene.camy - r() * scene.dimy)
-        
+
 
 def d():
     se = Session()
