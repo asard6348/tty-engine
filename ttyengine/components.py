@@ -4,7 +4,7 @@
 #def on_discard() - function that will be called upon obj().discard()
 
 #MODULES
-import math, re, sys, statistics, inspect
+import math, re, sys, statistics, inspect, contextlib, collections.abc
 
 #GLOBAL
 _RESET_FG = '\033[22;23;24;39m'
@@ -2397,86 +2397,279 @@ class force():
 def _wrap(angle):
     return (angle + 180) % 360 - 180
 
-class _jointlist(list):
+def _sequence(value):
+    return value if isinstance(value, (list, tuple)) else tuple(value)
+
+def _band(value):
+    if isinstance(value, (int, float)):
+        low = high = value
+    else:
+        values = list(value)
+        low, high = min(values), max(values)
+    if low < 0:
+        raise ValueError('radius must not be negative')
+    return low, high
+
+def _arc(value):
+    if value is None:
+        return None
+    values = list(value)
+    low, high = min(values), max(values)
+    if high - low >= 360:
+        return None
+    return (low + high) / 2, (high - low) / 2
+
+def _check_radius(value):
+    if value is None:
+        return 0
+    if not isinstance(value, (int, float)):
+        value = _sequence(value)
+    _band(value)
+    return value
+
+def _check_range(value):
+    if value is None:
+        return None
+    value = _sequence(value)
+    _arc(value)
+    return value
+
+def _check_elasticity(value):
+    if value <= 0:
+        raise ValueError('elasticity must be positive')
+    return value
+
+def _check_durability(value):
+    if value < 0:
+        raise ValueError('durability must not be negative')
+    return value
+
+def _check_ratio(value):
+    return max(0.0, min(1.0, value))
+
+_PARAMS = {
+    'xoffset': (0, None),
+    'yoffset': (0, None),
+    'radius': (0, _check_radius),
+    'range': (None, _check_range),
+    'elasticity': (1, _check_elasticity),
+    'durability': (0, _check_durability),
+    'physical': (False, bool),
+    'ratio': (0, _check_ratio),
+    'vel': (0, None),
+    'collide': (False, bool),
+}
+_ALIASES = {'jradius': 'radius'}
+_GEOMETRY = frozenset(('xoffset', 'yoffset', 'radius', 'range', 'physical'))
+
+def _check_params(params):
+    checked = {}
+    for key, value in (params or {}).items():
+        name = _ALIASES.get(key, key)
+        if name not in _PARAMS:
+            raise TypeError(f'unknown joint parameter: {key!r}')
+        check = _PARAMS[name][1]
+        checked[name] = value if check is None else check(value)
+    return checked
+
+class _param():
+    def __init__(self, name, check):
+        self.name = name
+        self.check = check
+
+    def __get__(self, inst, owner=None):
+        if inst is None:
+            return self
+        return inst._value(self.name)
+
+    def __set__(self, inst, value):
+        if self.check is not None:
+            value = self.check(value)
+        inst._store(self.name, value)
+
+    def __delete__(self, inst):
+        inst._clear(self.name)
+
+def _withparams(cls):
+    for name, (_, check) in _PARAMS.items():
+        setattr(cls, name, _param(name, check))
+    return cls
+
+def _ghost_hold(owner, partner):
+    refs = owner.__dict__.setdefault('_ghostrefs', {})
+    entry = refs.get(id(partner))
+    if entry is None:
+        added = not any(g is partner for g in owner._ghosts)
+        if added:
+            owner._ghosts.append(partner)
+        refs[id(partner)] = [1, added]
+    else:
+        entry[0] += 1
+
+def _ghost_drop(owner, partner):
+    refs = owner.__dict__.get('_ghostrefs')
+    entry = refs.get(id(partner)) if refs else None
+    if entry is None:
+        return
+    entry[0] -= 1
+    if entry[0] > 0:
+        return
+    del refs[id(partner)]
+    if entry[1]:
+        owner._ghosts[:] = [g for g in owner._ghosts if g is not partner]
+
+class _jointlist(collections.abc.MutableSequence):
     def __init__(self, owner):
-        super().__init__()
         self._owner = owner
 
-    def append(self, item):
-        if self._owner._accept(item):
-            super().append(item)
-            self._owner._attach(item)
+    def _items(self):
+        return [link.item for link in self._owner._links.values()]
 
-    def extend(self, items):
-        for item in list(items):
-            self.append(item)
+    def __len__(self):
+        return len(self._owner._links)
 
-    def insert(self, index, item):
-        if self._owner._accept(item):
-            super().insert(index, item)
-            self._owner._attach(item)
+    def __iter__(self):
+        return iter(self._items())
 
-    def remove(self, item):
-        super().remove(item)
-        self._owner._detach(item)
+    def __contains__(self, item):
+        return id(item) in self._owner._links
 
-    def pop(self, index=-1):
-        item = super().pop(index)
-        self._owner._detach(item)
-        return item
+    def __getitem__(self, index):
+        return self._items()[index]
 
-    def clear(self):
-        for item in list(self):
-            self.remove(item)
+    def __setitem__(self, index, value):
+        items = self._items()
+        items[index] = value
+        self._owner._assign(items)
+
+    def __delitem__(self, index):
+        items = self._items()
+        del items[index]
+        self._owner._assign(items)
+
+    def __eq__(self, other):
+        if isinstance(other, (list, tuple, _jointlist)):
+            return self._items() == list(other)
+        return NotImplemented
+
+    __hash__ = None
+
+    def __repr__(self):
+        return repr(self._items())
 
     def __iadd__(self, items):
         self.extend(items)
         return self
 
-    def __setitem__(self, index, value):
-        items = list(self)
-        items[index] = value
-        self.clear()
-        self.extend(items)
+    def insert(self, index, item):
+        items = self._items()
+        items.insert(index, item)
+        self._owner._assign(items)
 
-    def __delitem__(self, index):
-        items = list(self)
-        del items[index]
-        self.clear()
-        self.extend(items)
+    def append(self, item):
+        self._owner.add(item)
 
+    def extend(self, items):
+        self._owner._assign(self._items() + list(items))
+
+    def remove(self, item):
+        self._owner.remove(item)
+
+    def pop(self, index=-1):
+        item = self._items()[index]
+        self._owner.remove(item)
+        return item
+
+    def clear(self):
+        self._owner._assign(())
+
+@_withparams
+class _link():
+    def __init__(self, joint, item):
+        self.joint = joint
+        self.item = item
+        self._own = {}
+        self._live = False
+        self._held = False
+        self._cb = None
+        self._drop = None
+
+    def _value(self, name):
+        if name in self._own:
+            return self._own[name]
+        return self.joint._value(name)
+
+    def _store(self, name, value):
+        self._own[name] = value
+        self.joint._sync((self,), {name})
+
+    def _clear(self, name):
+        if name in self._own:
+            del self._own[name]
+            self.joint._sync((self,), {name})
+
+    @property
+    def overrides(self):
+        return dict(self._own)
+
+    def update(self, **params):
+        checked = _check_params(params)
+        self._own.update(checked)
+        self.joint._sync((self,), set(checked))
+        return self
+
+    def reset(self, *names):
+        names = {_ALIASES.get(name, name) for name in names} or set(_PARAMS)
+        unknown = names - set(_PARAMS)
+        if unknown:
+            raise TypeError(f'unknown joint parameter: {sorted(unknown)[0]!r}')
+        dropped = names & set(self._own)
+        for name in dropped:
+            del self._own[name]
+        self.joint._sync((self,), dropped)
+        return self
+
+    def anchor(self):
+        return self.joint._anchor(self.xoffset, self.yoffset)
+
+    def _rewire(self):
+        want = self._live and not self.collide
+        if want == self._held:
+            return
+        self._held = want
+        parent, child = self.joint.obj, self.item
+        if want:
+            _ghost_hold(parent, child)
+            _ghost_hold(child, parent)
+        else:
+            _ghost_drop(parent, child)
+            _ghost_drop(child, parent)
+
+@_withparams
 class joint():
     _owned = ['joints', 'xoffset', 'yoffset', 'jradius', 'range', 'elasticity',
               'durability', 'physical', 'ratio', 'vel', 'collide']
     _required = [transform]
-    _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'rotaspect'))
-
-    def on_discard(self):
-        self._joints.clear()
+    _watch = frozenset(('x', 'y', 'rotation', 'text'))
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
         self.t = obj.transform
         self.scene = obj.scene
-        self._state = {}
         self._busy = False
         self._onbreak = []
+        self._defaults = {}
+        self._links = {}
         self._joints = _jointlist(self)
-        def parent_cb(attr):
+        for name in _PARAMS:
+            key = 'jradius' if name == 'radius' else name
+            if key in kwargs:
+                setattr(self, name, kwargs[key])
+        self._assign(kwargs.get('joints', ()))
+        def parent(attr):
             self._on_parent(attr)
-        self._pcb = parent_cb
-        self.t.onchange(self._pcb)
-        self.xoffset = kwargs.get('xoffset', 0)
-        self.yoffset = kwargs.get('yoffset', 0)
-        self.radius = kwargs.get('jradius', 0)
-        self.range = kwargs.get('range', None)
-        self.elasticity = kwargs.get('elasticity', 1)
-        self.durability = kwargs.get('durability', 0)
-        self.physical = kwargs.get('physical', False)
-        self.ratio = kwargs.get('ratio', 0)
-        self.vel = kwargs.get('vel', 0)
-        self.collide = kwargs.get('collide', False)
-        self._joints.extend(kwargs.get('joints', ()))
+        self._pcb = parent
+        self.t.onchange(parent)
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -2484,76 +2677,76 @@ class joint():
     def __setitem__(self, key, value):
         setattr(self, key, value)
 
-    @property
-    def joints(self):
-        return self._joints
-    @joints.setter
-    def joints(self, value):
-        items = list(value)
-        self._joints.clear()
-        self._joints.extend(items)
+    def _value(self, name):
+        if name in self._defaults:
+            return self._defaults[name]
+        return _PARAMS[name][0]
 
-    @property
-    def radius(self):
-        return self._radius
-    @radius.setter
-    def radius(self, value):
-        if value is None:
-            value = 0
-        if isinstance(value, (int, float)):
-            band = (value, value)
-        else:
-            values = list(value)
-            band = (min(values), max(values))
-        if band[0] < 0:
-            raise ValueError('radius must not be negative')
-        self._radius = value
-        self._band = band
+    def _store(self, name, value):
+        self._defaults[name] = value
+        self._inherit(name)
+
+    def _clear(self, name):
+        if name in self._defaults:
+            del self._defaults[name]
+            self._inherit(name)
+
+    def _inherit(self, name):
+        self._sync([l for l in self._links.values() if name not in l._own], {name})
+
+    def _sync(self, links, names):
+        if 'collide' in names:
+            for link in links:
+                link._rewire()
+        if _GEOMETRY & names:
+            for link in links:
+                self._realign(link)
 
     @property
     def jradius(self):
         return self.radius
+
     @jradius.setter
     def jradius(self, value):
         self.radius = value
 
     @property
-    def range(self):
-        return self._range
-    @range.setter
-    def range(self, value):
-        if value is None:
-            self._arc = None
-        else:
-            values = list(value)
-            low, high = min(values), max(values)
-            self._arc = None if high - low >= 360 else ((low + high) / 2, (high - low) / 2)
-        self._range = value
+    def joints(self):
+        return self._joints
+
+    @joints.setter
+    def joints(self, value):
+        self._assign(value)
 
     @property
-    def elasticity(self):
-        return self._elasticity
-    @elasticity.setter
-    def elasticity(self, value):
-        if value <= 0:
-            raise ValueError('elasticity must be positive')
-        self._elasticity = value
+    def links(self):
+        return tuple(self._links.values())
 
-    @property
-    def durability(self):
-        return self._durability
-    @durability.setter
-    def durability(self, value):
-        if value < 0:
-            raise ValueError('durability must not be negative')
-        self._durability = value
+    def link(self, item):
+        try:
+            return self._links[id(item)]
+        except KeyError:
+            raise KeyError('object is not jointed') from None
 
-    @property
-    def ratio(self):
-        return self._ratio
-    @ratio.setter
-    def ratio(self, value):
-        self._ratio = max(0.0, min(1.0, value))
+    def add(self, item, **params):
+        checked = _check_params(params)
+        self._accept(item)
+        link = self._links.get(id(item))
+        if link is None:
+            link = _link(self, item)
+            link._own.update(checked)
+            self._links[id(item)] = link
+            self._attach(link)
+        elif checked:
+            link._own.update(checked)
+            self._sync((link,), set(checked))
+        return link
+
+    def remove(self, item):
+        link = self._links.get(id(item))
+        if link is None:
+            raise ValueError('object is not jointed')
+        self._unlink(link)
 
     def onbreak(self, cb):
         self._onbreak.append(cb)
@@ -2562,126 +2755,168 @@ class joint():
     def offbreak(self, cb):
         self._onbreak = [f for f in self._onbreak if f is not cb]
 
+    def on_discard(self):
+        self.t.offchange(self._pcb)
+        for link in list(self._links.values()):
+            self._unlink(link)
+
+    @contextlib.contextmanager
+    def _locked(self):
+        self._busy = True
+        try:
+            yield
+        finally:
+            self._busy = False
+
     def _accept(self, item):
         if item is self.obj:
             raise ValueError('an object cannot be jointed to itself')
         if getattr(item, 'transform', None) is None:
-            raise TypeError('a joint target needs a transform component')
-        return not any(j is item for j in self._joints)
+            raise TypeError('a jointed object needs a transform component')
 
-    def _attach(self, item):
-        cb = self._childcb(item)
-        item.transform.onchange(cb)
-        drop = self._dropcb(item)
-        item.ondiscard(drop)
-        added = []
-        if not self.collide:
-            for owner, partner in ((self.obj, item), (item, self.obj)):
-                if not any(g is partner for g in owner._ghosts):
-                    owner._ghosts.append(partner)
-                    added.append((owner, partner))
-        self._state[id(item)] = (cb, drop, added)
-        if not self.physical and not self._busy:
-            self._busy = True
-            try:
-                self._solve(item, False, False)
-            finally:
-                self._busy = False
+    def _entries(self, spec):
+        if isinstance(spec, collections.abc.Mapping):
+            pairs = list(spec.items())
+        else:
+            pairs = [e if isinstance(e, tuple) else (e, None) for e in spec]
+        seen = set()
+        entries = []
+        for item, params in pairs:
+            self._accept(item)
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            entries.append((item, _check_params(params)))
+        return entries
 
-    def _detach(self, item):
-        state = self._state.pop(id(item), None)
-        if state is None:
-            return
-        cb, drop, added = state
-        transform_ = getattr(item, 'transform', None)
-        if transform_ is not None:
-            transform_.offchange(cb)
-        item.offdiscard(drop)
-        for owner, partner in added:
-            owner._ghosts[:] = [g for g in owner._ghosts if g is not partner]
+    def _assign(self, spec):
+        entries = self._entries(spec)
+        wanted = {id(item) for item, _ in entries}
+        for link in [l for l in self._links.values() if id(l.item) not in wanted]:
+            self._unlink(link)
+        ordered = {}
+        fresh = []
+        touched = []
+        for item, checked in entries:
+            link = self._links.get(id(item))
+            if link is None:
+                link = _link(self, item)
+                link._own.update(checked)
+                fresh.append(link)
+            elif checked:
+                link._own.update(checked)
+                touched.append((link, set(checked)))
+            ordered[id(item)] = link
+        self._links = ordered
+        for link in fresh:
+            self._attach(link)
+        for link, names in touched:
+            self._sync((link,), names)
 
-    def _childcb(self, item):
-        def cb(attr):
-            self._on_child(item, attr)
-        return cb
-
-    def _dropcb(self, item):
+    def _attach(self, link):
+        def child(attr):
+            self._on_child(link, attr)
         def drop():
-            if any(j is item for j in self._joints):
-                self._joints.remove(item)
-        return drop
+            self._unlink(link)
+        link._cb = child
+        link._drop = drop
+        link.item.transform.onchange(child)
+        link.item.ondiscard(drop)
+        link._live = True
+        link._rewire()
+        self._realign(link)
 
-    def _break(self, item):
-        self._joints.remove(item)
+    def _detach(self, link):
+        link._live = False
+        link._rewire()
+        tf = getattr(link.item, 'transform', None)
+        if tf is not None:
+            tf.offchange(link._cb)
+        link.item.offdiscard(link._drop)
+
+    def _unlink(self, link):
+        if self._links.get(id(link.item)) is not link:
+            return
+        del self._links[id(link.item)]
+        self._detach(link)
+
+    def _break(self, link):
+        item = link.item
+        self._unlink(link)
         for cb in list(self._onbreak):
             if _argslen(cb):
                 cb(item)
             else:
                 cb()
 
-    def _on_parent(self, attr):
-        if self._busy or self.physical or attr not in self._watch:
+    def _realign(self, link):
+        if not link._live or self._busy or link.physical:
             return
-        self._busy = True
-        try:
-            for item in list(self._joints):
-                self._solve(item, False)
-        finally:
-            self._busy = False
+        with self._locked():
+            self._solve(link, False, False)
 
-    def _on_child(self, item, attr):
-        if self._busy or self.physical or attr not in self._watch:
+    def _on_parent(self, attr):
+        if self._busy or attr not in self._watch:
             return
-        self._busy = True
-        try:
-            self._solve(item, False)
-        finally:
-            self._busy = False
+        with self._locked():
+            for link in list(self._links.values()):
+                if not link.physical:
+                    self._solve(link, False)
+
+    def _on_child(self, link, attr):
+        if self._busy or link.physical or attr not in self._watch:
+            return
+        with self._locked():
+            self._solve(link, False)
 
     def step(self):
         if self._busy:
             return
-        self._busy = True
-        try:
-            for item in list(self._joints):
-                self._solve(item, True)
-        finally:
-            self._busy = False
+        with self._locked():
+            for link in list(self._links.values()):
+                self._solve(link, True)
 
-    def anchor(self):
+    def _anchor(self, xoffset, yoffset):
         cx, cy = self.t.extent()[:2]
         A = self.scene.aspect
         r = math.radians(self.t.rotation)
-        u = self.xoffset * A
-        v = self.yoffset
+        u = xoffset * A
+        v = yoffset
         return (cx + (u * math.cos(r) + v * math.sin(r)) / A,
                 cy + (-u * math.sin(r) + v * math.cos(r)))
+
+    def anchor(self, item=None):
+        if item is None:
+            return self._anchor(self.xoffset, self.yoffset)
+        return self.link(item).anchor()
 
     @staticmethod
     def _movable(o):
         p = getattr(o, 'physics', None)
         return p is None or p.dynamic
 
-    def _solve(self, item, motor, strict=True):
-        if getattr(item, 'transform', None) is None:
+    def _solve(self, link, motor, strict=True):
+        item = link.item
+        if not link._live or getattr(item, 'transform', None) is None:
             return
         A = self.scene.aspect
-        ax, ay = self.anchor()
+        ax, ay = link.anchor()
         cx, cy = item.transform.extent()[:2]
         dx = (cx - ax) * A
         dy = cy - ay
         dist = math.hypot(dx, dy)
-        if strict and self._durability and dist > self._durability:
-            self._break(item)
+        durability = link.durability
+        if strict and durability and dist > durability:
+            self._break(link)
             return
 
-        low, high = self._band
-        arc = self._arc
+        low, high = _band(link.radius)
+        arc = _arc(link.range)
         if dist < 1e-9:
             rel = arc[0] if arc else 0.0
         else:
             rel = _wrap(math.degrees(math.atan2(dx, dy)) - self.t.rotation)
-        target_rel = rel + (self.vel if motor else 0)
+        target_rel = rel + (link.vel if motor else 0)
         if arc is not None:
             mid, half = arc
             off = _wrap(target_rel - mid)
@@ -2699,8 +2934,9 @@ class joint():
 
         child_free = self._movable(item)
         parent_free = self._movable(self.obj)
+        ratio = link.ratio
         if child_free and parent_free:
-            wc, wp = 1.0 - self._ratio, self._ratio
+            wc, wp = 1.0 - ratio, ratio
         elif child_free:
             wc, wp = 1.0, 0.0
         elif parent_free:
@@ -2708,8 +2944,8 @@ class joint():
         else:
             return
 
-        if self.physical:
-            k = 1.0 / self._elasticity
+        if link.physical:
+            k = 1.0 / link.elasticity
             self._push(item, ex * wc * k, ey * wc * k)
             self._push(self.obj, -ex * wp * k, -ey * wp * k)
             self._damp(item, ex, ey, wc, wp, k)
