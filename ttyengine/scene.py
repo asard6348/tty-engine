@@ -42,6 +42,7 @@ class obj:
     def __init__(self, scene):
         self.scene = scene
         self._ondiscardcb = []
+        self._ghosts = []
 
     def __getitem__(self, key):
         return getattr(getattr(self, _attrs[key].__name__), key)
@@ -206,6 +207,9 @@ class Scene:
         self.gravity = (0, 0)
         self.drag = 1
         self.precision = 0.1
+        self.aspect = 0.5
+        self.lights = []
+        self.ambient = 1.0
         self._camx = 0
         self._camy = 0
         self._bgcolor = (0, 0, 0)

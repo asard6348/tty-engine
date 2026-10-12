@@ -131,6 +131,8 @@ class inp():
         self._down          = {}
         self._pressed_keys  = set()
         self._release_at    = {}
+        self._last_press    = {}   # name -> monotonic time of last terminal press (legacy tier)
+        self._delayed_rel   = {}   # (name, id(entry)) -> (name, entry, due) for onrelease(delay=...)
         self._kitty_state   = None
         self._kitty_t       = 0.0
         self._kb_is_fallback = False
@@ -299,10 +301,22 @@ class inp():
             for ident, name in pending.items():
                 self._events.append((ident, _FakeKeyEvent('up', name, ident)))
             self._release_at.clear()
+            self._last_press.clear()
+            self._delayed_rel.clear()
+
+    def _legacy_mode(self):
+        # True only for the last tier: terminal input without kitty's real
+        # press/release events (term.inkey or raw stdin), where held() is emulated.
+        return self._kb_is_fallback and self._kitty_state != 'on'
 
     def _term_press(self, name):
+        now = time.monotonic()
         self._kb_event_raw(_FakeKeyEvent('down', name, ('t', name)))
-        self._release_at[name] = time.monotonic() + self.legacy_hold
+        self._release_at[name] = now + self.legacy_hold
+        self._last_press[name] = now
+        for entry in self._release_cbs.get(name, ()):
+            if entry[3] is not None:       # per-callback release delay: (re)arm
+                self._delayed_rel[(name, id(entry))] = (name, entry, now + entry[3])
 
     def _flush_releases(self, now):
         if self._release_at:
@@ -559,32 +573,68 @@ class inp():
             self._pressed_keys = set(self._down.values())
 
         if focused:
+            legacy = self._legacy_mode()
             for ident, event in events:
                 down = event.event_type == 'down'
                 table = self._press_cbs if down else self._release_cbs
-                for cb, accepts, token in list(table.get(event.name, ())):
-                    if token is not None and not self._consume(table, token):
-                        continue    # one-shot already fired / removed
-                    try:
-                        cb(event) if accepts else cb()
-                    except Exception:
-                        sys.stderr.write("input_handler: %s callback for %r raised:\n"
-                                         % ('onpress' if down else 'onrelease', event.name))
-                        traceback.print_exc()
+                for entry in list(table.get(event.name, ())):
+                    if not down and legacy and entry[3] is not None:
+                        continue    # has its own delay: fired by _fire_delayed_releases
+                    self._dispatch(table, entry, event, down)
+            self._fire_delayed_releases(now)
+        else:
+            self._delayed_rel.clear()
+
+    def _dispatch(self, table, entry, event, down):
+        cb, accepts, token, _delay = entry
+        if token is not None and not self._consume(table, token):
+            return    # one-shot already fired / removed
+        try:
+            cb(event) if accepts else cb()
+        except Exception:
+            sys.stderr.write("input_handler: %s callback for %r raised:\n"
+                             % ('onpress' if down else 'onrelease', event.name))
+            traceback.print_exc()
+
+    def _fire_delayed_releases(self, now):
+        if not self._delayed_rel:
+            return
+        legacy = self._legacy_mode()
+        for k, (name, entry, due) in list(self._delayed_rel.items()):
+            if now < due:
+                continue
+            del self._delayed_rel[k]
+            if not legacy:
+                continue    # kitty took over: real release events are used instead
+            if not any(e is entry for e in self._release_cbs.get(name, ())):
+                continue    # unregistered meanwhile
+            self._dispatch(self._release_cbs, entry,
+                           _FakeKeyEvent('up', name, ('t', name)), False)
 
     #KEYBOARD API
-    def held(self, key=None, caps=False):
+    def held(self, key=None, caps=False, delay=None):
+        # delay: seconds a key stays "held" after its last press. Only used in
+        # the last tier (terminal fallback without kitty), where there are no
+        # release events and held() is emulated from key-repeat. It replaces
+        # legacy_hold for this call, so a developer can bridge the OS
+        # repeat-start gap (often 250-600 ms) for actions like a persistent jump.
+        # Ignored by the `keyboard` and kitty tiers, which report real releases.
         if not self.focused:
             return False
+        pressed = self._pressed_keys
+        if delay is not None and self._legacy_mode():
+            now = time.monotonic()
+            pressed = {n for n, t in list(self._last_press.items())
+                       if now - t <= delay}
         if isinstance(key, str) and key:
             if caps:
-                return key.upper() in self._pressed_keys or key.lower() in self._pressed_keys
-            return key in self._pressed_keys
+                return key.upper() in pressed or key.lower() in pressed
+            return key in pressed
         if isinstance(key, (list, tuple)) and key:
             if caps:
-                return any(k.upper() in self._pressed_keys or k.lower() in self._pressed_keys for k in key)
-            return any(k in self._pressed_keys for k in key)
-        return list(self._pressed_keys)
+                return any(k.upper() in pressed or k.lower() in pressed for k in key)
+            return any(k in pressed for k in key)
+        return list(pressed)
 
     @staticmethod
     def _consume(table, token):
@@ -603,20 +653,24 @@ class inp():
         accepts = _accepts_arg(callback)
         token = object() if once else None
         if caps:
-            self._press_cbs[key.lower()].append((callback, accepts, token))
-            self._press_cbs[key.upper()].append((callback, accepts, token))
+            self._press_cbs[key.lower()].append((callback, accepts, token, None))
+            self._press_cbs[key.upper()].append((callback, accepts, token, None))
             return (key.lower(), callback, 'press'), (key.upper(), callback, 'press')
-        self._press_cbs[key].append((callback, accepts, token))
+        self._press_cbs[key].append((callback, accepts, token, None))
         return (key, callback, 'press')
 
-    def onrelease(self, key, callback, caps=False, once=False):
+    def onrelease(self, key, callback, caps=False, once=False, delay=None):
+        # delay: seconds after the key's last press before the callback fires.
+        # Only used in the last tier (terminal fallback without kitty), where the
+        # release is emulated; it replaces legacy_hold for this callback and
+        # matches held(key, delay=...). Ignored by the keyboard and kitty tiers.
         accepts = _accepts_arg(callback)
         token = object() if once else None
         if caps:
-            self._release_cbs[key.lower()].append((callback, accepts, token))
-            self._release_cbs[key.upper()].append((callback, accepts, token))
+            self._release_cbs[key.lower()].append((callback, accepts, token, delay))
+            self._release_cbs[key.upper()].append((callback, accepts, token, delay))
             return (key.lower(), callback, 'release'), (key.upper(), callback, 'release')
-        self._release_cbs[key].append((callback, accepts, token))
+        self._release_cbs[key].append((callback, accepts, token, delay))
         return (key, callback, 'release')
 
     @staticmethod

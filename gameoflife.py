@@ -26,7 +26,7 @@ class main:
                 self.pixels[pos].discard()
                 del self.pixels[pos]
             else:
-                self.pixels[pos] = o().create(st('██', 'orange'), wx, wy, rotation=0, z=10, aspect=1)
+                self.pixels[pos] = o().create(st('██', 'orange'), wx, wy, rotation=0, z=10, rotaspect=1)
 
             if self.startup:
                 self.startup.discard()
@@ -84,7 +84,7 @@ class main:
                 del self.pixels[pos]
 
             for x, y in birthing:
-                self.pixels[(x, y)] = self.scene.obj().create(self.st('██', 'orange'), x, y, rotation=0, z=10, aspect=1)
+                self.pixels[(x, y)] = self.scene.obj().create(self.st('██', 'orange'), x, y, rotation=0, z=10, rotaspect=1)
 
             if self.pixels:
                 self.steps += 1

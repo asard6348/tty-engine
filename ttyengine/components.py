@@ -12,6 +12,8 @@ _NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
 _NEIGHBOURS8 = _NEIGHBOURS4 + ((-1, -1), (1, -1), (-1, 1), (1, 1))
 _NEIGHBOURS_HALF = ((1, 0), (0, 1), (1, 1), (-1, 1))
 _SGR = re.compile(r'\x1b\[([0-9;]*)m')
+_FGCODE = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
+_BGCODE = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 
 def _argslen(cb):
     params = inspect.signature(cb).parameters
@@ -28,6 +30,13 @@ def _closure_refs(fn, obj):
         except ValueError:
             pass
     return False
+
+def _styleprop(name):
+    def fget(self):
+        return getattr(self, '_' + name)
+    def fset(self, value):
+        self._setstyle(name, value)
+    return property(fget, fset)
 
 class _metainit(type):
     def __new__(mcs, name, bases, attrs, **kwargs):
@@ -120,7 +129,9 @@ class transform(_change_callback):
         'text', 'rtext', 'htext',
         'vtext', 'vrtext', 'vhtext',
         'rotation',
-        'aspect',
+        'rotaspect',
+        'fg', 'bg', 'alpha', 'bgalpha',
+        'flip',
     ]
     _default = True
 
@@ -133,15 +144,24 @@ class transform(_change_callback):
         self._y = kwargs.get('y', 0)
         self._vx = kwargs.get('vx', 0)
         self._vy = kwargs.get('vy', 0)
+        self._fg = kwargs.get('fg', None)
+        self._bg = kwargs.get('bg', None)
+        self._alpha = kwargs.get('alpha', None)
+        self._bgalpha = kwargs.get('bgalpha', None)
+        self._style_cache = {}
+        self._plain_layout = None
         self.vtext = raw
-        self.vrtext = raw
+        self._vbase = raw
+        self._vrtext = raw
         self.vhtext = raw
         self._text = ctext
         self._rtext = ctext
         self._htext = ctext
         self._rotation = kwargs.get('rotation', 0)
         self._rot_cache_angle = None
-        self.aspect = kwargs.get('aspect', 0.5)
+        self._rotaspect = kwargs.get('rotaspect', None)
+        self._flip = kwargs.get('flip', None)
+        self._anim = None
         self._onsplit = {}
         self._xlen_cache = None
         self._ylen_cache = None
@@ -156,6 +176,7 @@ class transform(_change_callback):
         self._rotorigin = (0, 0)
         self._onchangecb = {}
         self._changing = False
+        self._vrtext = self._restyle(raw)
         self.rotate(self._rotation, init=True)
 
     def __getitem__(self, key):
@@ -214,6 +235,7 @@ class transform(_change_callback):
     @text.setter
     def text(self, value):
         old = self._text
+        self._anim = None
         ctext = self.scene.recomp.sub('', value)
         self.vrtext = value
         self.vhtext = value
@@ -242,6 +264,7 @@ class transform(_change_callback):
     @htext.setter
     def htext(self, value):
         old = self._htext
+        self._anim = None
         ctext = self.scene.recomp.sub('', value)
         self.vrtext = value
         self.vhtext = value
@@ -262,6 +285,78 @@ class transform(_change_callback):
         self.rotate(value)
         self._change('rotation', old)
         self._change('text', oldt)
+
+    @property
+    def rotaspect(self):
+        return self.scene.aspect if self._rotaspect is None else self._rotaspect
+    @rotaspect.setter
+    def rotaspect(self, value):
+        old = self._rotaspect
+        oldt = self._text
+        self._rotaspect = value
+        self._invalidate()
+        self.rotate(self._rotation)
+        self._change('rotaspect', old)
+        self._change('text', oldt)
+
+    @property
+    def flip(self):
+        return self._flip
+    @flip.setter
+    def flip(self, value):
+        old = self._flip
+        oldt = self._text
+        self._flip = value
+        self._invalidate()
+        self.rotate(self._rotation)
+        self._change('flip', old)
+        self._change('text', oldt)
+
+    @property
+    def vrtext(self):
+        return self._vrtext
+    @vrtext.setter
+    def vrtext(self, value):
+        self._vbase = value
+        self._vrtext = self._restyle(value)
+
+    fg = _styleprop('fg')
+    bg = _styleprop('bg')
+    alpha = _styleprop('alpha')
+    bgalpha = _styleprop('bgalpha')
+
+    def _setstyle(self, key, value):
+        old = getattr(self, '_' + key)
+        setattr(self, '_' + key, value)
+        self._style_cache = {}
+        self._vrtext = self._restyle(self._vbase)
+        self._vrotate()
+        self._change(key, old)
+
+    def _styled(self, style):
+        cached = self._style_cache.get(style)
+        if cached is None:
+            sample = self.scene.styler.style(style + 'x', color=self._fg, alpha=self._alpha,
+                                             bgcolor=self._bg, bgalpha=self._bgalpha, clean=True)
+            cached = sample[:sample.index('x')]
+            self._style_cache[style] = cached
+        return cached
+
+    def _restyle(self, base):
+        if self._fg is None and self._bg is None and self._alpha is None and self._bgalpha is None:
+            return base
+        pixels = self.parse_pixels(base)
+        last = {}
+        widths = {}
+        for (ci, ri), (char, _) in pixels.items():
+            widths[ri] = max(widths.get(ri, 0), ci + 1)
+            if char != ' ':
+                last[ri] = max(last.get(ri, -1), ci)
+        restyled = {}
+        for (ci, ri), (char, style) in pixels.items():
+            restyled[(ci, ri)] = (char, self._styled(style) if ci <= last.get(ri, -1) else style)
+        return '\n'.join(self.build_rows(restyled, 0, widths.get(ri, 0) - 1, ri, ri)
+                         for ri in range(len(base.splitlines())))
 
     def _has_background(self, style):
         cached = self._bg_cache.get(style)
@@ -344,6 +439,45 @@ class transform(_change_callback):
             out_rows.append(row)
         return '\n'.join(out_rows)
 
+    def merge(self, *layers, dx=0, dy=0, center=True):
+        items = []
+        for layer in layers:
+            if isinstance(layer, str):
+                items.append((layer, 0, 0))
+            else:
+                text, ox, oy = (tuple(layer) + (0, 0))[:3]
+                items.append((text, ox, oy))
+        if len(items) == 1:
+            items.insert(0, (self._vrtext, 0, 0))
+        floor = math.floor
+
+        def middle(pixels):
+            cells = [p for p, (char, _) in pixels.items() if char != ' '] or list(pixels)
+            if not cells:
+                return None
+            xs = [p[0] for p in cells]
+            ys = [p[1] for p in cells]
+            return (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+
+        merged = dict(self.parse_pixels(items[0][0]))
+        anchor = middle(merged)
+        for text, ox, oy in items[1:]:
+            pixels = self.parse_pixels(text)
+            mid = middle(pixels)
+            sx = ox + dx
+            sy = -(oy + dy)
+            if center and anchor is not None and mid is not None:
+                sx += floor(anchor[0] - mid[0] + 0.5)
+                sy += floor(anchor[1] - mid[1] + 0.5)
+            for (ci, ri), (char, style) in pixels.items():
+                if char != ' ' or (style and self._has_background(style)):
+                    merged[(ci + sx, ri + sy)] = (char, style)
+        if not merged:
+            return ''
+        xs = [p[0] for p in merged]
+        ys = [p[1] for p in merged]
+        return self.build_rows(merged, min(xs), max(xs), min(ys), max(ys))
+
     def tolocal(self, pixels):
         rx = round(self._x + self.vx)
         ry = round(self._y + self.vy)
@@ -360,17 +494,21 @@ class transform(_change_callback):
             local_pixels.add((gx + rx, ry + gy))
         return local_pixels
 
-    def rotate(self, angle_degrees, init=False):
-        if not init:
-            rounded = round(angle_degrees * 20) / 20
-            if self._rot_cache_angle == rounded:
-                return
-            self._rot_cache_angle = rounded
-
+    def _rotator(self, angle_degrees):
         angle = math.radians(angle_degrees)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
-        ASPECT = self.aspect
+        if self._flip is None:
+            ma, mb, mc, md = cos_a, -sin_a, sin_a, cos_a
+            ja, jb, jc, jd = cos_a, sin_a, -sin_a, cos_a
+        else:
+            mirror = math.radians(2 * self._flip)
+            fa, fb, fc, fd = -math.cos(mirror), -math.sin(mirror), -math.sin(mirror), math.cos(mirror)
+            ma, mb = cos_a * fa - sin_a * fc, cos_a * fb - sin_a * fd
+            mc, md = sin_a * fa + cos_a * fc, sin_a * fb + cos_a * fd
+            ja, jb = fa * cos_a - fb * sin_a, fa * sin_a + fb * cos_a
+            jc, jd = fc * cos_a - fd * sin_a, fc * sin_a + fd * cos_a
+        ASPECT = self.rotaspect
         floor = math.floor
 
         def layout(source):
@@ -385,8 +523,8 @@ class transform(_change_callback):
             for ci, ri in glyphs:
                 u = (ci - cx) * ASPECT
                 v = ri - cy
-                fx = cx + (u * cos_a - v * sin_a) / ASPECT
-                fy = cy + (u * sin_a + v * cos_a)
+                fx = cx + (u * ma + v * mb) / ASPECT
+                fy = cy + (u * mc + v * md)
                 gx = floor(fx + 0.5 + 1e-7)
                 gy = floor(fy + 0.5 + 1e-7)
                 spots.append((((fx - gx) * ASPECT) ** 2 + (fy - gy) ** 2, ri, ci, fx, fy, gx, gy))
@@ -411,8 +549,8 @@ class transform(_change_callback):
                                 continue
                             rx = (nx - cx) * ASPECT
                             ry = ny - cy
-                            hit = (floor((rx * cos_a + ry * sin_a) / ASPECT + cx + 0.5 + 1e-7),
-                                   floor(-rx * sin_a + ry * cos_a + cy + 0.5 + 1e-7)) in source
+                            hit = (floor((rx * ja + ry * jb) / ASPECT + cx + 0.5 + 1e-7),
+                                   floor(rx * jc + ry * jd + cy + 0.5 + 1e-7)) in source
                             cost = ((nx - fx) * ASPECT) ** 2 + (ny - fy) ** 2 - 0.02 * (nx - fx) * ASPECT + (0 if hit else 1)
                             key = (round(cost, 6), ny, -nx)
                             if best is None or key < best:
@@ -450,8 +588,8 @@ class transform(_change_callback):
                     continue
                 rx = (nx - cx) * ASPECT
                 ry = ny - cy
-                ci = floor((rx * cos_a + ry * sin_a) / ASPECT + cx + 0.5 + 1e-7)
-                ri = floor(-rx * sin_a + ry * cos_a + cy + 0.5 + 1e-7)
+                ci = floor((rx * ja + ry * jb) / ASPECT + cx + 0.5 + 1e-7)
+                ri = floor(rx * jc + ry * jd + cy + 0.5 + 1e-7)
                 px = source.get((ci, ri))
                 if px is not None and px[0] != ' ':
                     extra[(nx, ny)] = (ci, ri)
@@ -472,7 +610,7 @@ class transform(_change_callback):
             for (ci, ri), px in source.items():
                 if px[0] != ' ':
                     continue
-                gx = floor(cx + (((ci - cx) * ASPECT) * cos_a - (ri - cy) * sin_a) / ASPECT + 0.5 + 1e-7)
+                gx = floor(cx + (((ci - cx) * ASPECT) * ma + (ri - cy) * mb) / ASPECT + 0.5 + 1e-7)
                 if gx < min_x:
                     min_x = gx
                 if gx > max_x:
@@ -497,32 +635,49 @@ class transform(_change_callback):
                         if (nx, ny) in new_pixels:
                             continue
                         rx = (nx - cx) * ASPECT
-                        ci = floor((rx * cos_a + ry * sin_a) / ASPECT + cx + 0.5 + 1e-7)
-                        ri = floor(-rx * sin_a + ry * cos_a + cy + 0.5 + 1e-7)
+                        ci = floor((rx * ja + ry * jb) / ASPECT + cx + 0.5 + 1e-7)
+                        ri = floor(rx * jc + ry * jd + cy + 0.5 + 1e-7)
                         px = source.get((ci, ri))
                         if px is not None and px[0] == ' ' and px[1] and self._has_background(px[1]):
                             new_pixels[(nx, ny)] = px
             if record:
-                self._rotmap = (cx, cy, min_x, min_y, ASPECT, cos_a, sin_a)
+                self._rotmap = (cx, cy, min_x, min_y, ASPECT, ja, jb, jc, jd)
                 self._rotcells = cells
                 self._rotsrc = sources
                 self._rotsize = size
                 self._rotorigin = (min_x, min_y)
             return self.build_rows(new_pixels, min_x, max_x, min_y, max_y)
 
-        plain = self._rtext
-        crows = plain.splitlines()
-        plain_source = self.parse_pixels(plain)
-        plain_layout = layout(plain_source) if crows else None
-        styled_source = self.parse_pixels(self.vrtext)
+        return layout, render
+
+    def _vrender(self, layout, render, plain_layout):
+        styled_source = self.parse_pixels(self._vrtext)
         if plain_layout is None:
-            styled_layout = layout(styled_source) if self.vrtext.splitlines() else None
+            styled_layout = layout(styled_source) if self._vrtext.splitlines() else None
         elif [p for p, px in styled_source.items() if px[0] != ' '] == plain_layout[0]:
             styled_layout = plain_layout
         else:
             styled_layout = layout(styled_source)
-
         self.vtext = render(styled_source, styled_layout) if styled_layout is not None else ''
+
+    def _vrotate(self):
+        layout, render = self._rotator(self._rotation)
+        self._vrender(layout, render, self._plain_layout)
+
+    def rotate(self, angle_degrees, init=False):
+        if not init:
+            rounded = round(angle_degrees * 20) / 20
+            if self._rot_cache_angle == rounded:
+                return
+            self._rot_cache_angle = rounded
+
+        layout, render = self._rotator(angle_degrees)
+        plain = self._rtext
+        crows = plain.splitlines()
+        plain_source = self.parse_pixels(plain)
+        plain_layout = layout(plain_source) if crows else None
+        self._plain_layout = plain_layout
+        self._vrender(layout, render, plain_layout)
         if plain_layout is not None:
             self._text = render(plain_source, plain_layout, True, (max(len(r) for r in crows), len(crows)))
         else:
@@ -574,12 +729,12 @@ class transform(_change_callback):
         m = self._rotmap
         if m is None:
             return None
-        cx, cy, min_x, min_y, ASPECT, cos_a, sin_a = m
+        cx, cy, min_x, min_y, ASPECT, ja, jb, jc, jd = m
         ox, oy = self._origin()
         rx_n = (wx - ox + min_x - cx) * ASPECT
         ry_n = oy - wy + min_y - cy
-        rel_x = (rx_n * cos_a + ry_n * sin_a) / ASPECT
-        rel_y = -rx_n * sin_a + ry_n * cos_a
+        rel_x = (rx_n * ja + ry_n * jb) / ASPECT
+        rel_y = rx_n * jc + ry_n * jd
         return rel_x + cx, rel_y + cy
 
     def cutline(self, p0, p1):
@@ -602,7 +757,7 @@ class transform(_change_callback):
         return walls
 
     def _clear(self, cells):
-        styled = self.parse_pixels(self.vrtext)
+        styled = self.parse_pixels(self._vbase)
         hit = [c for c in cells if c in styled and styled[c][0] != ' ']
         if not hit:
             return False
@@ -675,7 +830,7 @@ class transform(_change_callback):
         parent = getattr(self.obj, 'physics', None)
         motion = None
         if parent is not None:
-            A = self.aspect
+            A = self.scene.aspect
             pcx, pcy, _ = parent.body()
             motion = (parent.xvel / parent.mass * A, parent.yvel / parent.mass, parent._omega(),
                       parent.avel / parent.mass, pcx, pcy)
@@ -690,16 +845,23 @@ class transform(_change_callback):
             target = {self._cell_world(c) for p in group for c in self._rotsrc.get(p, ())}
 
             kw = self.obj.kwargs()
-            for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy', 'xvel', 'yvel', 'avel'):
+            for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy', 'xvel', 'yvel', 'avel', 'joints'):
                 kw.pop(key, None)
             if parent is not None:
                 kw.update(dynamic=parent.dynamic, bounciness=parent.bounciness, friction=parent.friction)
+            if self._rotaspect is not None:
+                kw['rotaspect'] = self._rotaspect
+            for key in ('fg', 'bg', 'alpha', 'bgalpha'):
+                value = getattr(self, key)
+                if value is not None:
+                    kw[key] = value
             spawns.append({
                 **kw,
                 'text': self.build_rows({p: pixels[p] for p in group}, min_x, max_x - 1, min_y, max_y - 1),
                 'x': ox + min_x,
                 'y': oy - min_y,
                 'rotation': rotation,
+                'flip': self._flip,
             })
             anchors.append(target)
 
@@ -723,7 +885,7 @@ class transform(_change_callback):
                 if fp is not None and motion is not None:
                     vx, vy, omega, spin, pcx, pcy = motion
                     fcx, fcy, _ = fp.body()
-                    A = ft.aspect
+                    A = obj_ref.scene.aspect
                     rx, ry = (fcx - pcx) * A, fcy - pcy
                     fp.xvel = (vx - omega * ry) / A * fp.mass
                     fp.yvel = (vy + omega * rx) * fp.mass
@@ -745,7 +907,7 @@ class transform(_change_callback):
     def split(self, callback=None, diagonal=True):
         if getattr(self.obj, 'transform', None) is not self:
             return
-        pixels = self.parse_pixels(self.vrtext)
+        pixels = self.parse_pixels(self._vbase)
         coords = {pos for pos, (char, _) in pixels.items() if char != ' '}
         if not coords:
             self._notify_whole(callback)
@@ -763,7 +925,7 @@ class transform(_change_callback):
     def split_at(self, wall_pixels, callback=None, diagonal=True):
         if getattr(self.obj, 'transform', None) is not self:
             return
-        pixels = self.parse_pixels(self.vrtext)
+        pixels = self.parse_pixels(self._vbase)
         coords = {pos for pos, (char, _) in pixels.items() if char != ' '}
 
         valid_walls = set(wall_pixels) & coords
@@ -777,15 +939,20 @@ class transform(_change_callback):
             return
 
         neighbours = _NEIGHBOURS8 if diagonal else _NEIGHBOURS4
-        for wp in valid_walls:
-            cx, cy = wp
-            nearest = None
-            for comp in components:
-                if any((cx + dx, cy + dy) in comp for dx, dy in neighbours):
-                    nearest = comp
-                    break
-            if nearest is not None:
-                nearest.add(wp)
+        remaining = set(valid_walls)
+        grew = True
+        while remaining and grew:
+            grew = False
+            for wp in sorted(remaining):
+                cx, cy = wp
+                for comp in components:
+                    if any((cx + dx, cy + dy) in comp for dx, dy in neighbours):
+                        comp.add(wp)
+                        remaining.discard(wp)
+                        grew = True
+                        break
+        if remaining:
+            components.extend(self._fragments(remaining, diagonal))
 
         self._split_cb = self._spawn_from_components(components, pixels, callback)
         return self._split_cb
@@ -867,13 +1034,13 @@ class transform(_change_callback):
     def forward(self, move=1, offset=0, angle=None):
         angle = math.radians((self._rotation if angle is None else angle) + offset)
         x = math.sin(angle) * move
-        y = math.cos(angle) * self.aspect * move
+        y = math.cos(angle) * self.scene.aspect * move
         return (x, y)
 
     def point(self, tx, ty, offset=0):
         dx = tx - self._x
         dy = ty - self._y
-        ASPECT = self.aspect
+        ASPECT = self.scene.aspect
         angle = math.degrees(math.atan2(-dy, dx * ASPECT))+90
         return angle + offset
 
@@ -882,7 +1049,77 @@ class transform(_change_callback):
 
     def alerp(self, angle):
         return (angle - self._rotation + 540) % 360 - 180
-    
+
+    @property
+    def animating(self):
+        return self._anim is not None
+
+    def _frame(self, frame):
+        p = getattr(self.obj, 'physics', None)
+        keep = p.mass if p is not None and p.automass else None
+        self.rtext = self.vhtext if frame is None else frame
+        if keep is not None:
+            p.mass = keep
+
+    def animate(self, frames, delay=1, loop=True, callback=None, restore=False):
+        frames = list(frames)
+        if not frames:
+            return self.unanimate()
+        delays = list(delay) if isinstance(delay, (list, tuple)) else [delay] * len(frames)
+        if len(delays) != len(frames):
+            raise ValueError('delay must be a number or have one entry per frame')
+        if any(d <= 0 for d in delays):
+            raise ValueError('delay must be positive')
+        passes = None if loop is True else max(1, int(loop))
+        self._anim = {'frames': frames, 'delays': delays, 'index': 0, 'passes': passes,
+                      'cb': callback, 'restore': restore, 'wait': delays[0]}
+        self._frame(frames[0])
+        return self
+
+    def unanimate(self, restore=True):
+        was = self._anim is not None
+        self._anim = None
+        if was and restore:
+            self.rtext = self.vhtext
+        return self
+
+    def tick(self):
+        a = self._anim
+        if a is None:
+            return
+        a['wait'] -= 1
+        while a['wait'] <= 0 and self._anim is a:
+            a['index'] += 1
+            if a['index'] >= len(a['frames']):
+                if a['passes'] is not None:
+                    a['passes'] -= 1
+                    if a['passes'] <= 0:
+                        self._anim = None
+                        if a['restore']:
+                            self.rtext = self.vhtext
+                        cb = a['cb']
+                        if callable(cb):
+                            if _argslen(cb):
+                                cb(self.obj)
+                            else:
+                                cb()
+                        return
+                a['index'] = 0
+            self._frame(a['frames'][a['index']])
+            a['wait'] += a['delays'][a['index']]
+
+    def lerp(self, alpha=1, **kwargs):
+        for key, target in kwargs.items():
+            current = getattr(self, key)
+            if alpha == 1:
+                value = target
+            elif key == 'rotation':
+                value = current + self.alerp(target) * alpha
+            else:
+                value = current + (target - current) * alpha
+            setattr(self, key, value)
+        return self
+
 
 class rendering():
     _owned = ['show', 'renderspaces', 'z']
@@ -895,8 +1132,11 @@ class rendering():
         self.scene.discards.append(self.remove(write=False))
 
     def __init__(self, obj, **kwargs):
+        self.obj = obj
         self.t = obj.transform
         self.scene = obj.scene
+        self._litkey = None
+        self._lit = ''
         self.px = 0
         self.py = 0
         self.ptext = ''
@@ -927,6 +1167,18 @@ class rendering():
     def redraw(self):
         self.ptext = ''
 
+    def _shown(self):
+        text = self.t.vtext
+        sc = self.scene
+        if not text or (not sc.lights and sc.ambient >= 1):
+            return text
+        lights = tuple((id(l), l._version) for l in sc.lights if l.on and l._affects(self.obj))
+        key = (text, self.t._origin(), sc.ambient, sc.bgcolor, sc.fgcolor, lights)
+        if self._litkey != key:
+            self._litkey = key
+            self._lit = light.shade(sc, self.obj, text)
+        return self._lit
+
     def _current(self):
         if not self._show:
             return (0, 0, '', 0, 0)
@@ -934,7 +1186,7 @@ class rendering():
         return (
             ir(((self.t.x) + (self.t.vx)) - ir(self.scene.camx)),
             -ir(((self.t.y) + (self.t.vy)) - ir(self.scene.camy)),
-            self.t.vtext,
+            self._shown(),
             self.scene.dimxoffset,
             self.scene.dimyoffset,
         )
@@ -1157,6 +1409,12 @@ class physics(_change_callback):
         'hitbox',
         'touch',
         'phantom',
+        'gravity',
+        'drag',
+        'adrag',
+        'precision',
+        'rprecision',
+        'slope',
     ]
     _required = [transform]
     def on_discard(self):
@@ -1170,19 +1428,32 @@ class physics(_change_callback):
                 cb for cb in p._touch_callbacks
                 if not _closure_refs(cb, discarded)
             ]
+            other._ghosts[:] = [
+                g for g in other._ghosts
+                if g is not discarded and not (getattr(g, '__closure__', None) and _closure_refs(g, discarded))
+            ]
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
         self.t = obj.transform
         self.scene = obj.scene
         self._axises = ('x', 'y')
-        self.aspect = (1, self.t.aspect)
         self._xvel = kwargs.get('xvel', 0)
         self._yvel = kwargs.get('yvel', 0)
         self._avel = kwargs.get('avel', 0)
         self.dynamic = kwargs.get('dynamic', True)
         self.bounciness = kwargs.get('bounciness', 0)
         self.friction = kwargs.get('friction', 0)
+        gravity = kwargs.get('gravity', None)
+        self._gravity = None if gravity is None else tuple(gravity)
+        if self._gravity is not None and len(self._gravity) != 2:
+            raise ValueError('gravity must be a (x, y) pair or None')
+        self._drag = kwargs.get('drag', None)
+        self._adrag = kwargs.get('adrag', None)
+        self._precision = kwargs.get('precision', None)
+        self._rprecision = kwargs.get('rprecision', 3)
+        if (self._precision is not None and self._precision <= 0) or self._rprecision <= 0:
+            raise ValueError('precision and rprecision must be positive')
         self.mass = kwargs.get('mass', None)
         self.automass = kwargs.get('automass', self.mass is None)
         def masscal(prop='text'):
@@ -1194,6 +1465,7 @@ class physics(_change_callback):
         self.solid = kwargs.get('solid', True)
         self.hitbox = kwargs.get('hitbox', False)
         self.phantom = kwargs.get('phantom', False)
+        self.slope = kwargs.get('slope', True)
         self.touch = (False, False)
         self._touch_callbacks = []
         self._pixel_cache = None
@@ -1252,6 +1524,59 @@ class physics(_change_callback):
     @mass.setter
     def mass(self, value):
         self._mass = max(1, value) if isinstance(value, (int, float)) else value
+
+    @property
+    def gravity(self):
+        return self.scene.gravity if self._gravity is None else self._gravity
+    @gravity.setter
+    def gravity(self, value):
+        old = self._gravity
+        if value is not None:
+            value = tuple(value)
+            if len(value) != 2:
+                raise ValueError('gravity must be a (x, y) pair or None')
+        self._gravity = value
+        self._change('gravity', old)
+
+    @property
+    def drag(self):
+        return self.scene.drag if self._drag is None else self._drag
+    @drag.setter
+    def drag(self, value):
+        old = self._drag
+        self._drag = value
+        self._change('drag', old)
+
+    @property
+    def adrag(self):
+        return self.drag if self._adrag is None else self._adrag
+    @adrag.setter
+    def adrag(self, value):
+        old = self._adrag
+        self._adrag = value
+        self._change('adrag', old)
+
+    @property
+    def precision(self):
+        return self.scene.precision if self._precision is None else self._precision
+    @precision.setter
+    def precision(self, value):
+        if value is not None and value <= 0:
+            raise ValueError('precision must be positive or None')
+        old = self._precision
+        self._precision = value
+        self._change('precision', old)
+
+    @property
+    def rprecision(self):
+        return self._rprecision
+    @rprecision.setter
+    def rprecision(self, value):
+        if value <= 0:
+            raise ValueError('rprecision must be positive')
+        old = self._rprecision
+        self._rprecision = value
+        self._change('rprecision', old)
 
     def _dirty(self):
         self._pixel_cache = None
@@ -1356,7 +1681,7 @@ class physics(_change_callback):
             if b2 is None or b2[1] < b1[0] or b2[0] > b1[1] or b2[3] < b1[2] or b2[2] > b1[3]:
                 continue
             inter = pixels & p2.getpixels()
-            if inter:
+            if inter and not self._ghosted(obj2, inter):
                 found[obj2] = inter
         return found
 
@@ -1367,7 +1692,7 @@ class physics(_change_callback):
             if n == 0:
                 self._body_cache = (0.0, 0.0, 1.0)
             else:
-                A = self.t.aspect
+                A = self.scene.aspect
                 cx = sum(p[0] for p in pixels) / n
                 cy = sum(p[1] for p in pixels) / n
                 spread = sum(((p[0] - cx) * A) ** 2 + (p[1] - cy) ** 2 for p in pixels) / n
@@ -1375,32 +1700,53 @@ class physics(_change_callback):
         return self._body_cache
 
     def _invinertia(self):
-        if self.hitbox or not self.dynamic or not self.solid or len(self.getpixels()) < 2:
+        if self.hitbox or not self.slope or not self.dynamic or not self.solid or len(self.getpixels()) < 2:
             return 0.0
         return 1.0 / (self.mass * self.body()[2])
 
     def _velocity(self):
-        A = self.t.aspect
+        A = self.scene.aspect
         return self.xvel / self.mass * A, self.yvel / self.mass
 
     def _omega(self):
         return -math.radians(self.avel / self.mass)
 
     def _impulse(self, jx, jy, rx=0.0, ry=0.0):
-        A = self.t.aspect
+        A = self.scene.aspect
         self.xvel += jx / A
         self.yvel += jy
+        if rx or ry:
+            self._spin(rx * jy - ry * jx)
+
+    def _spin(self, torque):
         inv = self._invinertia()
-        if inv and (rx or ry):
-            self.avel -= math.degrees((rx * jy - ry * jx) * inv) * self.mass
+        if inv and torque:
+            self.avel -= math.degrees(torque * inv) * self.mass
 
     def _arm(self, point):
-        A = self.t.aspect
+        A = self.scene.aspect
         cx, cy, _ = self.body()
         return (point[0] - cx) * A, point[1] - cy
 
     def _shifted(self, dx, dy):
         return {(p[0] + dx, p[1] + dy) for p in self.getpixels()}
+
+    def _ghosted(self, other, intersection=None):
+        for owner, partner in ((self.obj, other), (other, self.obj)):
+            for ghost in list(getattr(owner, '_ghosts', ())):
+                if ghost is partner:
+                    return True
+                if callable(ghost):
+                    count = _argslen(ghost)
+                    if count > 1:
+                        result = ghost(partner, intersection)
+                    elif count > 0:
+                        result = ghost(partner)
+                    else:
+                        result = ghost()
+                    if result:
+                        return True
+        return False
 
     def _blocked(self, dx, dy, exclude=()):
         b = self.bounds()
@@ -1417,7 +1763,8 @@ class physics(_change_callback):
             b2 = p2.bounds()
             if b2 is None or b2[1] < b[0] + dx or b2[0] > b[1] + dx or b2[3] < b[2] + dy or b2[2] > b[3] + dy:
                 continue
-            if shifted & p2.getpixels():
+            inter = shifted & p2.getpixels()
+            if inter and not self._ghosted(obj2, inter):
                 hits.append(obj2)
         return hits
 
@@ -1441,7 +1788,7 @@ class physics(_change_callback):
         return members
 
     def _solve(self, other, group, point, nx, ny, restitution=None):
-        A = self.t.aspect
+        A = self.scene.aspect
         ra = self._arm(point)
         va = self._velocity()
         wa = self._omega()
@@ -1488,7 +1835,7 @@ class physics(_change_callback):
         can = (ra[0] * ny - ra[1] * nx) ** 2 * ia
         cbn = (rb[0] * ny - rb[1] * nx) ** 2 * invib
         denom = inva + invmb + can + cbn
-        gravity = self.scene.gravity
+        gravity = self.gravity
         boost = e * max(0.0, -(gravity[0] * A * nx + gravity[1] * ny))
         j = (-(1 + e) * vn + boost) / denom
 
@@ -1547,7 +1894,7 @@ class physics(_change_callback):
         return (mx, max(min(ys) - 0.5, min(max(ys) + 0.5, cy)))
 
     def _gradient(self, pixels, center, sign):
-        A = self.t.aspect
+        A = self.scene.aspect
         cx, cy = center
         sx = sy = 0.0
         for x in range(math.ceil(cx - 2.5), math.floor(cx + 2.5) + 1):
@@ -1561,6 +1908,8 @@ class physics(_change_callback):
         return sign * sx / length, sign * sy / length
 
     def _contact_normal(self, other, point, nx, ny, inside):
+        if not self.slope or not other.slope:
+            return nx, ny
         shift = 0.5 if inside else -0.5
         cx, cy = point
         if abs(nx) > abs(ny):
@@ -1583,7 +1932,7 @@ class physics(_change_callback):
 
     def _mtv(self, other_pixels):
         mine = self.getpixels()
-        A = self.t.aspect
+        A = self.scene.aspect
         best = None
         for dx, dy, cost in ((1, 0, A), (-1, 0, A), (0, 1, 1.0), (0, -1, 1.0)):
             for k in range(1, 64):
@@ -1648,20 +1997,23 @@ class physics(_change_callback):
         if abs(self._yvel) < 1e-9: self._yvel = 0
         if abs(self._avel) < 1e-9: self._avel = 0
 
-    def physics(self, axises=None, aspect=None):
+    def physics(self, axises=None):
         axises = self._axises if axises is None else axises
         actualmass = self.mass
+        gravity = self.gravity
+        drag = self.drag
+        precision = self.precision
         self._dirty()
 
         for ia, a in enumerate(axises):
-            self[a + 'vel'] *= self.scene.drag
-            self[a + 'vel'] += self.scene.gravity[ia] * actualmass
+            self[a + 'vel'] *= drag
+            self[a + 'vel'] += gravity[ia] * actualmass
             c = 1 if self[a + 'vel'] > 0 else -1 if self[a + 'vel'] < 0 else 0
             ch = abs(self[a + 'vel']) / actualmass
             d = (c, 0) if ia == 0 else (0, c)
 
             while ch > 0:
-                step = min(self.scene.precision, ch)
+                step = min(precision, ch)
                 t = {a: self.t[a] + c * step}
                 collisions = self.collides(self.scene.solids, full=True, **t)
 
@@ -1680,7 +2032,7 @@ class physics(_change_callback):
                         return
                     if getattr(obj2, 'physics', None) is not obj2p:
                         continue
-                    if self.solid and not self.phantom and not obj2p.phantom:
+                    if self.solid and not self.phantom and not obj2p.phantom and not self._ghosted(obj2, intersection):
                         physical.append((obj2, obj2p, intersection))
 
                 if physical:
@@ -1698,10 +2050,10 @@ class physics(_change_callback):
 
         self._depenetrate()
 
-        self.avel *= self.scene.drag
+        self.avel *= self.adrag
         degrees = self.avel / actualmass
         if degrees:
-            pieces = max(1, int(math.ceil(abs(degrees) / 3)))
+            pieces = max(1, int(math.ceil(abs(degrees) / self._rprecision)))
             da = degrees / pieces
             check = self.solid and not self.phantom and not self.hitbox
             for _ in range(pieces):
@@ -1898,7 +2250,7 @@ class pen():
         self._cut_walls = {}
 
 class force():
-    _owned = ['affect', 'cap', 'force', 'position', 'radius', 'torque']
+    _owned = ['affect', 'cap', 'force', 'position', 'radius', 'torque', 'shield']
     _required = [transform]
 
     def __init__(self, obj, **kwargs):
@@ -1911,6 +2263,7 @@ class force():
         self.position = kwargs.get('position', None)
         self.radius = kwargs.get('radius', None)
         self.torque = kwargs.get('torque', True)
+        self.shield = kwargs.get('shield', True)
 
     @staticmethod
     def _resolve(value, o):
@@ -1937,45 +2290,835 @@ class force():
             and hasattr(o, 'transform') and hasattr(o, 'physics') and o.physics.dynamic
         ]
 
+    @staticmethod
+    def _shadowed(cells, box, point, direction, reach, aspect):
+        x, y = point
+        step_x = direction[0] * 0.25 / aspect
+        step_y = direction[1] * 0.25
+        min_x, max_x, min_y, max_y = box
+        for i in range(1, int(reach / 0.25) + 1):
+            cell = (math.floor(x + step_x * i), math.ceil(y + step_y * i))
+            if cell[0] < min_x or cell[0] > max_x or cell[1] < min_y or cell[1] > max_y:
+                return False
+            if cell in cells:
+                return True
+        return False
+
     def apply(self, x=None, y=None):
         affected = []
-        aspect = self.t.aspect
+        A = self.scene.aspect
         for o in self.targets():
-            cx, cy = self._center(o)
+            p = o.physics
+            cells = p.getpixels()
+            if not cells:
+                continue
             if self.position is None:
                 px, py = self._center(self.obj)
             else:
                 px, py = self._resolve(self.position, o)
             if x is not None: px = x
             if y is not None: py = y
-            dx = cx - px
-            dy = cy - py
-            dist = math.sqrt((dx * aspect) ** 2 + dy ** 2)
-            if self.radius is not None and dist > self.radius:
-                continue
 
             value = self._resolve(self.force, o)
-            if isinstance(value, (tuple, list)):
+            vector = isinstance(value, (tuple, list))
+            if vector:
                 fx, fy = value
-            else:
-                if dist == 0 or not value:
+                magnitude = math.hypot(fx * A, fy)
+                if not magnitude:
                     continue
-                strength = value / (4 * math.pi * dist)
-                if self.cap is not None:
-                    strength = max(-self.cap, min(self.cap, strength))
-                direction = math.atan2(dy, dx * aspect)
-                fx = strength * math.cos(direction) / aspect
-                fy = strength * math.sin(direction)
+                travel = (fx * A / magnitude, fy / magnitude)
+            elif not value:
+                continue
+            aimed = self.position is not None or x is not None or y is not None or self.radius is not None
+            uniform = vector and not aimed
 
-            o.physics.xvel += fx
-            o.physics.yvel += fy
+            faces = []
+            for X, Y in cells:
+                for nx, ny in _NEIGHBOURS4:
+                    if (X + nx, Y + ny) in cells:
+                        continue
+                    ex = X + 0.5 + 0.5 * nx
+                    ey = Y - 0.5 + 0.5 * ny
+                    dx = (ex - px) * A
+                    dy = ey - py
+                    dist = math.hypot(dx, dy)
+                    if self.radius is not None and dist > self.radius:
+                        continue
+                    if uniform or (vector and dist < 1e-9):
+                        ux, uy = travel
+                    elif dist < 1e-9:
+                        continue
+                    else:
+                        ux, uy = dx / dist, dy / dist
+                    cosine = -(nx * ux + ny * uy)
+                    if cosine <= 1e-9:
+                        continue
+                    faces.append((ex, ey, dist, ux, uy, cosine * (1.0 if nx else A)))
+            if vector and aimed and self.radius is None and faces:
+                nearest = min(f[2] for f in faces)
+                faces = [f for f in faces if f[2] <= nearest + 1e-9]
 
-            if self.torque and dist and not o.physics.hitbox:
-                arm_x, arm_y = o.transform.extent()[2:]
-                hit_x = -dx / (dist / (arm_x + 1e-6))
-                hit_y = dy / (dist / (arm_y + 1e-6))
-                hit_x = max(-arm_x, min(arm_x, hit_x))
-                hit_y = max(-arm_y, min(arm_y, hit_y))
-                o.physics.avel += hit_x * fy - hit_y * fx
+            xs = [c[0] for c in cells]
+            ys = [c[1] for c in cells]
+            box = (min(xs), max(xs), min(ys), max(ys))
+            cx, cy, _ = p.body()
+            weight_sum = jx_sum = jy_sum = torque_sum = 0.0
+            for ex, ey, dist, ux, uy, weight in faces:
+                if vector:
+                    jx, jy = fx * A, fy
+                else:
+                    strength = value / (4 * math.pi * max(dist, 0.5))
+                    if self.cap is not None:
+                        strength = max(-self.cap, min(self.cap, strength))
+                    jx, jy = strength * ux, strength * uy
+                reach = 1e9 if uniform else dist - 0.5
+                if self.shield and self._shadowed(cells, box, (ex, ey), (-ux, -uy), reach, A):
+                    continue
+                weight_sum += weight
+                jx_sum += weight * jx
+                jy_sum += weight * jy
+                torque_sum += weight * ((ex - cx - 0.5) * A * jy - (ey - cy + 0.5) * jx)
+            if weight_sum <= 0:
+                continue
+
+            p._impulse(jx_sum / weight_sum, jy_sum / weight_sum)
+            if self.torque:
+                p._spin(torque_sum / weight_sum)
             affected.append(o)
         return affected
+
+def _wrap(angle):
+    return (angle + 180) % 360 - 180
+
+class _jointlist(list):
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+
+    def append(self, item):
+        if self._owner._accept(item):
+            super().append(item)
+            self._owner._attach(item)
+
+    def extend(self, items):
+        for item in list(items):
+            self.append(item)
+
+    def insert(self, index, item):
+        if self._owner._accept(item):
+            super().insert(index, item)
+            self._owner._attach(item)
+
+    def remove(self, item):
+        super().remove(item)
+        self._owner._detach(item)
+
+    def pop(self, index=-1):
+        item = super().pop(index)
+        self._owner._detach(item)
+        return item
+
+    def clear(self):
+        for item in list(self):
+            self.remove(item)
+
+    def __iadd__(self, items):
+        self.extend(items)
+        return self
+
+    def __setitem__(self, index, value):
+        items = list(self)
+        items[index] = value
+        self.clear()
+        self.extend(items)
+
+    def __delitem__(self, index):
+        items = list(self)
+        del items[index]
+        self.clear()
+        self.extend(items)
+
+class joint():
+    _owned = ['joints', 'xoffset', 'yoffset', 'jradius', 'range', 'elasticity',
+              'durability', 'physical', 'ratio', 'vel', 'collide']
+    _required = [transform]
+    _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'rotaspect'))
+
+    def on_discard(self):
+        self._joints.clear()
+
+    def __init__(self, obj, **kwargs):
+        self.obj = obj
+        self.t = obj.transform
+        self.scene = obj.scene
+        self._state = {}
+        self._busy = False
+        self._onbreak = []
+        self._joints = _jointlist(self)
+        def parent_cb(attr):
+            self._on_parent(attr)
+        self._pcb = parent_cb
+        self.t.onchange(self._pcb)
+        self.xoffset = kwargs.get('xoffset', 0)
+        self.yoffset = kwargs.get('yoffset', 0)
+        self.radius = kwargs.get('jradius', 0)
+        self.range = kwargs.get('range', None)
+        self.elasticity = kwargs.get('elasticity', 1)
+        self.durability = kwargs.get('durability', 0)
+        self.physical = kwargs.get('physical', False)
+        self.ratio = kwargs.get('ratio', 0)
+        self.vel = kwargs.get('vel', 0)
+        self.collide = kwargs.get('collide', False)
+        self._joints.extend(kwargs.get('joints', ()))
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    @property
+    def joints(self):
+        return self._joints
+    @joints.setter
+    def joints(self, value):
+        items = list(value)
+        self._joints.clear()
+        self._joints.extend(items)
+
+    @property
+    def radius(self):
+        return self._radius
+    @radius.setter
+    def radius(self, value):
+        if value is None:
+            value = 0
+        if isinstance(value, (int, float)):
+            band = (value, value)
+        else:
+            values = list(value)
+            band = (min(values), max(values))
+        if band[0] < 0:
+            raise ValueError('radius must not be negative')
+        self._radius = value
+        self._band = band
+
+    @property
+    def jradius(self):
+        return self.radius
+    @jradius.setter
+    def jradius(self, value):
+        self.radius = value
+
+    @property
+    def range(self):
+        return self._range
+    @range.setter
+    def range(self, value):
+        if value is None:
+            self._arc = None
+        else:
+            values = list(value)
+            low, high = min(values), max(values)
+            self._arc = None if high - low >= 360 else ((low + high) / 2, (high - low) / 2)
+        self._range = value
+
+    @property
+    def elasticity(self):
+        return self._elasticity
+    @elasticity.setter
+    def elasticity(self, value):
+        if value <= 0:
+            raise ValueError('elasticity must be positive')
+        self._elasticity = value
+
+    @property
+    def durability(self):
+        return self._durability
+    @durability.setter
+    def durability(self, value):
+        if value < 0:
+            raise ValueError('durability must not be negative')
+        self._durability = value
+
+    @property
+    def ratio(self):
+        return self._ratio
+    @ratio.setter
+    def ratio(self, value):
+        self._ratio = max(0.0, min(1.0, value))
+
+    def onbreak(self, cb):
+        self._onbreak.append(cb)
+        return cb
+
+    def offbreak(self, cb):
+        self._onbreak = [f for f in self._onbreak if f is not cb]
+
+    def _accept(self, item):
+        if item is self.obj:
+            raise ValueError('an object cannot be jointed to itself')
+        if getattr(item, 'transform', None) is None:
+            raise TypeError('a joint target needs a transform component')
+        return not any(j is item for j in self._joints)
+
+    def _attach(self, item):
+        cb = self._childcb(item)
+        item.transform.onchange(cb)
+        drop = self._dropcb(item)
+        item.ondiscard(drop)
+        added = []
+        if not self.collide:
+            for owner, partner in ((self.obj, item), (item, self.obj)):
+                if not any(g is partner for g in owner._ghosts):
+                    owner._ghosts.append(partner)
+                    added.append((owner, partner))
+        self._state[id(item)] = (cb, drop, added)
+        if not self.physical and not self._busy:
+            self._busy = True
+            try:
+                self._solve(item, False, False)
+            finally:
+                self._busy = False
+
+    def _detach(self, item):
+        state = self._state.pop(id(item), None)
+        if state is None:
+            return
+        cb, drop, added = state
+        transform_ = getattr(item, 'transform', None)
+        if transform_ is not None:
+            transform_.offchange(cb)
+        item.offdiscard(drop)
+        for owner, partner in added:
+            owner._ghosts[:] = [g for g in owner._ghosts if g is not partner]
+
+    def _childcb(self, item):
+        def cb(attr):
+            self._on_child(item, attr)
+        return cb
+
+    def _dropcb(self, item):
+        def drop():
+            if any(j is item for j in self._joints):
+                self._joints.remove(item)
+        return drop
+
+    def _break(self, item):
+        self._joints.remove(item)
+        for cb in list(self._onbreak):
+            if _argslen(cb):
+                cb(item)
+            else:
+                cb()
+
+    def _on_parent(self, attr):
+        if self._busy or self.physical or attr not in self._watch:
+            return
+        self._busy = True
+        try:
+            for item in list(self._joints):
+                self._solve(item, False)
+        finally:
+            self._busy = False
+
+    def _on_child(self, item, attr):
+        if self._busy or self.physical or attr not in self._watch:
+            return
+        self._busy = True
+        try:
+            self._solve(item, False)
+        finally:
+            self._busy = False
+
+    def step(self):
+        if self._busy:
+            return
+        self._busy = True
+        try:
+            for item in list(self._joints):
+                self._solve(item, True)
+        finally:
+            self._busy = False
+
+    def anchor(self):
+        cx, cy = self.t.extent()[:2]
+        A = self.scene.aspect
+        r = math.radians(self.t.rotation)
+        u = self.xoffset * A
+        v = self.yoffset
+        return (cx + (u * math.cos(r) + v * math.sin(r)) / A,
+                cy + (-u * math.sin(r) + v * math.cos(r)))
+
+    @staticmethod
+    def _movable(o):
+        p = getattr(o, 'physics', None)
+        return p is None or p.dynamic
+
+    def _solve(self, item, motor, strict=True):
+        if getattr(item, 'transform', None) is None:
+            return
+        A = self.scene.aspect
+        ax, ay = self.anchor()
+        cx, cy = item.transform.extent()[:2]
+        dx = (cx - ax) * A
+        dy = cy - ay
+        dist = math.hypot(dx, dy)
+        if strict and self._durability and dist > self._durability:
+            self._break(item)
+            return
+
+        low, high = self._band
+        arc = self._arc
+        if dist < 1e-9:
+            rel = arc[0] if arc else 0.0
+        else:
+            rel = _wrap(math.degrees(math.atan2(dx, dy)) - self.t.rotation)
+        target_rel = rel + (self.vel if motor else 0)
+        if arc is not None:
+            mid, half = arc
+            off = _wrap(target_rel - mid)
+            if abs(off) > half:
+                target_rel = mid + math.copysign(half, off)
+        target_dist = min(max(dist, low), high)
+        if abs(target_dist - dist) < 1e-9 and abs(_wrap(target_rel - rel)) < 1e-9:
+            return
+
+        heading = math.radians(self.t.rotation + target_rel)
+        ex = ax + target_dist * math.sin(heading) / A - cx
+        ey = ay + target_dist * math.cos(heading) - cy
+        if math.hypot(ex * A, ey) < 1e-9:
+            return
+
+        child_free = self._movable(item)
+        parent_free = self._movable(self.obj)
+        if child_free and parent_free:
+            wc, wp = 1.0 - self._ratio, self._ratio
+        elif child_free:
+            wc, wp = 1.0, 0.0
+        elif parent_free:
+            wc, wp = 0.0, 1.0
+        else:
+            return
+
+        if self.physical:
+            k = 1.0 / self._elasticity
+            self._push(item, ex * wc * k, ey * wc * k)
+            self._push(self.obj, -ex * wp * k, -ey * wp * k)
+            self._damp(item, ex, ey, wc, wp, k)
+        else:
+            if wc:
+                self._absorb(item, ex, ey)
+                self._move(item, ex * wc, ey * wc)
+            if wp:
+                self._absorb(self.obj, -ex, -ey)
+                self._move(self.obj, -ex * wp, -ey * wp)
+
+    def _move(self, o, dx, dy):
+        t = o.transform
+        p = getattr(o, 'physics', None)
+        x, y = t.x, t.y
+        if p is not None and p.dynamic and p.solid and not p.phantom and not p.overlaps():
+            steps = min(200, max(1, int(math.ceil(max(abs(dx), abs(dy))))))
+            sx, sy = dx / steps, dy / steps
+            for _ in range(steps):
+                moved = False
+                if sx and not p.overlaps(p.getpixels(x + sx, y)):
+                    x += sx
+                    moved = True
+                if sy and not p.overlaps(p.getpixels(x, y + sy)):
+                    y += sy
+                    moved = True
+                if not moved:
+                    break
+        else:
+            x, y = x + dx, y + dy
+        if x != t.x:
+            t.x = x
+        if y != t.y:
+            t.y = y
+
+    def _push(self, o, dx, dy):
+        p = getattr(o, 'physics', None)
+        if p is not None and p.dynamic:
+            p.xvel += dx * p.mass
+            p.yvel += dy * p.mass
+        else:
+            self._move(o, dx, dy)
+
+    def _absorb(self, o, ex, ey):
+        p = getattr(o, 'physics', None)
+        if p is None or not p.dynamic:
+            return
+        A = self.scene.aspect
+        ux, uy = ex * A, ey
+        n = math.hypot(ux, uy)
+        if n < 1e-9:
+            return
+        ux /= n
+        uy /= n
+        along = (p.xvel / p.mass * A) * ux + (p.yvel / p.mass) * uy
+        if along < 0:
+            p.xvel -= along * ux / A * p.mass
+            p.yvel -= along * uy * p.mass
+
+    @staticmethod
+    def _vel_of(o):
+        p = getattr(o, 'physics', None)
+        if p is None or not p.dynamic:
+            return 0.0, 0.0
+        return p.xvel / p.mass, p.yvel / p.mass
+
+    def _damp(self, item, ex, ey, wc, wp, k):
+        A = self.scene.aspect
+        ux, uy = ex * A, ey
+        n = math.hypot(ux, uy)
+        if n < 1e-9:
+            return
+        ux /= n
+        uy /= n
+        cvx, cvy = self._vel_of(item)
+        pvx, pvy = self._vel_of(self.obj)
+        along = ((cvx - pvx) * A) * ux + (cvy - pvy) * uy
+        if along >= 0:
+            return
+        fx = -along * ux / A * k
+        fy = -along * uy * k
+        for o, w in ((item, wc), (self.obj, -wp)):
+            p = getattr(o, 'physics', None)
+            if p is not None and p.dynamic and w:
+                p.xvel += fx * w * p.mass
+                p.yvel += fy * w * p.mass
+
+
+class light():
+    _owned = ['light']
+    _required = [transform]
+    _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'rotaspect'))
+    _settings = ('color', 'alpha', 'radius', 'falloff', 'shadows', 'shadowalpha', 'selfshadow',
+                 'cone', 'direction', 'offset', 'mix', 'affect', 'on')
+
+    def on_discard(self):
+        self.scene.lights = [l for l in self.scene.lights if l is not self]
+
+    def __init__(self, obj, **kwargs):
+        self.obj = obj
+        self.t = obj.transform
+        self.scene = obj.scene
+        self._version = 0
+        self._sig = None
+        self._occ = None
+        self._origin = (0.0, 0.0)
+        self._color = (255, 255, 255)
+        self._alpha = 1.0
+        self._radius = 15
+        self._falloff = 1.0
+        self._shadows = True
+        self._shadowalpha = 1.0
+        self._selfshadow = False
+        self._cone = None
+        self._direction = 0
+        self._offset = (0, 0)
+        self._mix = 0.35
+        self._affect = None
+        self._on = True
+        self._cfg = kwargs.get('light', True)
+        self.light = self._cfg
+        def cb(attr):
+            if attr in self._watch:
+                self._touch()
+        self._cb = cb
+        self.t.onchange(cb)
+        self.scene.lights.append(self)
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def _touch(self):
+        self._version += 1
+        self._occ = None
+
+    @property
+    def light(self):
+        return self._cfg
+    @light.setter
+    def light(self, value):
+        self._cfg = value
+        if isinstance(value, dict):
+            for key, val in value.items():
+                if key not in self._settings:
+                    raise TypeError('unknown light setting: ' + str(key))
+                setattr(self, key, val)
+
+    @property
+    def color(self):
+        return self._color
+    @color.setter
+    def color(self, value):
+        rgb = self.scene.styler.rgb(value)
+        if rgb is None:
+            raise ValueError('unknown light color: ' + str(value))
+        self._color = rgb
+        self._touch()
+
+    @property
+    def alpha(self):
+        return self._alpha
+    @alpha.setter
+    def alpha(self, value):
+        self._alpha = max(0.0, value)
+        self._touch()
+
+    @property
+    def radius(self):
+        return self._radius
+    @radius.setter
+    def radius(self, value):
+        if value <= 0:
+            raise ValueError('radius must be positive')
+        self._radius = value
+        self._touch()
+
+    @property
+    def falloff(self):
+        return self._falloff
+    @falloff.setter
+    def falloff(self, value):
+        if value <= 0:
+            raise ValueError('falloff must be positive')
+        self._falloff = value
+        self._touch()
+
+    @property
+    def shadows(self):
+        return self._shadows
+    @shadows.setter
+    def shadows(self, value):
+        self._shadows = bool(value)
+        self._touch()
+
+    @property
+    def shadowalpha(self):
+        return self._shadowalpha
+    @shadowalpha.setter
+    def shadowalpha(self, value):
+        self._shadowalpha = max(0.0, min(1.0, value))
+        self._touch()
+
+    @property
+    def selfshadow(self):
+        return self._selfshadow
+    @selfshadow.setter
+    def selfshadow(self, value):
+        self._selfshadow = bool(value)
+        self._touch()
+
+    @property
+    def cone(self):
+        return self._cone
+    @cone.setter
+    def cone(self, value):
+        if value is not None and not 0 < value < 360:
+            raise ValueError('cone must be between 0 and 360 degrees or None')
+        self._cone = value
+        self._touch()
+
+    @property
+    def direction(self):
+        return self._direction
+    @direction.setter
+    def direction(self, value):
+        self._direction = value
+        self._touch()
+
+    @property
+    def offset(self):
+        return self._offset
+    @offset.setter
+    def offset(self, value):
+        x, y = value
+        self._offset = (x, y)
+        self._touch()
+
+    @property
+    def mix(self):
+        return self._mix
+    @mix.setter
+    def mix(self, value):
+        self._mix = max(0.0, min(1.0, value))
+        self._touch()
+
+    @property
+    def affect(self):
+        return self._affect
+    @affect.setter
+    def affect(self, value):
+        self._affect = value
+        self._touch()
+
+    @property
+    def on(self):
+        return self._on
+    @on.setter
+    def on(self, value):
+        self._on = bool(value)
+        self._touch()
+
+    def _affects(self, o):
+        a = self._affect
+        if a is None:
+            return True
+        if hasattr(a, 'transform'):
+            return a is o
+        return any(x is o for x in a)
+
+    def origin(self):
+        cx, cy = self.t.extent()[:2]
+        A = self.scene.aspect
+        r = math.radians(self.t.rotation)
+        u = self._offset[0] * A
+        v = self._offset[1]
+        return (cx + (u * math.cos(r) + v * math.sin(r)) / A,
+                cy + (-u * math.sin(r) + v * math.cos(r)))
+
+    def _casters(self):
+        ox, oy = self._origin
+        reach_x = self._radius / self.scene.aspect + 2
+        reach_y = self._radius + 2
+        found = []
+        for o in self.scene.solids:
+            if o is self.obj:
+                continue
+            p = getattr(o, 'physics', None)
+            if p is None or p.phantom or not p.solid:
+                continue
+            b = p.bounds()
+            if b is None or b[1] < ox - reach_x or b[0] > ox + reach_x or b[3] < oy - reach_y or b[2] > oy + reach_y:
+                continue
+            found.append((o, p))
+        return found
+
+    def _prepare(self):
+        self._origin = self.origin()
+        occ = {}
+        if self._shadows:
+            for o, p in self._casters():
+                for pixel in p.getpixels():
+                    occ[pixel] = id(o)
+        self._occ = occ
+
+    def step(self):
+        if not self._on:
+            return
+        self._origin = self.origin()
+        sig = ()
+        if self._shadows:
+            sig = tuple((id(o), o.transform._x, o.transform._y, o.transform.vx, o.transform.vy,
+                         hash(o.transform._text), hash(o.transform._htext), p.hitbox)
+                        for o, p in self._casters())
+        if sig != self._sig:
+            self._sig = sig
+            self._touch()
+
+    def _shadowed(self, cx, cy, owner):
+        ox, oy = self._origin
+        n = max(1, int(math.ceil(max(abs(cx - ox), abs(cy - oy)) * 2)))
+        occ = self._occ
+        me = id(self.obj)
+        for i in range(1, n):
+            f = i / n
+            who = occ.get((math.floor(ox + (cx - ox) * f), math.ceil(oy + (cy - oy) * f)))
+            if who is not None and who != me and (self._selfshadow or who != owner):
+                return True
+        return False
+
+    def contribution(self, cx, cy, owner=None):
+        if self._occ is None:
+            self._prepare()
+        ox, oy = self._origin
+        A = self.scene.aspect
+        dx = (cx - ox) * A
+        dy = cy - oy
+        dist = math.hypot(dx, dy)
+        if dist >= self._radius:
+            return 0.0
+        amount = self._alpha * (1 - dist / self._radius) ** self._falloff
+        if self._cone is not None and dist > 0.5:
+            diff = abs(_wrap(math.degrees(math.atan2(dx, dy)) - (self.t.rotation + self._direction)))
+            half = self._cone / 2
+            if diff >= half:
+                return 0.0
+            amount *= min(1.0, (half - diff) / (self._cone * 0.1))
+        if amount <= 0:
+            return 0.0
+        if self._shadows and self._shadowed(cx, cy, owner):
+            amount *= 1 - self._shadowalpha
+        return amount
+
+    @staticmethod
+    def shade(scene, obj, text):
+        lights = [l for l in scene.lights if l.on and l._affects(obj)]
+        ambient = max(0.0, min(1.0, scene.ambient))
+        if not lights and ambient >= 1:
+            return text
+        t = obj.transform
+        pixels = t.parse_pixels(text)
+        ox, oy = t._origin()
+        fgdef = tuple(scene.fgcolor)
+        bgdef = tuple(scene.bgcolor)
+        owner = id(obj)
+        shaded = {}
+        changed = False
+        for (ci, ri), (char, style) in pixels.items():
+            hasbg = bool(style) and t._has_background(style)
+            if char == ' ' and not hasbg:
+                shaded[(ci, ri)] = (char, style)
+                continue
+            total = 0.0
+            mixsum = 0.0
+            red = green = blue = 0.0
+            for l in lights:
+                c = l.contribution(ox + ci + 0.5, oy - ri - 0.5, owner)
+                if c > 0:
+                    total += c
+                    mixsum += c * l._mix
+                    red += c * l._color[0]
+                    green += c * l._color[1]
+                    blue += c * l._color[2]
+            level = min(1.0, ambient + total)
+            if level >= 1.0 and total <= 0:
+                shaded[(ci, ri)] = (char, style)
+                continue
+            if total > 0:
+                tint = (red / total, green / total, blue / total)
+                amount = (mixsum / total) * min(1.0, total)
+            else:
+                tint = None
+                amount = 0.0
+
+            def blend(base):
+                out = [bgdef[k] + (base[k] - bgdef[k]) * level for k in range(3)]
+                if tint is not None:
+                    out = [out[k] + (tint[k] - out[k]) * amount for k in range(3)]
+                return tuple(max(0, min(255, int(round(v)))) for v in out)
+
+            fgm = _FGCODE.search(style)
+            fg = tuple(int(g) for g in fgm.groups()) if fgm else fgdef
+            newstyle = _BGCODE.sub('', _FGCODE.sub('', style))
+            bgm = _BGCODE.search(style)
+            if bgm:
+                newstyle += '\033[48;2;%d;%d;%dm' % blend(tuple(int(g) for g in bgm.groups()))
+            if char != ' ':
+                newstyle += '\033[38;2;%d;%d;%dm' % blend(fg)
+            elif fgm:
+                newstyle += fgm.group(0)
+            shaded[(ci, ri)] = (char, newstyle)
+            changed = True
+        if not changed:
+            return text
+        xs = [p[0] for p in shaded]
+        ys = [p[1] for p in shaded]
+        return t.build_rows(shaded, min(xs), max(xs), min(ys), max(ys))

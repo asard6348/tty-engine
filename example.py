@@ -32,7 +32,7 @@ def dev(Session=Session): #DEBUG
             t = self.bomb.transform
             ex = self.bomb.force
             delta = (self.timer/self.begin) if self.begin != 0 else 0
-            t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=t.aspect), alpha=max(0,min(1,self.power/20)*delta), color='orange', bgcolor=scene.bgcolor)
+            t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=scene.aspect), alpha=max(0,min(1,self.power/20)*delta), color='orange', bgcolor=scene.bgcolor)
             t.x, t.y = self.pos
             t.x -= t.xlen()/2
             t.y += t.ylen()/2
@@ -164,11 +164,12 @@ def dev(Session=Session): #DEBUG
             inp.onmouse('release', on_release_pen)
 
             self.push = sc.obj().create(force=30*40, cap=30, radius=40, show=False)
-            self.push.transform.text = sc.styler.shapes.circle(5, style('X', 'red'), aspect=self.push.transform.aspect)
+            self.push.transform.text = sc.styler.shapes.circle(5, style('X', 'red'), aspect=sc.aspect)
 
             def onpress(): # key press events
                 def w():
-                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] and abs(self.plr.physics.yvel) < self.plr.physics.mass*0.2 else 0
+                    pass
+                    #if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] and abs(self.plr.physics.yvel) < self.plr.physics.mass*0.2 else 0
                 def q():
                     self.session.running = False
                 def f():
@@ -199,12 +200,13 @@ def dev(Session=Session): #DEBUG
             
             def whilepressed(): # key hold events
                 def k(but):
-                    return inp.held(but)
+                    return inp.held(but, delay=0.2)
                 if(k('e')):
                     self.plr.physics.avel += 1
                 if(k('w')):
                     self.tary += cmspeed/2
                     #if self.plr: self.plr.yvel += self.plrspeed if abs(self.plr.yvel) < self.plrmaxspeed else 0
+                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] and abs(self.plr.physics.yvel) < self.plr.physics.mass*0.2 else 0
                 if(k('s')):
                     self.tary += -cmspeed/2
                     #if self.plr: self.plr.yvel += -self.plrspeed if abs(self.plr.xvel) < self.plrmaxspeed else 0

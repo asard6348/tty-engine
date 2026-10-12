@@ -34,27 +34,30 @@ def cleanup():
 ginfo = [0, 0]
 class ginf():
     def upd(self):
-        global lost
         sc = self.scene
         style = self.style
         new_txt = f'SHOTS :   {ginfo[0]}       HITS :   {ginfo[1]}'
-        if new_txt != self._last_txt or self._lost != lost:
+        if new_txt != self._last_txt or self._lost != lost or self.info is None:
             self._last_txt = new_txt
             self._lost = lost
-            self.info.create(style(new_txt, color='darkorange', alpha=0.5 if lost else 1, size=1, width=500), z=30)
+            kill(self.info)
+            self.info = track(sc.obj().create(
+                style(new_txt, color='darkorange', alpha=0.5 if lost else 1, size=1, width=500),
+                z=30))
         t = self.info.transform
         t.x = sc.camx + sc.iround((sc.dimx - t.xlen()) / 2)
         t.y = sc.camy - sc.dimy + t.ylen()
+
     def start(self, scene, session):
-        global lost
         self.gid = game_id
         self.scene = scene
         self.style = session.style
-        self.info = track(scene.obj())
+        self.info = None
         self._last_txt = None
         self._lost = lost
+
     def final(self, scene, handle):
-        if self.gid != game_id or not hasattr(self.info, 'transform'):
+        if self.gid != game_id:
             kill(self.info)
             handle.cancel()
             return
@@ -149,7 +152,7 @@ class explode():
         t = self.bomb.transform
         ex = self.bomb.force
         delta = max(0, self.timer/self.begin)
-        t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=t.aspect), alpha=min(1,ex.cap/20)*delta, color='orange', bgcolor=scene.bgcolor)
+        t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=scene.aspect), alpha=min(1,ex.cap/20)*delta, color='orange', bgcolor=scene.bgcolor)
         t.x, t.y = self.pos
         t.x -= t.xlen()/2
         t.y += t.ylen()/2
@@ -274,38 +277,44 @@ class player():
         self.thrustspeed = 0.1*p.mass
         self.thrustmax = 3*p.mass
         self.thrustbreak = 0.9
+
+        def trigger_lost():
+            global lost
+            if self.lsinfo or gid != game_id:
+                return
+            lost = True
+            self.smcam = 20
+            lsinfo = track(scene.obj().create(
+                style('YOU LOST!', size=2, color='black', bgcolor='red') + '\n' +
+                style('PRESS R TO RESET', color='black', bgcolor='red'),
+                z=20, renderspaces=True))
+            lst = lsinfo.transform
+            lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
+            lst.y = scene.camy - scene.iround(scene.dimy / 4) + scene.iround(lst.ylen() / 2)
+            world.launch(lambda: fade(lsinfo, 0, 2, appear=True))
+            self.lsinfo = lsinfo
+        self.trigger_lost = trigger_lost
+
         def swslf(ps):
-            global plr, lost, ginfo
-            if gid != game_id: return
+            global plr
+            if gid != game_id:
+                return
             for par in ps:
                 track(par)
             ac = None
             for par in ps:
-                if hasattr(par, 'physics') and (ac==None or par.physics.mass > ac.physics.mass):
+                if hasattr(par, 'physics') and (ac is None or par.physics.mass > ac.physics.mass):
                     ac = par
             for pr in [pr for pr in ps if pr != ac]:
                 if hasattr(pr, 'physics'):
                     pr.physics.phantom = True
             plr = ac
-            if hasattr(ac, 'physics') and ac.physics.mass<=8:
-                lost = True
             if plr:
-                t = plr.transform
                 p = plr.physics
-                self.thrustspeed = 0.1*p.mass
-                self.thrustmax = 3*p.mass
+                self.thrustspeed = 0.1 * p.mass
+                self.thrustmax = 3 * p.mass
                 self.thrustbreak = 0.9
                 plr.transform.onsplit(swslf)
-            if (not plr or lost) and not self.lsinfo:
-                lost = True
-                self.smcam = 20
-                lsinfo = track(scene.obj().create(style('YOU LOST!', size=2, color='black', bgcolor='red')+'\n'+style('PRESS R TO RESET', color='black', bgcolor='red'), z=20, renderspaces=True))
-                lst = lsinfo.transform
-                lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
-                lst.y = scene.camy - scene.iround(scene.dimy / 4) + scene.iround(lst.ylen() / 2)
-                world.launch(lambda: fade(lsinfo, 0, 2, appear=True))
-                self.lsinfo = lsinfo
-                return
         t.onsplit(swslf)
 
         self.camtarx = scene.camx
@@ -352,7 +361,7 @@ class player():
                     world.launch(lambda: fade(obj2, **vanish_data))
             def dis():
                 maxi = 1
-                if abs(bp.xvel) <= maxi and abs(bp.yvel)*1/bt._aspect <= maxi:
+                if abs(bp.xvel) <= maxi and abs(bp.yvel)*1/bt.scene.aspect <= maxi:
                     bullet.discard()
             bp.ontouch(destroy, when=lambda o: o is not plr)
             world.launch(lambda: fade(bullet, 0.5, 1, callback=bullet.discard))
@@ -395,6 +404,9 @@ class player():
 
     def update(self, scene, session, world, handle):
         global plr
+        if self.started and not self.lsinfo:
+            if not hasattr(plr, 'transform') or plr.physics.mass <= 8:
+                self.trigger_lost()
         if not hasattr(plr, 'transform'):
             return
         inp = session.inp
