@@ -190,21 +190,29 @@ class asteroid():
         r = random.randrange
         style = session.style
         pt = plr.transform
-        minw = 2; maxw = 10
-        minh = 1; maxh = 5
-        def row(): return ('█'*r(minw, maxw))
-        ro = ''
-        txt = ''
-        for i in range(minh,maxh):
-            sp = ''.join([p for p in ro if p == ' '])
-            pro = ''.join([p for p in ro if p != ' '])
-            ro = sp+' '*max(0, len(pro)-1-r(0,maxw-1)) + row()
-            txt += ro+'\n'
+        width = r(16, 32)
+        height = r(20, 40)
+        cx, cy = width / 2.0, height / 2.0
+        base_radius = min(cx, cy) * 0.85
+        txt = ""
+        for y in range(height):
+            row_str = ""
+            dy = y - cy
+            for x in range(width):
+                dx = (x - cx) * 1.8
+                dist = math.sqrt(dx * dx + dy * dy)
+                angle = math.atan2(dy, dx)
+                noise = math.sin(angle * 4) * 2.2 + math.cos(angle * 7) * 1.5 + random.uniform(-0.8, 0.8)
+                if dist <= (base_radius + noise):
+                    row_str += "█"
+                else:
+                    row_str += " "
+            txt += row_str.rstrip() + "\n"
         dr = r(-180, 180)
         x, y = pt.forward(r(70, 100), 0, dr)
         al = r(7, 10)/10
         self.a = track(scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10)))
-        self.a.forvanish = {'delay': 0.5, 'time': 2, 'alpha': al, 'discard': True}
+        self.a.forvanish = {'delay': 0.5, 'time': 1, 'alpha': al, 'discard': True}
         self.a.imast = True
         self.a.ast = True
         def ont(obj2, inter):
@@ -278,6 +286,17 @@ class player():
         self.thrustmax = 3*p.mass
         self.thrustbreak = 0.9
 
+        '''thr1 = scene.obj().create(style('████\n████', color=(220,180,0)))
+        thr2 = scene.obj().create(style('████\n████', color=(220,180,0)))
+        def att(th, nu):
+            th.create(yoffset=-t.ylen())
+            if nu==2:
+                th.create(xoffset=t.xlen())
+        att(thr1, 1)
+        att(thr2, 2)
+        t.onchange(lambda at: (att(thr1, 1) and att(thr2, 2)) if at=='text' else None)
+        plr.create(joints=[thr1,thr2])'''
+
         def trigger_lost():
             global lost
             if self.lsinfo or gid != game_id:
@@ -340,7 +359,7 @@ class player():
             sx, sy = t.forward(t.ylen())
             spawn_x = t.x + t.xc() + sx
             spawn_y = t.y - t.yc() + sy
-            bullet = track(scene.obj().create(style('●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = t.rotation, mass=0, phantom=True))
+            bullet = track(scene.obj().create(style('●\n●\n●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = t.rotation, mass=0, phantom=True))
             bt = bullet.transform
             bp = bullet.physics
             for i, d in enumerate(t.forward(3)):

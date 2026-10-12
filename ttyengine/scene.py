@@ -38,6 +38,18 @@ for _cls in get_components(_components):
         _temps.append(_cls)
 
 
+def _findcomp(name):
+    for comp, params in _allcomps.items():
+        if comp.__name__ == name:
+            return comp, params
+    raise KeyError(f'Unknown component: {name!r}')
+
+def _comname(c):
+    if isinstance(c, str):
+        return c
+    return c.__name__ if inspect.isclass(c) else type(c).__name__
+
+
 class obj:
     def __init__(self, scene):
         self.scene = scene
@@ -52,7 +64,7 @@ class obj:
 
     def add(self, com, **kwargs):
         if isinstance(com, str):
-            comp, params = {co: pars for co, pars in _allcomps.items() if co.__name__ == com}.items()[0]
+            comp, params = _findcomp(com)
         else:
             comp = com
             params = _argslen(com)
@@ -84,7 +96,15 @@ class obj:
     def set(self, comn, **kwargs):
         com = comn if isinstance(comn, (tuple, list)) else [comn]
         for c in com:
-            c = getattr(self, c) if isinstance(c, str) else getattr(self, c.__name__) if inspect.isclass(c) else c
+            if isinstance(c, str):
+                c, _ = _findcomp(c)
+            if inspect.isclass(c):
+                if not hasattr(self, c.__name__):
+                    for rcom in getattr(c, '_required', ()):
+                        if not hasattr(self, rcom.__name__):
+                            self.add(rcom, **kwargs)
+                    self.add(c, **kwargs)
+                c = getattr(self, c.__name__)
             ow = getattr(c, '_owned', None)
             ch = getattr(c, '_changed', None)
             for k, v in kwargs.items():
@@ -99,16 +119,25 @@ class obj:
                 elif k not in _attrs:
                     setattr(self, k, v)
 
-    def kwargs(self):
+    def kwargs(self, coms=None):
+        if coms is None:
+            names = None
+        else:
+            if isinstance(coms, str) or inspect.isclass(coms):
+                coms = [coms]
+            names = {_comname(c) for c in coms}
         result = {}
         for at, cl in _attrs.items():
+            if names is not None and cl.__name__ not in names:
+                continue
             com = getattr(self, cl.__name__, None)
-            if at in result or not com or not hasattr(com, '_changed'): continue
-            result.update({k: getattr(com, k) for k in com._changed})
+            changed = getattr(com, '_changed', None)
+            if at in result or not com or not changed: continue
+            result.update({k: getattr(com, k) for k in changed})
         return result
 
-    def clone(self, **overrides):
-        kwargs = self.kwargs()
+    def clone(self, coms=None, **overrides):
+        kwargs = self.kwargs(coms)
         kwargs.update(overrides)
         return self.scene.obj().create(**kwargs)
 

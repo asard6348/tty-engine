@@ -768,8 +768,15 @@ class transform(_change_callback):
         before = self.rtext_to_world(*ref) if ref is not None else None
         xs = [p[0] for p in styled]
         ys = [p[1] for p in styled]
+        phys = getattr(self.obj, 'physics', None)
+        old_mass = phys.mass if phys is not None else None
         self.rtext = self.build_rows(styled, min(xs), max(xs), min(ys), max(ys))
-        after = self.rtext_to_world(*ref) if ref is not None else None
+        if old_mass and phys.mass != old_mass:
+            k = phys.mass / old_mass
+            phys.xvel *= k
+            phys.yvel *= k
+            phys.avel *= k
+        after = self.rtext_to_world(ref[0] - min(xs), ref[1] - min(ys)) if ref is not None else None
         if before is not None and after is not None:
             if before[0] != after[0]:
                 self.x = self._x + before[0] - after[0]
