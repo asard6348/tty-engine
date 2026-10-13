@@ -123,26 +123,6 @@ def spawn_console(script):
             continue
     return None
 
-def redraw_overlaps(renderers, dirty):
-    pending = []
-    for r in renderers:
-        if r.changed():
-            dirty.extend(r.rects())
-        else:
-            rect = r.rect()
-            if rect:
-                pending.append((r, rect))
-    grown = bool(dirty)
-    while grown and pending:
-        grown = False
-        for item in list(pending):
-            r, rect = item
-            if any(rect[0] < d[2] and d[0] < rect[2] and rect[1] < d[3] and d[1] < rect[3] for d in dirty):
-                r.redraw()
-                pending.remove(item)
-                dirty.append(rect)
-                grown = True
-
 def format_dinfo(value):
     if value is None:
         lines = []
@@ -330,6 +310,195 @@ class World():
             return True
         return False
 
+#COMPOSITOR CLASS
+class Compositor:
+    def __init__(self):
+        self.front = None
+        self.width = 0
+        self.height = 0
+        self.known = {}
+
+    def invalidate(self):
+        self.front = None
+
+    def stale(self, width, height):
+        return self.front is None or self.width != width or self.height != height
+
+    @staticmethod
+    def bgstyle(color):
+        return f'\033[48;2;{int(color[0])};{int(color[1])};{int(color[2])}m'
+
+    @staticmethod
+    def extent(scene, x, y, text, xoff, yoff):
+        rows = scene.recomp.sub('', text).split('\n')
+        return (x + xoff, y - yoff, x + xoff + max(len(row) for row in rows), y - yoff + len(rows))
+
+    @staticmethod
+    def parse(scene, text, spaces):
+        bg = Compositor.bgstyle(scene.bgcolor)
+        rows = []
+        for row in text.split('\n'):
+            cells = []
+            active = ''
+            for part in scene.recomp.split(row):
+                if not part:
+                    continue
+                if scene.recomp.match(part):
+                    if part in ('\033[0m', '\033[m'):
+                        active = ''
+                    elif part.startswith('\033[') and part.endswith('m'):
+                        active += part
+                    continue
+                style = bg + active
+                for char in part:
+                    cells.append((char, style) if spaces or char != ' ' else None)
+            rows.append(cells)
+        return rows
+
+    def sync(self, worlds, active):
+        rects = []
+        seen = set()
+        for w in worlds:
+            live = w in active
+            for o in w.scene.objs:
+                r = getattr(o, 'rendering', None)
+                if r is None:
+                    continue
+                seen.add(r)
+                if not live or not r.t.rtext:
+                    continue
+                state = self.known.get(r)
+                if state is None:
+                    state = self.known[r] = [0, 0, '', 0, 0, None, []]
+                current = r.state()
+                if tuple(state[:5]) == current:
+                    continue
+                for x, y, text, xoff, yoff in (state[:5], current):
+                    if text:
+                        rects.append(self.extent(r.scene, x, y, text, xoff, yoff))
+                state[:5] = current
+        for r in [r for r in self.known if r not in seen]:
+            x, y, text, xoff, yoff = self.known.pop(r)[:5]
+            if text:
+                rects.append(self.extent(r.scene, x, y, text, xoff, yoff))
+        return rects
+
+    def layers(self, worlds, width, height, autobg):
+        layers = []
+        for w in worlds:
+            sc = w.scene
+            view = (
+                max(0, sc.dimxoffset),
+                max(0, -sc.dimyoffset),
+                min(width, sc.termx, sc.dimxoffset + sc.dimx),
+                min(height, sc.termy, -sc.dimyoffset + sc.dimy),
+            )
+            bg = self.bgstyle(sc.bgcolor) if autobg and w.autobg else None
+            sprites = []
+            for r in sorted([o.rendering for o in sc.objs if hasattr(o, 'rendering')], key=lambda r: r.z):
+                state = self.known.get(r)
+                if state is None or not state[2]:
+                    continue
+                key = (state[2], r.renderspaces, sc.bgcolor)
+                if state[5] != key:
+                    state[5] = key
+                    state[6] = self.parse(sc, state[2], r.renderspaces)
+                sprites.append((state[0] + state[3], state[1] - state[4], state[6]))
+            layers.append((view, bg, sprites))
+        return layers
+
+    def compose(self, worlds, active, width, height, outer, autobg):
+        rects = self.sync(worlds, active)
+        if self.stale(width, height):
+            self.front = [[None] * width for _ in range(height)]
+            self.width = width
+            self.height = height
+            rects = [(0, 0, width, height)]
+        spans = {}
+        for x0, y0, x1, y1 in rects:
+            x0 = max(0, x0)
+            y0 = max(0, y0)
+            x1 = min(width, x1)
+            y1 = min(height, y1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            for y in range(y0, y1):
+                span = spans.get(y)
+                if span is None:
+                    spans[y] = [x0, x1]
+                else:
+                    if x0 < span[0]: span[0] = x0
+                    if x1 > span[1]: span[1] = x1
+        if not spans:
+            return ''
+        top = min(spans)
+        bottom = max(spans) + 1
+        right = max(s[1] for s in spans.values())
+        base = (' ', self.bgstyle(outer) if outer is not None else '')
+        back = {y: [base] * width for y in spans}
+        for view, bg, sprites in self.layers(worlds, width, height, autobg):
+            vx0, vy0, vx1, vy1 = view
+            if bg is not None:
+                cell = (' ', bg)
+                for y in range(max(vy0, top), min(vy1, bottom)):
+                    span = spans.get(y)
+                    if span is None:
+                        continue
+                    a = max(vx0, span[0])
+                    b = min(vx1, span[1])
+                    if a < b:
+                        back[y][a:b] = [cell] * (b - a)
+            for x, y, grid in sprites:
+                if y >= bottom or y + len(grid) <= top or x >= right:
+                    continue
+                for i, row in enumerate(grid):
+                    ry = y + i
+                    if ry < vy0 or ry >= vy1:
+                        continue
+                    span = spans.get(ry)
+                    if span is None:
+                        continue
+                    a = max(vx0, span[0], x)
+                    b = min(vx1, span[1], x + len(row))
+                    if a >= b:
+                        continue
+                    line = back[ry]
+                    k = a
+                    for cell in row[a - x:b - x]:
+                        if cell is not None:
+                            line[k] = cell
+                        k += 1
+        out = []
+        style = None
+        for y in sorted(spans):
+            lo, hi = spans[y]
+            new = back[y]
+            old = self.front[y]
+            x = lo
+            while x < hi:
+                if new[x] == old[x]:
+                    x += 1
+                    continue
+                start = x
+                end = x + 1
+                k = end
+                while k < hi and k - end <= 3:
+                    if new[k] != old[k]:
+                        end = k + 1
+                    k += 1
+                out.append(f'\033[{y + 1};{start + 1}H')
+                for cell in new[start:end]:
+                    if cell[1] != style:
+                        style = cell[1]
+                        out.append('\033[0m' + style)
+                    out.append(cell[0])
+                old[start:end] = new[start:end]
+                x = end
+        if not out:
+            return ''
+        out.append('\033[0m')
+        return ''.join(out)
+
 #SESSION CLASS
 class Session():
     APIS = {'inp': True, 'style': True, 'sound': True}
@@ -346,7 +515,7 @@ class Session():
         self.apis = {name: kwargs.get(name, default) for name, default in self.APIS.items()}
         self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion) if self.apis['inp'] else None
         self.sound = Mixer(listener=self._listener, ffmpeg=ffmpeg) if self.apis['sound'] else None
-        self.fill = Styler.fill
+        self._compositor = Compositor()
         self.running = False
         self._pause = False
         self._dinfo = None
@@ -563,10 +732,6 @@ class Session():
                     if(not self._pause):
                         bef = time.perf_counter()
                         if self.inp: self.inp.update()
-                        fillbuffer = ""
-                        removebuffer = ""
-                        drawbuffer = ""
-
                         framerate_groups = {}
                         for w in self.worlds:
                             if w.pause: continue
@@ -600,29 +765,7 @@ class Session():
 
                         dim_changed = any([w.scene.checkres() for w in self.worlds if not w.pause]) or changed_optimized
                         if dim_changed:
-                            for w in self.worlds:
-                                for o in w.scene.objs:
-                                    if hasattr(o, 'rendering'):
-                                        o.rendering.redraw()
-                            if self.outerbg:
-                                fillbuffer += self.fill(
-                                    self.bgcolor,
-                                    self.term.width,
-                                    self.term.height,
-                                )
-                            if self.autobg:
-                                for world in self.worlds:
-                                    if world.pause: continue
-                                    if world.autobg:
-                                        fillbuffer += self.fill(
-                                            world.scene.bgcolor,
-                                            world.scene.dimx,
-                                            world.scene.dimy,
-                                            world.scene.dimxoffset,
-                                            -world.scene.dimyoffset,
-                                            world.scene.termx,
-                                            world.scene.termy,
-                                        )
+                            self._compositor.invalidate()
 
                         for idx, world in enumerate(itworlds):
                             for o in list(world.scene.objs):
@@ -648,36 +791,18 @@ class Session():
 
                             world.scene.flush()
 
-                            world_layer = getattr(world, 'layer', 0)
-                            exclude_rects = [
-                                (
-                                    w.scene.dimxoffset + 1,
-                                    -w.scene.dimyoffset + 1,
-                                    w.scene.dimxoffset + w.scene.dimx,
-                                    -w.scene.dimyoffset + w.scene.dimy,
-                                )
-                                for w in self.worlds
-                                if not w.pause and getattr(w, 'layer', 0) > world_layer
-                            ]
-                            objs = sorted(world.scene.objs, key=lambda ko: ko.rendering.z if hasattr(ko, 'rendering') else 0)
-                            dirty = world.scene.dirtyrects
-                            world.scene.dirtyrects = []
-                            if not world.pauserendering and not self.pauserendering:
-                                redraw_overlaps([o.rendering for o in objs if hasattr(o, 'rendering')], dirty)
-                            for o in list(objs):
-                                if hasattr(o, 'rendering'):
-                                    if not world.pauserendering and not self.pauserendering:
-                                        rem, draw = o.rendering.render(False, True, exclude_rects)
-                                        removebuffer += rem
-                                        if o.rendering.show: drawbuffer += draw
-                            removebuffer += ''.join(world.scene.discards)
-                            world.scene.discards.clear()
-
-                        framebuffer = '\033[?2026h' if self.vsync else ''
-                        framebuffer += removebuffer + fillbuffer + drawbuffer
-                        framebuffer += '\033[?2026l' if self.vsync else ''
-                        sys.stdout.write(framebuffer)
-                        sys.stdout.flush()
+                        termw = self.term.width
+                        termh = self.term.height
+                        active = [] if self.pauserendering else [w for w in itworlds if not w.pauserendering]
+                        frame = self._compositor.compose(
+                            self.worlds, active, termw, termh,
+                            self.bgcolor if self.outerbg else None,
+                            self.autobg,
+                        )
+                        if frame:
+                            if self.vsync: frame = '\033[?2026h' + frame + '\033[?2026l'
+                            sys.stdout.write(frame)
+                            sys.stdout.flush()
 
                     now = time.perf_counter()
                     next_tick = min(

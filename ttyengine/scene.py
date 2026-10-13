@@ -216,8 +216,6 @@ class Scene:
         self.objs = []
         self.dinfo = []
         self.pending = []
-        self.discards = []
-        self.dirtyrects = []
         self._maxframerate = 60
         self.framerate = 60
         self._oncamcb = {}

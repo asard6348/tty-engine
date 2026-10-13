@@ -4,10 +4,9 @@
 #def on_discard() - function that will be called upon obj().discard()
 
 #MODULES
-import math, re, sys, statistics, inspect, contextlib, collections.abc
+import math, re, statistics, inspect, collections.abc
 
 #GLOBAL
-_RESET_FG = '\033[22;23;24;39m'
 _NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
 _NEIGHBOURS8 = _NEIGHBOURS4 + ((-1, -1), (1, -1), (-1, 1), (1, 1))
 _NEIGHBOURS_HALF = ((1, 0), (0, 1), (1, 1), (-1, 1))
@@ -1132,11 +1131,6 @@ class rendering():
     _owned = ['show', 'renderspaces', 'z']
     _required = [transform]
     _default = True
-    def on_discard(self):
-        rect = self.rect()
-        if rect:
-            self.scene.dirtyrects.append(rect)
-        self.scene.discards.append(self.remove(write=False))
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
@@ -1144,22 +1138,9 @@ class rendering():
         self.scene = obj.scene
         self._litkey = None
         self._lit = ''
-        self.px = 0
-        self.py = 0
-        self.ptext = ''
-        self.pxoff = 0
-        self.pyoff = 0
-        self._show = kwargs.get('show', True)
+        self.show = kwargs.get('show', True)
         self.renderspaces = kwargs.get('renderspaces', False)
         self.z = kwargs.get('z', 0)
-
-    @property
-    def show(self):
-        return self._show
-
-    @show.setter
-    def show(self, value):
-        self._show = value
 
     @property
     def z(self):
@@ -1170,9 +1151,6 @@ class rendering():
         self._z = value
         if self._z > self.scene._lastz: self.scene._lastz = self._z
         if self._z < self.scene._firstz: self.scene._firstz = self._z
-
-    def redraw(self):
-        self.ptext = ''
 
     def _shown(self):
         text = self.t.vtext
@@ -1186,8 +1164,8 @@ class rendering():
             self._lit = light.shade(sc, self.obj, text)
         return self._lit
 
-    def _current(self):
-        if not self._show:
+    def state(self):
+        if not self.show:
             return (0, 0, '', 0, 0)
         ir = self.scene.iround
         return (
@@ -1198,211 +1176,11 @@ class rendering():
             self.scene.dimyoffset,
         )
 
-    def changed(self):
-        return bool(self.t.rtext) and self._current() != (self.px, self.py, self.ptext, self.pxoff, self.pyoff)
-
-    def _rect(self, x, y, text):
-        if not text:
-            return None
-        rows = self.scene.recomp.sub('', text).split('\n')
-        return (x, y, x + max(len(row) for row in rows), y + len(rows))
-
-    def rect(self):
-        return self._rect(self.px, self.py, self.ptext)
-
-    def rects(self):
-        current = self._current()
-        return [r for r in (self.rect(), self._rect(current[0], current[1], current[2])) if r]
-
     def front(self):
         self.z = self.scene._lastz +1
 
     def back(self):
         self.z = self.scene._firstz -1
-
-    def crop_row(self, row, start, end, renderspaces=False):
-        bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
-                   f'{self.scene.bgcolor[1]};'
-                   f'{self.scene.bgcolor[2]}m')
-        result = _RESET_FG
-        ci = 0
-        active_style  = ''
-        needs_restyle = False
-        in_crop       = False
-
-        for part in self.scene.recomp.split(row):
-            if not part:
-                continue
-            if self.scene.recomp.match(part):
-                if part in ('\033[0m', '\033[m'):
-                    active_style = ''
-                    if in_crop and not needs_restyle:
-                        result += part + bgcolor
-                else:
-                    active_style += part
-                    if in_crop and not needs_restyle:
-                        result += part
-            else:
-                for char in part:
-                    if ci >= end:
-                        if active_style:
-                            result += _RESET_FG
-                        return result
-                    if ci >= start:
-                        if not in_crop:
-                            in_crop = True
-                            if active_style:
-                                result += active_style
-                        if char == ' ' and not renderspaces:
-                            result += '\033[C'
-                            needs_restyle = bool(active_style)
-                        else:
-                            if needs_restyle:
-                                result += active_style
-                                needs_restyle = False
-                            result += char
-                    ci += 1
-
-        if active_style:
-            result += _RESET_FG
-        return result
-
-    def render_rows(self, text, ox, oy, xoff, yoff, erase=False, exclude_rects=None):
-        bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
-                   f'{self.scene.bgcolor[1]};'
-                   f'{self.scene.bgcolor[2]}m')
-        out  = ''
-        term_w     = self.scene.termx
-        term_h     = self.scene.termy
-        sim_bottom = -yoff + self.scene.dimy
-        sim_right  = xoff + self.scene.dimx
-        for i, row in enumerate(text.split('\n')):
-            scene_row = oy + 1 + i
-            if not (1 <= scene_row <= self.scene.dimy):
-                continue
-            sy = -yoff + scene_row
-            if not (1 <= sy <= min(term_h, sim_bottom)):
-                continue
-            crop_start = abs(min(0, ox))
-            crop_end   = term_w - xoff - max(0, ox)
-            if crop_end <= 0:
-                continue
-            sx = xoff + max(0, ox) + 1
-            if sx < 1:
-                extra = 1 - sx
-                crop_start += extra
-                crop_end   -= extra
-                sx = 1
-            if crop_end <= 0:
-                continue
-            crop_end = min(crop_end, term_w - (sx - 1))
-            crop_end = min(crop_end, sim_right - sx + 1)
-            if crop_end <= 0:
-                continue
-
-            if exclude_rects:
-                segments = []
-                seg_start = sx
-                seg_crop  = crop_start
-                seg_end   = sx + crop_end - 1
-                excluded = sorted(
-                    [(max(sx, r[0]), min(seg_end, r[2]))
-                     for r in exclude_rects
-                     if r[1] <= sy <= r[3] and r[0] <= seg_end and r[2] >= sx],
-                    key=lambda r: r[0]
-                )
-                cursor = sx
-                ccrop  = crop_start
-                for ex1, ex2 in excluded:
-                    if cursor < ex1:
-                        segments.append((cursor, ccrop, ex1 - cursor))
-                    skip = ex2 - cursor + 1
-                    cursor = ex2 + 1
-                    ccrop += skip
-                if cursor <= seg_end:
-                    segments.append((cursor, ccrop, seg_end - cursor + 1))
-            else:
-                segments = [(sx, crop_start, crop_end)]
-
-            for seg_sx, seg_crop_start, seg_crop_end in segments:
-                if seg_crop_end <= 0:
-                    continue
-                if erase:
-                    clean   = self.scene.recomp.sub('', row)
-                    visible = clean[seg_crop_start:seg_crop_start + seg_crop_end]
-                    arow = ''.join(
-                        '\033[C' if c == ' ' and not self.renderspaces else ' '
-                        for c in visible
-                    )
-                    out += f'\033[{sy}d\033[{seg_sx}G{arow}'
-                else:
-                    arow = self.crop_row(row, seg_crop_start, seg_crop_start + seg_crop_end, self.renderspaces)
-                    out += f'\033[{sy}d\033[{seg_sx}G{bgcolor}{arow}'
-        return out
-
-    def remove(self, write=True):
-        if not self.ptext:
-            return ''
-        bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
-                   f'{self.scene.bgcolor[1]};'
-                   f'{self.scene.bgcolor[2]}m')
-        xoff       = self.scene.dimxoffset
-        yoff       = -self.scene.dimyoffset
-        term_w     = self.scene.termx
-        term_h     = self.scene.termy
-        sim_bottom = -self.scene.dimyoffset + self.scene.dimy
-        sim_right  = self.scene.dimxoffset + self.scene.dimx
-        out = ''
-        for i, row in enumerate(self.ptext.split('\n')):
-            scene_row = self.py + 1 + i
-            if not (1 <= scene_row <= self.scene.dimy):
-                continue
-            sy = yoff + scene_row
-            if not (1 <= sy <= min(term_h, sim_bottom)):
-                continue
-            sx       = xoff + max(0, self.px) + 1
-            max_width = min(
-                term_w - (sx - 1),
-                sim_right - sx + 1,
-            )
-            max_width = max(0, max_width)
-            if not max_width:
-                continue
-            clean = self.scene.recomp.sub('', row)
-            arow  = ' ' * min(len(clean), max_width)
-            out  += f'\033[{sy}d\033[{sx}G{bgcolor}{arow}\033[0m'
-        rem = out + '\033[0m'
-        if write:
-            sys.stdout.write(rem)
-            sys.stdout.flush()
-            self.ptext = ''
-        return rem
-
-    def render(self, write=True, split=False, exclude_rects=None):
-        if not self.t.rtext:
-            return ('', '') if split else ''
-        bgcolor = (f'\033[48;2;{self.scene.bgcolor[0]};'
-                   f'{self.scene.bgcolor[1]};{self.scene.bgcolor[2]}m')
-        current = self._current()
-        previous = (self.px, self.py, self.ptext, self.pxoff, self.pyoff)
-        if current == previous:
-            return ('', '') if split else ''
-        acx, acy, actext, acxoff, acyoff = current
-        px, py, ptext, pxoff, pyoff = previous
-
-        remove_output = ''
-        if ptext:
-            remove_output = f'{bgcolor}{self.render_rows(ptext, px, py, pxoff, pyoff, erase=True, exclude_rects=exclude_rects)}\033[0m'
-        draw_output = ''
-        if actext:
-            draw_output = f'{bgcolor}{self.render_rows(actext, acx, acy, acxoff, acyoff, erase=False, exclude_rects=exclude_rects)}\033[0m'
-
-        self.px, self.py, self.ptext, self.pxoff, self.pyoff = current
-
-        if write:
-            sys.stdout.write(remove_output + draw_output)
-            sys.stdout.flush()
-        return (remove_output, draw_output) if split else remove_output + draw_output
 
 
 class physics(_change_callback):
@@ -2444,9 +2222,6 @@ def _check_durability(value):
         raise ValueError('durability must not be negative')
     return value
 
-def _check_ratio(value):
-    return max(0.0, min(1.0, value))
-
 _PARAMS = {
     'xoffset': (0, None),
     'yoffset': (0, None),
@@ -2455,22 +2230,11 @@ _PARAMS = {
     'elasticity': (1, _check_elasticity),
     'durability': (0, _check_durability),
     'physical': (False, bool),
-    'ratio': (0, _check_ratio),
     'vel': (0, None),
     'collide': (False, bool),
 }
-_ALIASES = {'jradius': 'radius'}
 _GEOMETRY = frozenset(('xoffset', 'yoffset', 'radius', 'range', 'physical'))
-
-def _check_params(params):
-    checked = {}
-    for key, value in (params or {}).items():
-        name = _ALIASES.get(key, key)
-        if name not in _PARAMS:
-            raise TypeError(f'unknown joint parameter: {key!r}')
-        check = _PARAMS[name][1]
-        checked[name] = value if check is None else check(value)
-    return checked
+_SWEEPS = 4
 
 class _param():
     def __init__(self, name, check):
@@ -2523,16 +2287,17 @@ class _jointlist(collections.abc.MutableSequence):
         self._owner = owner
 
     def _items(self):
-        return [link.item for link in self._owner._links.values()]
+        owner = self._owner
+        return [edge.other(owner).obj for edge in owner._edges.values()]
 
     def __len__(self):
-        return len(self._owner._links)
+        return len(self._owner._edges)
 
     def __iter__(self):
         return iter(self._items())
 
     def __contains__(self, item):
-        return id(item) in self._owner._links
+        return id(item) in self._owner._edges
 
     def __getitem__(self, index):
         return self._items()[index]
@@ -2567,7 +2332,7 @@ class _jointlist(collections.abc.MutableSequence):
         self._owner._assign(items)
 
     def append(self, item):
-        self._owner.add(item)
+        self._owner._assign(self._items() + [item])
 
     def extend(self, items):
         self._owner._assign(self._items() + list(items))
@@ -2583,93 +2348,126 @@ class _jointlist(collections.abc.MutableSequence):
     def clear(self):
         self._owner._assign(())
 
-@_withparams
-class _link():
-    def __init__(self, joint, item):
-        self.joint = joint
-        self.item = item
-        self._own = {}
-        self._live = False
-        self._held = False
-        self._cb = None
-        self._drop = None
+class _edge():
+    def __init__(self, origin, follower):
+        self.origin = origin
+        self.follower = follower
+        self.alive = True
+        self.held = False
 
-    def _value(self, name):
-        if name in self._own:
-            return self._own[name]
-        return self.joint._value(name)
-
-    def _store(self, name, value):
-        self._own[name] = value
-        self.joint._sync((self,), {name})
-
-    def _clear(self, name):
-        if name in self._own:
-            del self._own[name]
-            self.joint._sync((self,), {name})
+    def other(self, comp):
+        return self.follower if comp is self.origin else self.origin
 
     @property
-    def overrides(self):
-        return dict(self._own)
-
-    def update(self, **params):
-        checked = _check_params(params)
-        self._own.update(checked)
-        self.joint._sync((self,), set(checked))
-        return self
-
-    def reset(self, *names):
-        names = {_ALIASES.get(name, name) for name in names} or set(_PARAMS)
-        unknown = names - set(_PARAMS)
-        if unknown:
-            raise TypeError(f'unknown joint parameter: {sorted(unknown)[0]!r}')
-        dropped = names & set(self._own)
-        for name in dropped:
-            del self._own[name]
-        self.joint._sync((self,), dropped)
-        return self
+    def physical(self):
+        return self.follower.physical
 
     def anchor(self):
-        return self.joint._anchor(self.xoffset, self.yoffset)
+        return self.origin._anchor(self.follower.xoffset, self.follower.yoffset)
 
-    def _rewire(self):
-        want = self._live and not self.collide
-        if want == self._held:
+    def rewire(self):
+        want = self.alive and not self.follower.collide
+        if want == self.held:
             return
-        self._held = want
-        parent, child = self.joint.obj, self.item
+        self.held = want
+        a, b = self.origin.obj, self.follower.obj
         if want:
-            _ghost_hold(parent, child)
-            _ghost_hold(child, parent)
+            _ghost_hold(a, b)
+            _ghost_hold(b, a)
         else:
-            _ghost_drop(parent, child)
-            _ghost_drop(child, parent)
+            _ghost_drop(a, b)
+            _ghost_drop(b, a)
+
+    def error(self, motor):
+        f = self.follower
+        A = f.scene.aspect
+        ax, ay = self.anchor()
+        cx, cy = f.t.extent()[:2]
+        dx = (cx - ax) * A
+        dy = cy - ay
+        dist = math.hypot(dx, dy)
+        low, high = _band(f.radius)
+        arc = _arc(f.range)
+        rotation = self.origin.t.rotation
+        if dist < 1e-9:
+            rel = arc[0] if arc else 0.0
+        else:
+            rel = _wrap(math.degrees(math.atan2(dx, dy)) - rotation)
+        target_rel = rel + (f.vel if motor else 0)
+        if arc is not None:
+            mid, half = arc
+            off = _wrap(target_rel - mid)
+            if abs(off) > half:
+                target_rel = mid + math.copysign(half, off)
+        target_dist = min(max(dist, low), high)
+        if abs(target_dist - dist) < 1e-9 and abs(_wrap(target_rel - rel)) < 1e-9:
+            return 0.0, 0.0, dist
+        heading = math.radians(rotation + target_rel)
+        ex = ax + target_dist * math.sin(heading) / A - cx
+        ey = ay + target_dist * math.cos(heading) - cy
+        if math.hypot(ex * A, ey) < 1e-9:
+            return 0.0, 0.0, dist
+        return ex, ey, dist
+
+    def pull(self, ex, ey):
+        o, f = self.origin, self.follower
+        if o.movable and f.movable:
+            total = o.mass + f.mass
+            wc, wp = o.mass / total, f.mass / total
+        elif f.movable:
+            wc, wp = 1.0, 0.0
+        elif o.movable:
+            wc, wp = 0.0, 1.0
+        else:
+            return
+        k = 1.0 / f.elasticity
+        f._push(ex * wc * k, ey * wc * k)
+        o._push(-ex * wp * k, -ey * wp * k)
+        A = f.scene.aspect
+        ux, uy = ex * A, ey
+        n = math.hypot(ux, uy)
+        if n < 1e-9:
+            return
+        ux /= n
+        uy /= n
+        cvx, cvy = f.velocity
+        pvx, pvy = o.velocity
+        along = ((cvx - pvx) * A) * ux + (cvy - pvy) * uy
+        if along >= 0:
+            return
+        fx = -along * ux / A * k
+        fy = -along * uy * k
+        for comp, w in ((f, wc), (o, -wp)):
+            p = getattr(comp.obj, 'physics', None)
+            if p is not None and p.dynamic and w:
+                p.xvel += fx * w * p.mass
+                p.yvel += fy * w * p.mass
 
 @_withparams
 class joint():
     _owned = ['joints', 'xoffset', 'yoffset', 'jradius', 'range', 'elasticity',
-              'durability', 'physical', 'ratio', 'vel', 'collide']
+              'durability', 'physical', 'vel', 'collide']
     _required = [transform]
     _watch = frozenset(('x', 'y', 'rotation', 'text'))
+    _active = False
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
         self.t = obj.transform
         self.scene = obj.scene
-        self._busy = False
+        self._params = {}
+        self._edges = {}
         self._onbreak = []
-        self._defaults = {}
-        self._links = {}
         self._joints = _jointlist(self)
         for name in _PARAMS:
             key = 'jradius' if name == 'radius' else name
             if key in kwargs:
                 setattr(self, name, kwargs[key])
+        def change(attr):
+            self._on_change(attr)
+        self._pcb = change
+        self.t.onchange(change)
         self._assign(kwargs.get('joints', ()))
-        def parent(attr):
-            self._on_parent(attr)
-        self._pcb = parent
-        self.t.onchange(parent)
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -2678,29 +2476,27 @@ class joint():
         setattr(self, key, value)
 
     def _value(self, name):
-        if name in self._defaults:
-            return self._defaults[name]
+        if name in self._params:
+            return self._params[name]
         return _PARAMS[name][0]
 
     def _store(self, name, value):
-        self._defaults[name] = value
-        self._inherit(name)
+        self._params[name] = value
+        self._sync({name})
 
     def _clear(self, name):
-        if name in self._defaults:
-            del self._defaults[name]
-            self._inherit(name)
+        if name in self._params:
+            del self._params[name]
+            self._sync({name})
 
-    def _inherit(self, name):
-        self._sync([l for l in self._links.values() if name not in l._own], {name})
-
-    def _sync(self, links, names):
+    def _sync(self, names):
+        edges = [e for e in self._edges.values() if e.follower is self]
         if 'collide' in names:
-            for link in links:
-                link._rewire()
+            for edge in edges:
+                edge.rewire()
         if _GEOMETRY & names:
-            for link in links:
-                self._realign(link)
+            for edge in edges:
+                self._realign(edge)
 
     @property
     def jradius(self):
@@ -2719,34 +2515,33 @@ class joint():
         self._assign(value)
 
     @property
-    def links(self):
-        return tuple(self._links.values())
+    def movable(self):
+        p = getattr(self.obj, 'physics', None)
+        return p is None or p.dynamic
 
-    def link(self, item):
-        try:
-            return self._links[id(item)]
-        except KeyError:
-            raise KeyError('object is not jointed') from None
+    @property
+    def mass(self):
+        p = getattr(self.obj, 'physics', None)
+        return p.mass if p is not None and p.dynamic else 1.0
 
-    def add(self, item, **params):
-        checked = _check_params(params)
-        self._accept(item)
-        link = self._links.get(id(item))
-        if link is None:
-            link = _link(self, item)
-            link._own.update(checked)
-            self._links[id(item)] = link
-            self._attach(link)
-        elif checked:
-            link._own.update(checked)
-            self._sync((link,), set(checked))
-        return link
+    @property
+    def velocity(self):
+        p = getattr(self.obj, 'physics', None)
+        if p is None or not p.dynamic:
+            return 0.0, 0.0
+        return p.xvel / p.mass, p.yvel / p.mass
 
     def remove(self, item):
-        link = self._links.get(id(item))
-        if link is None:
+        edge = self._edges.get(id(item))
+        if edge is None:
             raise ValueError('object is not jointed')
-        self._unlink(link)
+        self._unlink(edge)
+
+    def anchor(self, other):
+        edge = self._edges.get(id(other))
+        if edge is None:
+            raise KeyError('object is not jointed')
+        return edge.anchor()
 
     def onbreak(self, cb):
         self._onbreak.append(cb)
@@ -2757,124 +2552,61 @@ class joint():
 
     def on_discard(self):
         self.t.offchange(self._pcb)
-        for link in list(self._links.values()):
-            self._unlink(link)
+        for edge in list(self._edges.values()):
+            self._unlink(edge)
 
-    @contextlib.contextmanager
-    def _locked(self):
-        self._busy = True
-        try:
-            yield
-        finally:
-            self._busy = False
-
-    def _accept(self, item):
-        if item is self.obj:
-            raise ValueError('an object cannot be jointed to itself')
-        if getattr(item, 'transform', None) is None:
-            raise TypeError('a jointed object needs a transform component')
-
-    def _entries(self, spec):
-        if isinstance(spec, collections.abc.Mapping):
-            pairs = list(spec.items())
-        else:
-            pairs = [e if isinstance(e, tuple) else (e, None) for e in spec]
+    def _accepted(self, spec):
+        items = []
         seen = set()
-        entries = []
-        for item, params in pairs:
-            self._accept(item)
-            if id(item) in seen:
-                continue
-            seen.add(id(item))
-            entries.append((item, _check_params(params)))
-        return entries
+        for item in spec:
+            if item is self.obj:
+                raise ValueError('an object cannot be jointed to itself')
+            if getattr(item, 'transform', None) is None:
+                raise TypeError('a jointed object needs a transform component')
+            if id(item) not in seen:
+                seen.add(id(item))
+                items.append(item)
+        return items
 
     def _assign(self, spec):
-        entries = self._entries(spec)
-        wanted = {id(item) for item, _ in entries}
-        for link in [l for l in self._links.values() if id(l.item) not in wanted]:
-            self._unlink(link)
+        items = self._accepted(spec)
+        wanted = {id(item) for item in items}
+        for edge in [e for e in self._edges.values() if id(e.other(self).obj) not in wanted]:
+            self._unlink(edge)
         ordered = {}
         fresh = []
-        touched = []
-        for item, checked in entries:
-            link = self._links.get(id(item))
-            if link is None:
-                link = _link(self, item)
-                link._own.update(checked)
-                fresh.append(link)
-            elif checked:
-                link._own.update(checked)
-                touched.append((link, set(checked)))
-            ordered[id(item)] = link
-        self._links = ordered
-        for link in fresh:
-            self._attach(link)
-        for link, names in touched:
-            self._sync((link,), names)
+        for item in items:
+            edge = self._edges.get(id(item))
+            if edge is None:
+                if getattr(item, 'joint', None) is None:
+                    item.set(joint)
+                edge = _edge(self, item.joint)
+                item.joint._edges[id(self.obj)] = edge
+                fresh.append(edge)
+            ordered[id(item)] = edge
+        self._edges = ordered
+        for edge in fresh:
+            edge.rewire()
+        for edge in fresh:
+            self._realign(edge)
 
-    def _attach(self, link):
-        def child(attr):
-            self._on_child(link, attr)
-        def drop():
-            self._unlink(link)
-        link._cb = child
-        link._drop = drop
-        link.item.transform.onchange(child)
-        link.item.ondiscard(drop)
-        link._live = True
-        link._rewire()
-        self._realign(link)
+    def _unlink(self, edge):
+        edge.alive = False
+        edge.rewire()
+        for comp in (edge.origin, edge.follower):
+            other = edge.other(comp)
+            if comp._edges.get(id(other.obj)) is edge:
+                del comp._edges[id(other.obj)]
 
-    def _detach(self, link):
-        link._live = False
-        link._rewire()
-        tf = getattr(link.item, 'transform', None)
-        if tf is not None:
-            tf.offchange(link._cb)
-        link.item.offdiscard(link._drop)
-
-    def _unlink(self, link):
-        if self._links.get(id(link.item)) is not link:
-            return
-        del self._links[id(link.item)]
-        self._detach(link)
-
-    def _break(self, link):
-        item = link.item
-        self._unlink(link)
-        for cb in list(self._onbreak):
-            if _argslen(cb):
-                cb(item)
-            else:
-                cb()
-
-    def _realign(self, link):
-        if not link._live or self._busy or link.physical:
-            return
-        with self._locked():
-            self._solve(link, False, False)
-
-    def _on_parent(self, attr):
-        if self._busy or attr not in self._watch:
-            return
-        with self._locked():
-            for link in list(self._links.values()):
-                if not link.physical:
-                    self._solve(link, False)
-
-    def _on_child(self, link, attr):
-        if self._busy or link.physical or attr not in self._watch:
-            return
-        with self._locked():
-            self._solve(link, False)
-
-    def step(self):
-        if self._busy:
-            return
-        with self._locked():
-            for link in list(self._links.values()):
-                self._solve(link, True)
+    def _break(self, edge):
+        o, f = edge.origin, edge.follower
+        self._unlink(edge)
+        for comp, other in ((o, f.obj), (f, o.obj)):
+            for cb in list(comp._onbreak):
+                if _argslen(cb):
+                    cb(other)
+                else:
+                    cb()
 
     def _anchor(self, xoffset, yoffset):
         cx, cy = self.t.extent()[:2]
@@ -2885,79 +2617,8 @@ class joint():
         return (cx + (u * math.cos(r) + v * math.sin(r)) / A,
                 cy + (-u * math.sin(r) + v * math.cos(r)))
 
-    def anchor(self, item=None):
-        if item is None:
-            return self._anchor(self.xoffset, self.yoffset)
-        return self.link(item).anchor()
-
-    @staticmethod
-    def _movable(o):
-        p = getattr(o, 'physics', None)
-        return p is None or p.dynamic
-
-    def _solve(self, link, motor, strict=True):
-        item = link.item
-        if not link._live or getattr(item, 'transform', None) is None:
-            return
-        A = self.scene.aspect
-        ax, ay = link.anchor()
-        cx, cy = item.transform.extent()[:2]
-        dx = (cx - ax) * A
-        dy = cy - ay
-        dist = math.hypot(dx, dy)
-        durability = link.durability
-        if strict and durability and dist > durability:
-            self._break(link)
-            return
-
-        low, high = _band(link.radius)
-        arc = _arc(link.range)
-        if dist < 1e-9:
-            rel = arc[0] if arc else 0.0
-        else:
-            rel = _wrap(math.degrees(math.atan2(dx, dy)) - self.t.rotation)
-        target_rel = rel + (link.vel if motor else 0)
-        if arc is not None:
-            mid, half = arc
-            off = _wrap(target_rel - mid)
-            if abs(off) > half:
-                target_rel = mid + math.copysign(half, off)
-        target_dist = min(max(dist, low), high)
-        if abs(target_dist - dist) < 1e-9 and abs(_wrap(target_rel - rel)) < 1e-9:
-            return
-
-        heading = math.radians(self.t.rotation + target_rel)
-        ex = ax + target_dist * math.sin(heading) / A - cx
-        ey = ay + target_dist * math.cos(heading) - cy
-        if math.hypot(ex * A, ey) < 1e-9:
-            return
-
-        child_free = self._movable(item)
-        parent_free = self._movable(self.obj)
-        ratio = link.ratio
-        if child_free and parent_free:
-            wc, wp = 1.0 - ratio, ratio
-        elif child_free:
-            wc, wp = 1.0, 0.0
-        elif parent_free:
-            wc, wp = 0.0, 1.0
-        else:
-            return
-
-        if link.physical:
-            k = 1.0 / link.elasticity
-            self._push(item, ex * wc * k, ey * wc * k)
-            self._push(self.obj, -ex * wp * k, -ey * wp * k)
-            self._damp(item, ex, ey, wc, wp, k)
-        else:
-            if wc:
-                self._absorb(item, ex, ey)
-                self._move(item, ex * wc, ey * wc)
-            if wp:
-                self._absorb(self.obj, -ex, -ey)
-                self._move(self.obj, -ex * wp, -ey * wp)
-
-    def _move(self, o, dx, dy):
+    def _move(self, dx, dy):
+        o = self.obj
         t = o.transform
         p = getattr(o, 'physics', None)
         x, y = t.x, t.y
@@ -2981,16 +2642,16 @@ class joint():
         if y != t.y:
             t.y = y
 
-    def _push(self, o, dx, dy):
-        p = getattr(o, 'physics', None)
+    def _push(self, dx, dy):
+        p = getattr(self.obj, 'physics', None)
         if p is not None and p.dynamic:
             p.xvel += dx * p.mass
             p.yvel += dy * p.mass
         else:
-            self._move(o, dx, dy)
+            self._move(dx, dy)
 
-    def _absorb(self, o, ex, ey):
-        p = getattr(o, 'physics', None)
+    def _absorb(self, ex, ey):
+        p = getattr(self.obj, 'physics', None)
         if p is None or not p.dynamic:
             return
         A = self.scene.aspect
@@ -3005,33 +2666,84 @@ class joint():
             p.xvel -= along * ux / A * p.mass
             p.yvel -= along * uy * p.mass
 
-    @staticmethod
-    def _vel_of(o):
-        p = getattr(o, 'physics', None)
-        if p is None or not p.dynamic:
-            return 0.0, 0.0
-        return p.xvel / p.mass, p.yvel / p.mass
+    def _order(self):
+        depth = {id(self): 0}
+        queue = [self]
+        seen = set()
+        result = []
+        for comp in queue:
+            for edge in list(comp._edges.values()):
+                if edge.physical or edge in seen:
+                    continue
+                seen.add(edge)
+                other = edge.other(comp)
+                if id(other) not in depth:
+                    depth[id(other)] = depth[id(comp)] + 1
+                    queue.append(other)
+                    result.append((edge, comp, other))
+                elif depth[id(comp)] <= depth[id(other)]:
+                    result.append((edge, comp, other))
+                else:
+                    result.append((edge, other, comp))
+        return result
 
-    def _damp(self, item, ex, ey, wc, wp, k):
-        A = self.scene.aspect
-        ux, uy = ex * A, ey
-        n = math.hypot(ux, uy)
-        if n < 1e-9:
+    def _fix(self, edge, near, far, motor, strict):
+        ex, ey, dist = edge.error(motor)
+        f = edge.follower
+        if strict and f.durability and dist > f.durability:
+            self._break(edge)
+            return False
+        if not ex and not ey:
+            return False
+        mover = far if far.movable else near
+        if not mover.movable:
+            return False
+        dx, dy = (ex, ey) if mover is f else (-ex, -ey)
+        mover._absorb(dx, dy)
+        mover._move(dx, dy)
+        return True
+
+    def _settle(self, motor=None, strict=True):
+        if joint._active:
             return
-        ux /= n
-        uy /= n
-        cvx, cvy = self._vel_of(item)
-        pvx, pvy = self._vel_of(self.obj)
-        along = ((cvx - pvx) * A) * ux + (cvy - pvy) * uy
-        if along >= 0:
+        joint._active = True
+        try:
+            for sweep in range(_SWEEPS):
+                moved = False
+                first = sweep == 0
+                for edge, near, far in self._order():
+                    if edge.alive and self._fix(edge, near, far,
+                                                first and motor is edge.origin,
+                                                strict and first):
+                        moved = True
+                if not moved:
+                    break
+        finally:
+            joint._active = False
+
+    def _realign(self, edge):
+        if edge.alive and not edge.physical:
+            edge.origin._settle(strict=False)
+
+    def _on_change(self, attr):
+        if joint._active or not self._edges or attr not in self._watch:
             return
-        fx = -along * ux / A * k
-        fy = -along * uy * k
-        for o, w in ((item, wc), (self.obj, -wp)):
-            p = getattr(o, 'physics', None)
-            if p is not None and p.dynamic and w:
-                p.xvel += fx * w * p.mass
-                p.yvel += fy * w * p.mass
+        self._settle()
+
+    def step(self):
+        if joint._active or not self._edges:
+            return
+        owned = [e for e in list(self._edges.values()) if e.origin is self]
+        for edge in owned:
+            if edge.alive and edge.physical:
+                ex, ey, dist = edge.error(False)
+                f = edge.follower
+                if f.durability and dist > f.durability:
+                    self._break(edge)
+                elif ex or ey:
+                    edge.pull(ex, ey)
+        if any(e.alive and not e.physical for e in owned):
+            self._settle(motor=self)
 
 
 class light():
