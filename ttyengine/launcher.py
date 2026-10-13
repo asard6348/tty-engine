@@ -176,6 +176,34 @@ def universal_init():
         ctypes.windll.kernel32.SetConsoleMode(hOut, dwMode.value | 0x0004)
 attempt(universal_init)
 
+HANDLE_STATES = ('start', 'update', 'final')
+
+def handle_state(state):
+    if isinstance(state, str):
+        name = state.strip().lower()
+        if name in HANDLE_STATES:
+            return name
+    elif isinstance(state, int) and not isinstance(state, bool) and 0 <= state < len(HANDLE_STATES):
+        return HANDLE_STATES[state]
+    raise ValueError(f"invalid handle state {state!r}: use 'start'/0, 'update'/1 or 'final'/2")
+
+def is_handle(obj):
+    return obj is not None and any(callable(getattr(obj, n, None)) for n in HANDLE_STATES)
+
+def handle_class(handle, state='start'):
+    if inspect.isclass(handle):
+        return handle
+    if not callable(handle):
+        raise TypeError(f"launch() expects a class or a function, got {type(handle).__name__}")
+    name = handle_state(state)
+    base = getattr(handle, '__name__', None) or type(handle).__name__
+    return type(base, (), {
+        name: staticmethod(handle),
+        '_factory': name == 'start',
+        '__doc__': getattr(handle, '__doc__', None),
+        '__module__': getattr(handle, '__module__', __name__),
+    })
+
 #WORLD CLASS
 class World():
     def __init__(self, session=None, autoreg=True, front=True, **kwargs):
@@ -224,7 +252,12 @@ class World():
             start = getattr(self.handle, 'start', None)
             self.startargs = getargs(start, self.handleargs)
             self.world.handles.append(self)
-            if start: start(**self.startargs)
+            result = start(**self.startargs) if start else None
+            if getattr(self.handle, '_factory', False) and is_handle(result):
+                self.handle = result
+                start = getattr(result, 'start', None)
+                self.startargs = getargs(start, self.handleargs)
+                if start: start(**self.startargs)
         @property
         def priority(self):
             return getattr(self.handle, 'priority', 0)
@@ -252,9 +285,12 @@ class World():
     def ordered_handles(self):
         return sorted(self.handles, key=lambda h: -h.priority)
 
-    def launch(self, handle, safe=True):
-        return (attempt(lambda: self.Handle(handle, self))
-                if safe else self.Handle(handle, self))
+    def launch(self, handle=None, safe=True, state='start'):
+        if handle is None:
+            return lambda h: self.launch(h, safe=safe, state=state)
+        cls = handle_class(handle, state)
+        return (attempt(lambda: self.Handle(cls, self))
+                if safe else self.Handle(cls, self))
 
     def cancel(self, handle):
         self.handles = [h for h in self.handles if h is not handle]
@@ -321,9 +357,27 @@ class Compositor:
         self.width = 0
         self.height = 0
         self.known = {}
+        self.region = None
 
     def invalidate(self):
         self.front = None
+
+    @staticmethod
+    def vacate(old, new, bounds):
+        ox, oy, ow, oh = old
+        nx, ny, nw, nh = new
+        tw, th = bounds
+        out = ['\033[0m']
+        for y in range(max(0, oy), min(oy + oh, th)):
+            a, b = max(0, ox), min(ox + ow, tw)
+            if ny <= y < ny + nh:
+                segs = ((a, min(b, nx)), (max(a, nx + nw), b))
+            else:
+                segs = ((a, b),)
+            for s, e in segs:
+                if s < e:
+                    out.append(f'\033[{y + 1};{s + 1}H' + ' ' * (e - s))
+        return ''.join(out) if len(out) > 1 else ''
 
     def stale(self, width, height):
         return self.front is None or self.width != width or self.height != height
@@ -438,9 +492,15 @@ class Compositor:
             layers.append((view, bg, sprites))
         return layers
 
-    def compose(self, worlds, active, width, height, outer, autobg):
+    def compose(self, worlds, active, region, bounds, outer, autobg):
+        regx, regy, width, height = region
         rects = self.sync(worlds, active)
-        if self.stale(width, height):
+        prefix = ''
+        moved = self.region is not None and self.region != region
+        if moved:
+            prefix = self.vacate(self.region, region, bounds)
+        self.region = region
+        if moved or self.stale(width, height):
             self.front = [[None] * width for _ in range(height)]
             self.width = width
             self.height = height
@@ -461,7 +521,7 @@ class Compositor:
                     if x0 < span[0]: span[0] = x0
                     if x1 > span[1]: span[1] = x1
         if not spans:
-            return ''
+            return prefix
         top = min(spans)
         bottom = max(spans) + 1
         right = max(s[1] for s in spans.values())
@@ -510,7 +570,7 @@ class Compositor:
             mask = bytes([a != b for a, b in zip(new, old)])
             for run in self.runs.finditer(mask):
                 start, end = run.span()
-                out.append(f'\033[{y + 1};{lo + start + 1}H')
+                out.append(f'\033[{regy + y + 1};{regx + lo + start + 1}H')
                 for cellstyle, group in groupby(new[start:end], key=itemgetter(1)):
                     if cellstyle != style:
                         style = cellstyle
@@ -518,15 +578,17 @@ class Compositor:
                     out.append(''.join([cell[0] for cell in group]))
                 self.front[y][lo + start:lo + end] = new[start:end]
         if not out:
-            return ''
+            return prefix
         out.append('\033[0m')
-        return ''.join(out)
+        return prefix + ''.join(out)
 
 #SESSION CLASS
 class Session():
     APIS = {'inp': True, 'style': True, 'sound': True}
     SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True,
-                'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True}
+                'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True,
+                'termxoffset': 0, 'termyoffset': 0, 'termwidth': None, 'termheight': None,
+                'fullscreen': None, 'hidecursor': None}
 
     def __init__(self, watchfocus=True, trackmotion=True, ffmpeg=None, **kwargs):
         unknown = [k for k in kwargs if k not in self.APIS and k not in self.SETTINGS]
@@ -544,8 +606,6 @@ class Session():
         self._dinfo = None
         self._debug = None
         self._latency = max(latency())
-        self._termxoffset = 0
-        self._termyoffset = 0
         self._idle_scene = scene.Scene() if self.apis['style'] else None
         bg = self.term.get_bgcolor(bits=8)
         self._bgcolor = bg if bg != (-1, -1, -1) else (0, 0, 0)
@@ -688,24 +748,30 @@ class Session():
                 if w.autofps: w.scene.maxframerate = 1/value
 
     @property
-    def termxoffset(self):
-        return self._termxoffset
-    @termxoffset.setter
-    def termxoffset(self, value):
-        delta = value - self._termxoffset
-        for w in self.worlds:
-            w.scene.dimxoffset += delta
-        self._termxoffset = value
+    def region(self):
+        return (self.termxoffset, self.termyoffset, self.termwidth, self.termheight)
+    @region.setter
+    def region(self, value):
+        x, y, w, h = (0, 0, None, None) if value is None else value
+        self.termxoffset, self.termyoffset, self.termwidth, self.termheight = x, y, w, h
 
     @property
-    def termyoffset(self):
-        return self._termyoffset
-    @termyoffset.setter
-    def termyoffset(self, value):
-        delta = value - self._termyoffset
-        for w in self.worlds:
-            w.scene.dimyoffset += delta
-        self._termyoffset = value
+    def resolved_region(self):
+        return self._resolve_region()
+
+    def _resolve_region(self):
+        tw, th = self.term.width, self.term.height
+        x, y = self.termxoffset or 0, self.termyoffset or 0
+        if x < 0: x += tw
+        if y < 0: y += th
+        x = min(max(x, 0), tw)
+        y = min(max(y, 0), th)
+        w = tw - x if self.termwidth is None else max(0, min(self.termwidth, tw - x))
+        h = th - y if self.termheight is None else max(0, min(self.termheight, th - y))
+        return (x, y, w, h)
+
+    def _partial(self):
+        return self.region != (0, 0, None, None)
 
     def style(self, *args, **kwargs):
         if not self.apis['style']:
@@ -724,12 +790,15 @@ class Session():
                 optt_stack = main_stack.enter_context(contextlib.ExitStack())
                 is_mouse = False
 
+                hc = not self._partial()
                 while self.running:
                     if changed_optimized: changed_optimized = False
                     if self.optimize and not is_optimized:
-                        opt_stack.enter_context(self.term.fullscreen())
+                        fs = self.fullscreen if self.fullscreen is not None else not self._partial()
+                        hc = self.hidecursor if self.hidecursor is not None else fs
+                        if fs: opt_stack.enter_context(self.term.fullscreen())
                         opt_stack.enter_context(self.term.cbreak())
-                        opt_stack.enter_context(self.term.hidden_cursor())
+                        if hc: opt_stack.enter_context(self.term.hidden_cursor())
                         opt_stack.enter_context(self.term.no_line_wrap())
                         opt_stack.enter_context(self.term.synchronized_output())
                         is_optimized = True
@@ -770,9 +839,9 @@ class Session():
 
                         itworlds = [w for w in self.worlds if not w.pause and w.scene.framerate in ready_fps and w.tick_ready()]
 
+                        region = self._resolve_region()
                         for idx, world in enumerate(itworlds):
-                            termx = self.term.width
-                            termy = self.term.height
+                            termx, termy = region[2], region[3]
                             if self.autoterm and world.autoterm:
                                 world.scene.termx = termx
                                 world.scene.termy = termy
@@ -814,15 +883,16 @@ class Session():
 
                             world.scene.flush()
 
-                        termw = self.term.width
-                        termh = self.term.height
+                        region = self._resolve_region()
+                        bounds = (self.term.width, self.term.height)
                         active = [] if self.pauserendering else [w for w in itworlds if not w.pauserendering]
                         frame = self._compositor.compose(
-                            self.worlds, active, termw, termh,
+                            self.worlds, active, region, bounds,
                             self.bgcolor if self.outerbg else None,
                             self.autobg,
                         )
                         if frame:
+                            if not hc: frame = '\0337' + frame + '\0338'
                             if self.vsync: frame = '\033[?2026h' + frame + '\033[?2026l'
                             sys.stdout.write(frame)
                             sys.stdout.flush()
@@ -847,7 +917,11 @@ class Session():
                 if self.sound: self.sound.close()
                 if self.optimize: self.term.reset()
                 if self.clearonstop:
-                    sys.stdout.write("\033[H\033[2J\033[3J")
+                    if self._partial():
+                        sys.stdout.write(Compositor.vacate(self._compositor.region, (-1, -1, 0, 0), (self.term.width, self.term.height)) + '\033[0m'
+                                         if self._compositor.region else '')
+                    else:
+                        sys.stdout.write("\033[H\033[2J\033[3J")
                     sys.stdout.flush()
                 self.undebug()
 
