@@ -1164,16 +1164,16 @@ class rendering():
             self._lit = light.shade(sc, self.obj, text)
         return self._lit
 
-    def state(self):
+    def state(self, camx, camy, xoff, yoff):
         if not self.show:
             return (0, 0, '', 0, 0)
-        ir = self.scene.iround
+        t = self.t
         return (
-            ir(((self.t.x) + (self.t.vx)) - ir(self.scene.camx)),
-            -ir(((self.t.y) + (self.t.vy)) - ir(self.scene.camy)),
+            int((t.x + t.vx - camx + 0.5) // 1),
+            -int((t.y + t.vy - camy + 0.5) // 1),
             self._shown(),
-            self.scene.dimxoffset,
-            self.scene.dimyoffset,
+            xoff,
+            yoff,
         )
 
     def front(self):

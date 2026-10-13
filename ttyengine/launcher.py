@@ -1,4 +1,6 @@
 import os, sys, time, threading, traceback, contextlib, inspect, ctypes, re, socket, subprocess, tempfile, shlex
+from itertools import groupby
+from operator import itemgetter
 
 def highlight_traceback(tb_str: str) -> str:
     RESET, BOLD, RED, GREEN, YELLOW, CYAN, MAGENTA = (
@@ -312,6 +314,8 @@ class World():
 
 #COMPOSITOR CLASS
 class Compositor:
+    runs = re.compile(b'\x01(?:\x00{0,3}\x01)*')
+
     def __init__(self):
         self.front = None
         self.width = 0
@@ -327,11 +331,6 @@ class Compositor:
     @staticmethod
     def bgstyle(color):
         return f'\033[48;2;{int(color[0])};{int(color[1])};{int(color[2])}m'
-
-    @staticmethod
-    def extent(scene, x, y, text, xoff, yoff):
-        rows = scene.recomp.sub('', text).split('\n')
-        return (x + xoff, y - yoff, x + xoff + max(len(row) for row in rows), y - yoff + len(rows))
 
     @staticmethod
     def parse(scene, text, spaces):
@@ -352,35 +351,65 @@ class Compositor:
                 style = bg + active
                 for char in part:
                     cells.append((char, style) if spaces or char != ' ' else None)
-            rows.append(cells)
+            runs = []
+            start = None
+            for i, cell in enumerate(cells):
+                if cell is None:
+                    if start is not None:
+                        runs.append((start, cells[start:i]))
+                        start = None
+                elif start is None:
+                    start = i
+            if start is not None:
+                runs.append((start, cells[start:]))
+            rows.append((len(cells), runs))
         return rows
 
     def sync(self, worlds, active):
         rects = []
         seen = set()
+        known = self.known
         for w in worlds:
+            sc = w.scene
             live = w in active
-            for o in w.scene.objs:
+            if live:
+                ir = sc.iround
+                camx = ir(sc.camx)
+                camy = ir(sc.camy)
+                xoff = sc.dimxoffset
+                yoff = sc.dimyoffset
+                bgcolor = sc.bgcolor
+            for o in sc.objs:
                 r = getattr(o, 'rendering', None)
                 if r is None:
                     continue
                 seen.add(r)
                 if not live or not r.t.rtext:
                     continue
-                state = self.known.get(r)
+                state = known.get(r)
                 if state is None:
-                    state = self.known[r] = [0, 0, '', 0, 0, None, []]
-                current = r.state()
-                if tuple(state[:5]) == current:
+                    state = known[r] = [(0, 0, '', 0, 0), None, [], 0]
+                current = r.state(camx, camy, xoff, yoff)
+                previous = state[0]
+                if previous == current:
                     continue
-                for x, y, text, xoff, yoff in (state[:5], current):
-                    if text:
-                        rects.append(self.extent(r.scene, x, y, text, xoff, yoff))
-                state[:5] = current
-        for r in [r for r in self.known if r not in seen]:
-            x, y, text, xoff, yoff = self.known.pop(r)[:5]
-            if text:
-                rects.append(self.extent(r.scene, x, y, text, xoff, yoff))
+                if previous[2]:
+                    x, y, _, xo, yo = previous
+                    rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
+                if current[2]:
+                    key = (current[2], r.renderspaces, bgcolor)
+                    if state[1] != key:
+                        state[1] = key
+                        state[2] = self.parse(sc, current[2], r.renderspaces)
+                        state[3] = max(row[0] for row in state[2])
+                    x, y, _, xo, yo = current
+                    rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
+                state[0] = current
+        for r in [r for r in known if r not in seen]:
+            state = known.pop(r)
+            if state[0][2]:
+                x, y, _, xo, yo = state[0]
+                rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
         return rects
 
     def layers(self, worlds, width, height, autobg):
@@ -397,13 +426,15 @@ class Compositor:
             sprites = []
             for r in sorted([o.rendering for o in sc.objs if hasattr(o, 'rendering')], key=lambda r: r.z):
                 state = self.known.get(r)
-                if state is None or not state[2]:
+                if state is None or not state[0][2]:
                     continue
-                key = (state[2], r.renderspaces, sc.bgcolor)
-                if state[5] != key:
-                    state[5] = key
-                    state[6] = self.parse(sc, state[2], r.renderspaces)
-                sprites.append((state[0] + state[3], state[1] - state[4], state[6]))
+                key = (state[0][2], r.renderspaces, sc.bgcolor)
+                if state[1] != key:
+                    state[1] = key
+                    state[2] = self.parse(sc, state[0][2], r.renderspaces)
+                    state[3] = max(row[0] for row in state[2])
+                x, y, _, xo, yo = state[0]
+                sprites.append((x + xo, y - yo, state[2]))
             layers.append((view, bg, sprites))
         return layers
 
@@ -451,7 +482,7 @@ class Compositor:
             for x, y, grid in sprites:
                 if y >= bottom or y + len(grid) <= top or x >= right:
                     continue
-                for i, row in enumerate(grid):
+                for i, (rowwidth, runs) in enumerate(grid):
                     ry = y + i
                     if ry < vy0 or ry >= vy1:
                         continue
@@ -459,41 +490,33 @@ class Compositor:
                     if span is None:
                         continue
                     a = max(vx0, span[0], x)
-                    b = min(vx1, span[1], x + len(row))
+                    b = min(vx1, span[1], x + rowwidth)
                     if a >= b:
                         continue
                     line = back[ry]
-                    k = a
-                    for cell in row[a - x:b - x]:
-                        if cell is not None:
-                            line[k] = cell
-                        k += 1
+                    for offset, cells in runs:
+                        s = max(a, x + offset)
+                        e = min(b, x + offset + len(cells))
+                        if s < e:
+                            line[s:e] = cells[s - x - offset:e - x - offset]
         out = []
         style = None
         for y in sorted(spans):
             lo, hi = spans[y]
-            new = back[y]
-            old = self.front[y]
-            x = lo
-            while x < hi:
-                if new[x] == old[x]:
-                    x += 1
-                    continue
-                start = x
-                end = x + 1
-                k = end
-                while k < hi and k - end <= 3:
-                    if new[k] != old[k]:
-                        end = k + 1
-                    k += 1
-                out.append(f'\033[{y + 1};{start + 1}H')
-                for cell in new[start:end]:
-                    if cell[1] != style:
-                        style = cell[1]
+            new = back[y][lo:hi]
+            old = self.front[y][lo:hi]
+            if new == old:
+                continue
+            mask = bytes([a != b for a, b in zip(new, old)])
+            for run in self.runs.finditer(mask):
+                start, end = run.span()
+                out.append(f'\033[{y + 1};{lo + start + 1}H')
+                for cellstyle, group in groupby(new[start:end], key=itemgetter(1)):
+                    if cellstyle != style:
+                        style = cellstyle
                         out.append('\033[0m' + style)
-                    out.append(cell[0])
-                old[start:end] = new[start:end]
-                x = end
+                    out.append(''.join([cell[0] for cell in group]))
+                self.front[y][lo + start:lo + end] = new[start:end]
         if not out:
             return ''
         out.append('\033[0m')
