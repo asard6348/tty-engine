@@ -1934,9 +1934,17 @@ class physics(_change_callback):
         if self._depenskip > 0:
             self._depenskip -= 1
             return
+        jt = getattr(self.obj, 'joint', None)
+        pinned, owned = jt._hierarchy() if jt is not None else ((), ())
+        budget = _RELIEF if pinned else None
+        def hits():
+            found = self.overlaps()
+            if owned:
+                return {o: v for o, v in found.items() if not any(o is d for d in owned)}
+            return found
         seen = set()
         for _ in range(12):
-            found = self.overlaps()
+            found = hits()
             if not found:
                 self._remember()
                 return
@@ -1950,12 +1958,16 @@ class physics(_change_callback):
             if best is None:
                 break
             _, dx, dy, k = best
-            if p2.dynamic:
+            if budget is not None:
+                k = min(k, budget)
+                budget -= k
+            movable = p2.dynamic and not any(obj2 is a for a in pinned)
+            if movable:
                 mine_share = int(min(k, max(1, math.ceil(k * p2.mass / (self.mass + p2.mass)))))
                 theirs_share = k - mine_share
             else:
                 mine_share, theirs_share = k, 0
-            if p2.dynamic:
+            if movable:
                 if theirs_share and any(o is not self.obj for o in p2.overlaps(p2._shifted(-dx * theirs_share, -dy * theirs_share))):
                     mine_share, theirs_share = k, 0
                 if mine_share and any(o is not obj2 for o in self.overlaps(self._shifted(dx * mine_share, dy * mine_share))):
@@ -1974,7 +1986,11 @@ class physics(_change_callback):
                     body.xvel = 0
                 if dy and body.yvel * dy * sign < 0:
                     body.yvel = 0
-        if self.overlaps():
+            if budget is not None and budget <= 0:
+                if not hits():
+                    self._remember()
+                return
+        if hits():
             self._unstick()
         else:
             self._remember()
@@ -2505,6 +2521,8 @@ _PARAMS = {
 _GEOMETRY = frozenset(('xoffset', 'yoffset', 'radius', 'range', 'physical', 'kind', 'rest', 'axis', 'slide'))
 _POSE = frozenset(('xoffset', 'yoffset', 'kind', 'axis'))
 _SWEEPS = 4
+_RELIEF = 1
+_KEEP = object()
 
 class _param():
     def __init__(self, name, check):
@@ -2626,9 +2644,23 @@ class _edge():
         self.held = False
         self.engaged = False
         self.pose = None
+        self._collide = None
 
     def other(self, comp):
         return self.follower if comp is self.origin else self.origin
+
+    @property
+    def collide(self):
+        return self._collide
+
+    @collide.setter
+    def collide(self, value):
+        self._collide = None if value is None else bool(value)
+        self.rewire()
+
+    @property
+    def colliding(self):
+        return self.follower.collide if self._collide is None else self._collide
 
     @property
     def physical(self):
@@ -2638,7 +2670,7 @@ class _edge():
         return self.origin._anchor(self.follower.xoffset, self.follower.yoffset)
 
     def rewire(self):
-        want = self.alive and not self.follower.collide
+        want = self.alive and not self.colliding
         if want == self.held:
             return
         self.held = want
@@ -2812,6 +2844,19 @@ class joint():
             self._on_change(attr)
         self._pcb = change
         self.t.onchange(change)
+        def sibling(other):
+            theirs = getattr(other, 'joint', None)
+            if theirs is None or theirs is self:
+                return False
+            for mine in self._edges.values():
+                if mine.follower is not self or not mine.alive or mine.colliding:
+                    continue
+                shared = theirs._edges.get(id(mine.origin.obj))
+                if shared is not None and shared.follower is theirs and shared.alive and not shared.colliding:
+                    return True
+            return False
+        self._ghostcb = sibling
+        obj._ghosts.append(sibling)
         self._assign(kwargs.get('joints', ()))
 
     def __getitem__(self, key):
@@ -2888,7 +2933,7 @@ class joint():
             setattr(self, 'radius' if key == 'jradius' else key, value)
         return self
 
-    def attach(self, item, preset=None, **settings):
+    def attach(self, item, preset=None, link_collide=_KEEP, **settings):
         if getattr(item, 'transform', None) is None:
             try:
                 items = list(item)
@@ -2899,13 +2944,21 @@ class joint():
                     raise TypeError('a jointed object needs a transform component')
                 if each is self.obj:
                     raise ValueError('an object cannot be jointed to itself')
-            return [self.attach(each, preset, **settings) for each in items]
+            return [self.attach(each, preset, link_collide, **settings) for each in items]
         if getattr(item, 'joint', None) is None:
             item.set(joint)
         item.joint.apply(preset, **settings)
         if id(item) not in self._edges:
             self._joints.append(item)
+        if link_collide is not _KEEP:
+            self._edges[id(item)].collide = link_collide
         return item.joint
+
+    def link(self, item):
+        edge = self._edges.get(id(item))
+        if edge is None:
+            raise KeyError('object is not jointed')
+        return edge
 
     def repose(self, item=None):
         for edge in list(self._edges.values()):
@@ -3001,8 +3054,21 @@ class joint():
 
     def on_discard(self):
         self.t.offchange(self._pcb)
+        self.obj._ghosts[:] = [g for g in self.obj._ghosts if g is not self._ghostcb]
         for edge in list(self._edges.values()):
             self._unlink(edge)
+
+    def _hierarchy(self):
+        up = []
+        down = []
+        for e in self._edges.values():
+            if not e.alive or e.follower.kind == 'ball':
+                continue
+            if e.follower is self:
+                up.append(e.origin.obj)
+            else:
+                down.append(e.follower.obj)
+        return up, down
 
     def _accepted(self, spec):
         items = []
@@ -3072,17 +3138,26 @@ class joint():
         t = o.transform
         p = getattr(o, 'physics', None)
         x, y = t.x, t.y
-        if p is not None and p.dynamic and p.solid and not p.phantom and not p.overlaps():
+        if p is not None and p.dynamic and p.solid and not p.phantom:
+            def depth(px, py):
+                return sum(len(v) for v in p.overlaps(p.getpixels(px, py)).values())
+            inside = depth(x, y)
             steps = min(200, max(1, int(math.ceil(max(abs(dx), abs(dy))))))
             sx, sy = dx / steps, dy / steps
             for _ in range(steps):
                 moved = False
-                if sx and not p.overlaps(p.getpixels(x + sx, y)):
-                    x += sx
-                    moved = True
-                if sy and not p.overlaps(p.getpixels(x, y + sy)):
-                    y += sy
-                    moved = True
+                if sx:
+                    d = depth(x + sx, y)
+                    if d == 0 or d < inside:
+                        x += sx
+                        inside = d
+                        moved = True
+                if sy:
+                    d = depth(x, y + sy)
+                    if d == 0 or d < inside:
+                        y += sy
+                        inside = d
+                        moved = True
                 if not moved:
                     break
         else:
@@ -3148,11 +3223,13 @@ class joint():
             p.avel = 0
         if abs(_wrap(angle - t.rotation)) < 1e-6:
             return False
-        old = t.rotation
         t.rotation = angle
         if solid and p.overlaps():
-            t.rotation = old
-            return False
+            physics._running += 1
+            try:
+                p._depenetrate()
+            finally:
+                physics._running -= 1
         return True
 
     def _fix(self, edge, near, far, motor, strict):
