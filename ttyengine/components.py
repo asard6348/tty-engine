@@ -2608,6 +2608,7 @@ class _edge():
         self.follower = follower
         self.alive = True
         self.held = False
+        self.engaged = False
         self.pose = None
 
     def other(self, comp):
@@ -2873,7 +2874,16 @@ class joint():
 
     def attach(self, item, preset=None, **settings):
         if getattr(item, 'transform', None) is None:
-            raise TypeError('a jointed object needs a transform component')
+            try:
+                items = list(item)
+            except TypeError:
+                raise TypeError('a jointed object needs a transform component') from None
+            for each in items:
+                if getattr(each, 'transform', None) is None:
+                    raise TypeError('a jointed object needs a transform component')
+                if each is self.obj:
+                    raise ValueError('an object cannot be jointed to itself')
+            return [self.attach(each, preset, **settings) for each in items]
         if getattr(item, 'joint', None) is None:
             item.set(joint)
         item.joint.apply(preset, **settings)
@@ -3192,7 +3202,11 @@ class joint():
                         if edge.beyond():
                             self._fix(edge, self, f, False, False)
                         else:
+                            edge.engaged = True
                             edge.pull(ex, ey)
+                    elif edge.engaged:
+                        edge.engaged = False
+                        edge.pull(0.0, 0.0)
                     f._orient(edge)
         tick = self.scene._ticks
         if self._stamp != tick and any(e.alive and not e.physical for e in owned):
