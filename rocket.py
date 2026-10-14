@@ -72,9 +72,9 @@ def vanish(o, *args, **kwargs):
     t = getattr(o, 'transform', None)
     if t is None:
         return None
-    if getattr(o, 'ast', False):
+    '''if getattr(o, 'ast', False):
         ghostplr(o)
-        t.onsplit(lambda parts: [ghostplr(p) for p in parts])
+        t.onsplit(lambda parts: [ghostplr(p) for p in parts])'''
     t.onsplit(lambda parts: [track(p) for p in parts])
     return t.fade(*args, **kwargs)
 
@@ -207,14 +207,9 @@ class player():
 
         plr = track(scene.obj().create(style('''
     █
-    █
-   ███
    ███
   ██ ██
-  ██ ██
  ██   ██
- ██   ██
-██     ██
 ██     ██''', color='brightblue'),dynamic=True, hitbox=False, mass=50))
         t = plr.transform
         p = plr.physics
@@ -300,7 +295,9 @@ class player():
                 tr = obj2.transform
                 if hasattr(obj2, 'imast'):
                     if not lost: ginfo[0] += 1
-                    ph.phantom = True
+                    if getattr(obj2, 'ast', False):
+                        ghostplr(obj2)
+                        tr.onsplit(lambda parts: [ghostplr(p) for p in parts])
                     delattr(obj2, 'imast')
                 tr.cutpoints(points)
                 vanish_data = getattr(obj2, 'forvanish', None)
