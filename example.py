@@ -74,10 +74,7 @@ def dev(Session=Session): #DEBUG
                 if 0 < len(parts): self.plr = parts[0]
                 else: self.plr = None
             self.plr.transform.onsplit(plref)
-            self.tarx = self.plr.transform.x+self.plr.transform.xc(self.plr.transform.htext)
-            self.tary = self.plr.transform.y-self.plr.transform.yc(self.plr.transform.htext)
-            sc.camx += (self.tarx - (sc.dimx/2) - sc.camx) / 1
-            sc.camy += (self.tary + (sc.dimy/2) - sc.camy) / 1
+            sc.follow(self.plr)
             self.enemy = obj().create("OOOOOO\n"*4,25,-(sc.dimy+1), bounciness=1)
             self.enemy.transform.y += self.enemy.transform.ylen()
             self.enemy.physics.dynamic = True; self.enemy.physics.hitbox = False
@@ -249,10 +246,10 @@ def dev(Session=Session): #DEBUG
             #sc.dimxoffset += ((camtarx)-sc.dimxoffset)/self.camrange
             #sc.dimyoffset += ((camtary)-sc.dimyoffset)/self.camrange
             if self.plr:
-                self.tarx = self.plr.transform.x+self.plr.transform.xc(self.plr.transform.htext)
-                self.tary = self.plr.transform.y-self.plr.transform.yc(self.plr.transform.htext)
-            sc.camx += (self.tarx + camtarx - (sc.dimx/2) - sc.camx) / self.camrange
-            sc.camy += (self.tary + camtary + (sc.dimy/2) - sc.camy) / self.camrange
+                sc.follow(self.plr, smooth=self.camrange, offset=(camtarx, camtary))
+                self.tarx, self.tary = sc.focus(self.plr)
+            else:
+                sc.follow(self.tarx, self.tary, smooth=self.camrange, offset=(camtarx, camtary))
 
             if hasattr(self, 'info'):
                 self.info.transform.x = sc.camx

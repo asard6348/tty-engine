@@ -2736,23 +2736,14 @@ class _edge():
             wc, wp = 0.0, 1.0
         else:
             return
-        k = 1.0 / f.elasticity
-        f._push(ex * wc * k, ey * wc * k)
-        o._push(-ex * wp * k, -ey * wp * k)
-        A = f.scene.aspect
-        ux, uy = ex * A, ey
-        n = math.hypot(ux, uy)
-        if n < 1e-9:
-            return
-        ux /= n
-        uy /= n
+        k = min(1.0, 1.0 / f.elasticity)
+        damp = 1.0 - (1.0 - math.sqrt(k)) ** 2
         cvx, cvy = f.velocity
         pvx, pvy = o.velocity
-        along = ((cvx - pvx) * A) * ux + (cvy - pvy) * uy
-        if along >= 0:
-            return
-        fx = -along * ux / A * k
-        fy = -along * uy * k
+        fx = -(cvx - pvx) * damp
+        fy = -(cvy - pvy) * damp
+        f._push(ex * wc * k, ey * wc * k)
+        o._push(-ex * wp * k, -ey * wp * k)
         for comp, w in ((f, wc), (o, -wp)):
             p = getattr(comp.obj, 'physics', None)
             if p is not None and p.dynamic and w:

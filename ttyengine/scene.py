@@ -390,6 +390,36 @@ class Scene:
         self._camy = value
         self._fire(self._oncamcb, 'y', old)
 
+    def focus(self, target):
+        t = getattr(target, 'transform', target)
+        rotmap = getattr(t, '_rotmap', False)
+        if rotmap is False:
+            return target[0], target[1]
+        if rotmap is None:
+            return t.x + t.vx, t.y + t.vy
+        ox, oy = t._origin()
+        return ox + rotmap[0] - rotmap[2], oy - (rotmap[1] - rotmap[3])
+
+    def follow(self, target=None, y=None, smooth=1, offset=(0, 0)):
+        if target is None or isinstance(target, (int, float)):
+            px, py = target, y
+        else:
+            px, py = self.focus(target)
+        dx = dy = 0
+        if px is not None:
+            goal = px + offset[0] - self._dimx / 2
+            dx = goal - self._camx
+            dx = dx / smooth if smooth > 1 and abs(dx) > 0.01 else dx
+        if py is not None:
+            goal = py + offset[1] + self._dimy / 2
+            dy = goal - self._camy
+            dy = dy / smooth if smooth > 1 and abs(dy) > 0.01 else dy
+        if dx:
+            self.camx = self._camx + dx
+        if dy:
+            self.camy = self._camy + dy
+        return dx, dy
+
     def _fire(self, callbacks, att='', old=None):
         internal = self._firing
         self._firing = True

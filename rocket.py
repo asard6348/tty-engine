@@ -208,16 +208,15 @@ class player():
         self.thrustmax = 3*p.mass
         self.thrustbreak = 0.9
 
-        '''thr1 = scene.obj().create(style('████\n████', color=(220,180,0)), dynamic=True)
-        thr2 = scene.obj().create(style('████\n████', color=(220,180,0)), dynamic=True)
+        thr1 = scene.obj().create(style('████████', color=(120,180,220)), dynamic=True)
+        thr2 = scene.obj().create(style('████████', color=(120,180,220)), dynamic=True)
         def att(th, nu):
-            th.create(yoffset=-t.ylen())
-            if nu==2:
-                th.create(xoffset=t.xlen())
+            th.create(yoffset=-abs(t.yc(t.rtext)))
+            th.create(xoffset=-(abs(t.xc(t.rtext))-1)*(-1 if nu==2 else 1))
         att(thr1, 1)
         att(thr2, 2)
-        t.onchange(lambda at: (att(thr1, 1) and att(thr2, 2)) if at=='text' else None)
-        plr.create(joints=[thr1,thr2])'''
+        t.onchange(lambda at: (att(thr1, 1) and att(thr2, 2)) if at=='rtext' else None)
+        plr.create(joints=[thr1,thr2])
 
         def trigger_lost():
             global lost
@@ -258,19 +257,7 @@ class player():
                 plr.transform.onsplit(swslf)
         t.onsplit(swslf)
 
-        self.camtarx = scene.camx
-        self.camtary = scene.camy
-        def camfollow(x=None, y=None, smooth=1):
-            if x is not None: self.camtarx = x
-            if y is not None: self.camtary = y
-            ir = int
-            xdelta = ((ir(self.camtarx)-ir(scene.dimx/2))-ir(scene.camx))/smooth
-            ydelta = ((ir(self.camtary)+ir(scene.dimy/2))-ir(scene.camy))/smooth
-            scene.camx += xdelta
-            scene.camy += ydelta
-            return xdelta, ydelta
-        self.camfollow = camfollow
-        camfollow(t.x+t.xc(), t.y-t.yc())
+        scene.follow(plr)
 
         self.info = track(scene.obj().create(session.style('ZOOM OUT BY "CTRL" + "-", QUIT BY "Q", START GAME BY "F"', color='black', bgcolor='white'), renderspaces=True))
         self._ad = -1
@@ -382,15 +369,19 @@ class player():
             self._ad = 1
             world.launch(lambda: asteroid())
 
-        self.camfollow(t.x+t.xc(), t.y-t.yc(), self.smcam)
-        if hasattr(self.info, 'transform'):
-            self.info.transform.x, self.info.transform.y = 0+scene.camx, 0+scene.camy
-        if hasattr(self.lsinfo, 'transform'):
-            lst = self.lsinfo.transform
-            lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
-            lst.y = scene.camy - scene.iround(scene.dimy / 4) + scene.iround(lst.ylen() / 2)
         if not self.lsinfo:
             p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*plr.physics.mass
+
+    def final(self, scene):
+        if hasattr(plr, 'transform'):
+            scene.follow(plr, smooth=self.smcam)
+        cx, cy = scene.iround(scene.camx), scene.iround(scene.camy)
+        if hasattr(self.info, 'transform'):
+            self.info.transform.x, self.info.transform.y = cx, cy
+        if hasattr(self.lsinfo, 'transform'):
+            lst = self.lsinfo.transform
+            lst.x = cx + scene.iround((scene.dimx - lst.xlen()) / 2)
+            lst.y = cy - scene.iround(scene.dimy / 4) + scene.iround(lst.ylen() / 2)
 
 class background():
     def start(self):
