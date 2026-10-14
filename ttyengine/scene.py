@@ -240,6 +240,8 @@ class Scene:
         self._camx = 0
         self._camy = 0
         self._bgcolor = (0, 0, 0)
+        self._fade = None
+        self._ticks = 0
         self.fgcolor = (204, 204, 204)
         self.styler = Styler(self)
         self.recomp =re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07?|\x1b[()]?[A-Za-z0-9])')
@@ -304,6 +306,71 @@ class Scene:
     def bgcolor(self, value):
         self._bgcolor = (int(value),int(value),int(value)) if isinstance(value, (int,float)) else value
         self._getlast(True)
+
+    @property
+    def fading(self):
+        return self._fade is not None
+
+    def _color(self, value):
+        if isinstance(value, (int, float)):
+            value = int(value)
+            return (value, value, value)
+        color = Styler.rgb(tuple(value) if isinstance(value, list) else value)
+        if color is None:
+            raise ValueError('unknown color: %r' % (value,))
+        return color
+
+    def fade(self, color, time=1, delay=0, start=None, callback=None, ease='linear'):
+        if time < 0 or delay < 0:
+            raise ValueError('time and delay must not be negative')
+        curve = _components._easing(ease)
+        target = self._color(color)
+        origin = self._color(self._bgcolor if start is None else start)
+        if start is not None:
+            self._fade = None
+            self.bgcolor = origin
+        self._fade = {'from': origin, 'to': target, 'time': time, 'delay': delay,
+                      'elapsed': 0.0, 'cb': callback, 'ease': curve}
+        if time <= 0 and delay <= 0:
+            self._finishfade()
+        return self
+
+    def unfade(self, finish=False):
+        f = self._fade
+        self._fade = None
+        if f is not None and finish:
+            self.bgcolor = f['to']
+        return self
+
+    def _finishfade(self):
+        f = self._fade
+        self._fade = None
+        self.bgcolor = f['to']
+        cb = f['cb']
+        if callable(cb):
+            if _argslen(cb):
+                cb(self)
+            else:
+                cb()
+
+    def tick(self):
+        self._ticks += 1
+        f = self._fade
+        if f is None:
+            return
+        dt = 1 / self.framerate
+        if f['delay'] > 0:
+            f['delay'] -= dt
+            if f['delay'] > 0:
+                return
+            dt = -f['delay']
+            f['delay'] = 0
+        f['elapsed'] += dt
+        if f['elapsed'] >= f['time']:
+            self._finishfade()
+            return
+        p = f['ease'](f['elapsed'] / f['time'])
+        self.bgcolor = tuple(max(0, min(255, int(a + (b - a) * p))) for a, b in zip(f['from'], f['to']))
 
     @property
     def camx(self):

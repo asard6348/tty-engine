@@ -4,12 +4,40 @@
 #def on_discard() - function that will be called upon obj().discard()
 
 #MODULES
-import math, re, statistics, inspect, collections.abc
+import math, re, statistics, inspect, collections.abc, functools
 
 #GLOBAL
 _NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
 _NEIGHBOURS8 = _NEIGHBOURS4 + ((-1, -1), (1, -1), (-1, 1), (1, 1))
 _NEIGHBOURS_HALF = ((1, 0), (0, 1), (1, 1), (-1, 1))
+
+_EASINGS = {
+    'linear': lambda p: p,
+    'in': lambda p: p * p,
+    'out': lambda p: 1 - (1 - p) * (1 - p),
+    'smooth': lambda p: p * p * (3 - 2 * p),
+}
+
+def _easing(mode):
+    if callable(mode):
+        return mode
+    try:
+        return _EASINGS[mode]
+    except (KeyError, TypeError):
+        raise ValueError('ease must be a callable or one of: ' + ', '.join(_EASINGS))
+
+@functools.lru_cache(maxsize=16)
+def _offsets(radius, aspect):
+    span = int(radius / aspect) + 1
+    found = []
+    for dx in range(-span, span + 1):
+        for dy in range(-radius, radius + 1):
+            if dx or dy:
+                cost = math.hypot(dx * aspect, dy)
+                if cost <= radius:
+                    found.append((cost - (0.01 if dy > 0 else 0), dx, dy))
+    found.sort()
+    return tuple((dx, dy) for _, dx, dy in found)
 _SGR = re.compile(r'\x1b\[([0-9;]*)m')
 _FGCODE = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 _BGCODE = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
@@ -148,6 +176,8 @@ class transform(_change_callback):
         self._alpha = kwargs.get('alpha', None)
         self._bgalpha = kwargs.get('bgalpha', None)
         self._style_cache = {}
+        self._styled_for = None
+        self._fade = None
         self._plain_layout = None
         self.vtext = raw
         self._vbase = raw
@@ -325,25 +355,39 @@ class transform(_change_callback):
     bgalpha = _styleprop('bgalpha')
 
     def _setstyle(self, key, value):
-        old = getattr(self, '_' + key)
-        setattr(self, '_' + key, value)
+        self._fade = None
+        self._applystyle(**{key: value})
+
+    def _applystyle(self, **changes):
+        olds = {key: getattr(self, '_' + key) for key in changes}
+        for key, value in changes.items():
+            setattr(self, '_' + key, value)
         self._style_cache = {}
         self._vrtext = self._restyle(self._vbase)
         self._vrotate()
-        self._change(key, old)
+        for key, old in olds.items():
+            self._change(key, old)
+
+    def _stylecheck(self):
+        if self._styled_for is not None and self._styled_for != (self.scene.bgcolor, self.scene.fgcolor):
+            self._style_cache = {}
+            self._vrtext = self._restyle(self._vbase)
+            self._vrotate()
 
     def _styled(self, style):
         cached = self._style_cache.get(style)
         if cached is None:
             sample = self.scene.styler.style(style + 'x', color=self._fg, alpha=self._alpha,
-                                             bgcolor=self._bg, bgalpha=self._bgalpha, clean=True)
+                                             bgcolor=self._bg, bgalpha=self._bgalpha, onbg=True, clean=True)
             cached = sample[:sample.index('x')]
             self._style_cache[style] = cached
         return cached
 
     def _restyle(self, base):
         if self._fg is None and self._bg is None and self._alpha is None and self._bgalpha is None:
+            self._styled_for = None
             return base
+        self._styled_for = (self.scene.bgcolor, self.scene.fgcolor)
         pixels = self.parse_pixels(base)
         last = {}
         widths = {}
@@ -841,6 +885,7 @@ class transform(_change_callback):
             motion = (parent.xvel / parent.mass * A, parent.yvel / parent.mass, parent._omega(),
                       parent.avel / parent.mass, pcx, pcy)
 
+        fading = dict(self._fade) if self._fade is not None else None
         spawns = []
         anchors = []
         for group in components:
@@ -872,11 +917,13 @@ class transform(_change_callback):
             anchors.append(target)
 
         obj_ref = self.obj
-        def do_split(spawns=spawns, anchors=anchors, obj_ref=obj_ref, cb=callback, motion=motion):
+        def do_split(spawns=spawns, anchors=anchors, obj_ref=obj_ref, cb=callback, motion=motion, fading=fading):
             parts = []
             for kw, target in zip(spawns, anchors):
                 part = obj_ref.scene.obj().create(**kw)
                 ft = part.transform
+                if fading is not None:
+                    ft._fade = dict(fading)
                 placed = ft.worldcells()
                 if target and placed:
                     dx = round(sum(w[0] for w in target) / len(target) - sum(w[0] for w in placed) / len(placed))
@@ -1090,6 +1137,78 @@ class transform(_change_callback):
         return self
 
     def tick(self):
+        if self._fade is not None:
+            self._tickfade()
+        self._tickanim()
+
+    @property
+    def fading(self):
+        return self._fade is not None
+
+    def fade(self, alpha=0, time=1, delay=0, bgalpha=None, start=None, callback=None, discard=False, ease='linear'):
+        if time < 0 or delay < 0:
+            raise ValueError('time and delay must not be negative')
+        curve = _easing(ease)
+        a0 = 1.0 if self._alpha is None else self._alpha
+        b0 = 1.0 if self._bgalpha is None else self._bgalpha
+        if start is not None:
+            a0, b0 = start if isinstance(start, (tuple, list)) else (start, start)
+            self._fade = None
+            self._applystyle(alpha=a0, bgalpha=b0)
+        self._fade = {'a0': a0, 'b0': b0, 'a1': alpha, 'b1': alpha if bgalpha is None else bgalpha,
+                      'time': time, 'delay': delay, 'elapsed': 0.0, 'cb': callback,
+                      'discard': discard, 'ease': curve}
+        if time <= 0 and delay <= 0:
+            self._finishfade()
+        return self
+
+    def unfade(self, finish=False):
+        f = self._fade
+        self._fade = None
+        if f is not None and finish:
+            self._fadeto(f, 1.0)
+        return self
+
+    def _fadeto(self, f, progress):
+        if progress >= 1:
+            a, b = f['a1'], f['b1']
+        else:
+            p = f['ease'](progress)
+            a = f['a0'] + (f['a1'] - f['a0']) * p
+            b = f['b0'] + (f['b1'] - f['b0']) * p
+        a = max(0.0, min(1.0, a))
+        b = max(0.0, min(1.0, b))
+        self._applystyle(alpha=None if a >= 1 else a, bgalpha=None if b >= 1 else b)
+
+    def _finishfade(self):
+        f = self._fade
+        self._fade = None
+        self._fadeto(f, 1.0)
+        cb = f['cb']
+        if callable(cb):
+            if _argslen(cb):
+                cb(self.obj)
+            else:
+                cb()
+        if f['discard'] and getattr(self.obj, 'transform', None) is self:
+            self.obj.discard()
+
+    def _tickfade(self):
+        f = self._fade
+        dt = 1 / self.scene.framerate
+        if f['delay'] > 0:
+            f['delay'] -= dt
+            if f['delay'] > 0:
+                return
+            dt = -f['delay']
+            f['delay'] = 0
+        f['elapsed'] += dt
+        if f['elapsed'] >= f['time']:
+            self._finishfade()
+        else:
+            self._fadeto(f, f['elapsed'] / f['time'])
+
+    def _tickanim(self):
         a = self._anim
         if a is None:
             return
@@ -1153,6 +1272,7 @@ class rendering():
         if self._z < self.scene._firstz: self.scene._firstz = self._z
 
     def _shown(self):
+        self.t._stylecheck()
         text = self.t.vtext
         sc = self.scene
         if not text or (not sc.lights and sc.ambient >= 1):
@@ -1202,6 +1322,7 @@ class physics(_change_callback):
         'slope',
     ]
     _required = [transform]
+    _running = 0
     def on_discard(self):
         self.scene.solids = [s for s in self.scene.solids if s is not self.obj]
         discarded = self.obj
@@ -1252,10 +1373,13 @@ class physics(_change_callback):
         self.phantom = kwargs.get('phantom', False)
         self.slope = kwargs.get('slope', True)
         self.touch = (False, False)
+        self.sides = (False, False, False, False)
         self._touch_callbacks = []
         self._pixel_cache = None
         self._bounds_cache = None
         self._body_cache = None
+        self._good = None
+        self._depenskip = 0
         self.t.onchange(self._dirty)
 
     def __getitem__(self, key):
@@ -1728,22 +1852,100 @@ class physics(_change_callback):
                     break
         return best
 
+    def _remember(self):
+        self._good = (self.t.x, self.t.y, self.t.rotation)
+
+    def _settle(self, dx, dy):
+        if dx and self.xvel * dx < 0:
+            self.xvel = 0
+        if dy and self.yvel * dy < 0:
+            self.yvel = 0
+
+    def _tunnels(self, found, dx, dy):
+        cx, cy, _ = self.body()
+        for obj2 in found:
+            p2 = obj2.physics
+            if p2.dynamic:
+                continue
+            b = p2.bounds()
+            if b is None:
+                continue
+            mx, my = (b[0] + b[1]) / 2, (b[2] + b[3]) / 2
+            if dx and (cx - mx) * (cx + dx - mx) < 0:
+                return True
+            if dy and (cy - my) * (cy + dy - my) < 0:
+                return True
+        return False
+
+    def _unstick(self):
+        t = self.t
+        found = self.overlaps()
+        good = self._good
+        if good is not None:
+            x, y, r = t.x, t.y, t.rotation
+            if r != good[2]:
+                t.rotation = good[2]
+                if not self.overlaps():
+                    self.avel = 0
+                    self._remember()
+                    return
+            t.x, t.y = good[0], good[1]
+            if not self.overlaps():
+                self.xvel = self.yvel = self.avel = 0
+                self._remember()
+                return
+            t.x, t.y = x, y
+            if t.rotation != r:
+                t.rotation = r
+        for dx, dy in _offsets(6, self.scene.aspect):
+            if not self._tunnels(found, dx, dy) and not self.overlaps(self._shifted(dx, dy)):
+                t.x += dx
+                t.y += dy
+                self._settle(dx, dy)
+                self._remember()
+                return
+        for dx, dy in ((0, 1), (1, 0), (-1, 0), (0, -1)):
+            for k in range(7, 129):
+                if not self._tunnels(found, dx * k, dy * k) and not self.overlaps(self._shifted(dx * k, dy * k)):
+                    t.x += dx * k
+                    t.y += dy * k
+                    self._settle(dx, dy)
+                    self._remember()
+                    return
+        self._depenskip = 4
+
     def _depenetrate(self):
+        if self._depenskip > 0:
+            self._depenskip -= 1
+            return
+        seen = set()
         for _ in range(12):
             found = self.overlaps()
             if not found:
+                self._remember()
                 return
+            key = (round(self.t.x, 4), round(self.t.y, 4), frozenset((id(o), round(o.transform.x, 4), round(o.transform.y, 4)) for o in found))
+            if key in seen:
+                break
+            seen.add(key)
             obj2 = max(found, key=lambda o: len(found[o]))
             p2 = obj2.physics
             best = self._mtv(p2.getpixels())
             if best is None:
-                return
+                break
             _, dx, dy, k = best
             if p2.dynamic:
                 mine_share = int(min(k, max(1, math.ceil(k * p2.mass / (self.mass + p2.mass)))))
                 theirs_share = k - mine_share
             else:
                 mine_share, theirs_share = k, 0
+            if p2.dynamic:
+                if theirs_share and any(o is not self.obj for o in p2.overlaps(p2._shifted(-dx * theirs_share, -dy * theirs_share))):
+                    mine_share, theirs_share = k, 0
+                if mine_share and any(o is not obj2 for o in self.overlaps(self._shifted(dx * mine_share, dy * mine_share))):
+                    if any(o is not self.obj for o in p2.overlaps(p2._shifted(-dx * k, -dy * k))):
+                        break
+                    mine_share, theirs_share = 0, k
             self.t.x += dx * mine_share
             self.t.y += dy * mine_share
             if theirs_share:
@@ -1756,9 +1958,22 @@ class physics(_change_callback):
                     body.xvel = 0
                 if dy and body.yvel * dy * sign < 0:
                     body.yvel = 0
+        if self.overlaps():
+            self._unstick()
+        else:
+            self._remember()
+
+    @property
+    def grounded(self):
+        return self.sides[2]
+
+    @property
+    def ceiling(self):
+        return self.sides[3]
 
     def _probe(self):
         touch = [False, False]
+        sides = [False, False, False, False]
         if self.solid and not self.phantom:
             mine = self.getpixels()
             for ia in (0, 1):
@@ -1773,16 +1988,25 @@ class physics(_change_callback):
                         if not contact:
                             continue
                         touch[ia] = True
+                        sides[ia * 2 + (0 if s == -1 else 1)] = True
                         group = self.cluster(p2, dx, dy) if p2.dynamic else None
                         point = self._contact_point(contact, -dx, -dy)
                         cn = self._contact_normal(p2, point, -dx, -dy, False)
                         self._solve(p2, group, point, cn[0], cn[1])
         self.touch = tuple(touch)
+        self.sides = tuple(sides)
         if abs(self._xvel) < 1e-9: self._xvel = 0
         if abs(self._yvel) < 1e-9: self._yvel = 0
         if abs(self._avel) < 1e-9: self._avel = 0
 
     def physics(self, axises=None):
+        physics._running += 1
+        try:
+            self._physics(axises)
+        finally:
+            physics._running -= 1
+
+    def _physics(self, axises=None):
         axises = self._axises if axises is None else axises
         actualmass = self.mass
         gravity = self.gravity
@@ -1859,6 +2083,9 @@ class physics(_change_callback):
                     if self._solve(obj2p, group, point, nx, ny):
                         applied = True
                 if applied:
+                    break
+                if contacts:
+                    self.avel = 0
                     break
                 self.t.rotation += da
 
@@ -2178,11 +2405,13 @@ def _wrap(angle):
 def _sequence(value):
     return value if isinstance(value, (list, tuple)) else tuple(value)
 
-def _band(value):
-    if isinstance(value, (int, float)):
+def _band(value, keep=0.0):
+    if value == 'keep':
+        low = high = keep
+    elif isinstance(value, (int, float)):
         low = high = value
     else:
-        values = list(value)
+        values = [keep if v == 'keep' else v for v in value]
         low, high = min(values), max(values)
     if low < 0:
         raise ValueError('radius must not be negative')
@@ -2200,7 +2429,7 @@ def _arc(value):
 def _check_radius(value):
     if value is None:
         return 0
-    if not isinstance(value, (int, float)):
+    if not isinstance(value, (int, float)) and value != 'keep':
         value = _sequence(value)
     _band(value)
     return value
@@ -2211,6 +2440,26 @@ def _check_range(value):
     value = _sequence(value)
     _arc(value)
     return value
+
+_KINDS = ('ball', 'hinge', 'fixed', 'slider')
+
+def _check_kind(value):
+    if value not in _KINDS:
+        raise ValueError('kind must be one of: ' + ', '.join(_KINDS))
+    return value
+
+def _check_rest(value):
+    if value is None or value == 'keep' or isinstance(value, (int, float)):
+        return value
+    raise ValueError("rest must be None, 'keep' or an angle")
+
+def _check_slide(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return (0.0, value) if value >= 0 else (value, 0.0)
+    values = list(value)
+    return (min(values), max(values))
 
 def _check_elasticity(value):
     if value <= 0:
@@ -2229,11 +2478,16 @@ _PARAMS = {
     'range': (None, _check_range),
     'elasticity': (1, _check_elasticity),
     'durability': (0, _check_durability),
-    'physical': (False, bool),
+    'physical': (True, bool),
     'vel': (0, None),
     'collide': (False, bool),
+    'kind': ('ball', _check_kind),
+    'rest': (None, _check_rest),
+    'axis': (0, None),
+    'slide': (None, _check_slide),
 }
-_GEOMETRY = frozenset(('xoffset', 'yoffset', 'radius', 'range', 'physical'))
+_GEOMETRY = frozenset(('xoffset', 'yoffset', 'radius', 'range', 'physical', 'kind', 'rest', 'axis', 'slide'))
+_POSE = frozenset(('xoffset', 'yoffset', 'kind', 'axis'))
 _SWEEPS = 4
 
 class _param():
@@ -2354,6 +2608,7 @@ class _edge():
         self.follower = follower
         self.alive = True
         self.held = False
+        self.pose = None
 
     def other(self, comp):
         return self.follower if comp is self.origin else self.origin
@@ -2378,27 +2633,58 @@ class _edge():
             _ghost_drop(a, b)
             _ghost_drop(b, a)
 
-    def error(self, motor):
+    def _geometry(self):
         f = self.follower
         A = f.scene.aspect
         ax, ay = self.anchor()
         cx, cy = f.t.extent()[:2]
         dx = (cx - ax) * A
         dy = cy - ay
-        dist = math.hypot(dx, dy)
-        low, high = _band(f.radius)
-        arc = _arc(f.range)
+        return A, ax, ay, cx, cy, dx, dy, math.hypot(dx, dy)
+
+    def capture(self):
+        dx, dy, dist = self._geometry()[5:]
         rotation = self.origin.t.rotation
+        rel = _wrap(math.degrees(math.atan2(dx, dy)) - rotation) if dist > 1e-9 else 0.0
+        self.pose = (dist, rel, _wrap(self.follower.t.rotation - rotation))
+        return self.pose
+
+    def error(self, motor):
+        f = self.follower
+        pose = self.pose or self.capture()
+        A, ax, ay, cx, cy, dx, dy, dist = self._geometry()
+        rotation = self.origin.t.rotation
+        kind = f.kind
+        if kind == 'slider':
+            heading = math.radians(rotation + f.axis)
+            ux, uy = math.sin(heading), math.cos(heading)
+            target = dx * ux + dy * uy + (f.vel if motor else 0)
+            slide = f.slide
+            if slide is not None:
+                target = min(max(target, slide[0]), slide[1])
+            ex = ax + target * ux / A - cx
+            ey = ay + target * uy - cy
+            miss = math.hypot(ex * A, ey)
+            return (0.0, 0.0, 0.0) if miss < 1e-9 else (ex, ey, miss)
+        if kind == 'fixed':
+            heading = math.radians(rotation + pose[1])
+            ex = ax + pose[0] * math.sin(heading) / A - cx
+            ey = ay + pose[0] * math.cos(heading) - cy
+            miss = math.hypot(ex * A, ey)
+            return (0.0, 0.0, 0.0) if miss < 1e-9 else (ex, ey, miss)
+        low, high = _band(f.radius, pose[0])
+        arc = _arc(f.range)
+        base = 0.0 if f.rest is None else pose[1] if f.rest == 'keep' else f.rest
+        mid = arc[0] + base if arc else base
         if dist < 1e-9:
-            rel = arc[0] if arc else 0.0
+            rel = mid
         else:
             rel = _wrap(math.degrees(math.atan2(dx, dy)) - rotation)
         target_rel = rel + (f.vel if motor else 0)
         if arc is not None:
-            mid, half = arc
             off = _wrap(target_rel - mid)
-            if abs(off) > half:
-                target_rel = mid + math.copysign(half, off)
+            if abs(off) > arc[1]:
+                target_rel = mid + math.copysign(arc[1], off)
         target_dist = min(max(dist, low), high)
         if abs(target_dist - dist) < 1e-9 and abs(_wrap(target_rel - rel)) < 1e-9:
             return 0.0, 0.0, dist
@@ -2408,6 +2694,36 @@ class _edge():
         if math.hypot(ex * A, ey) < 1e-9:
             return 0.0, 0.0, dist
         return ex, ey, dist
+
+    def beyond(self):
+        f = self.follower
+        pose = self.pose or self.capture()
+        A, ax, ay, cx, cy, dx, dy, dist = self._geometry()
+        rotation = self.origin.t.rotation
+        if f.kind == 'slider':
+            if f.slide is None:
+                return False
+            heading = math.radians(rotation + f.axis)
+            s = dx * math.sin(heading) + dy * math.cos(heading)
+            return s < f.slide[0] - 1e-6 or s > f.slide[1] + 1e-6
+        arc = _arc(f.range)
+        if arc is None or f.kind == 'fixed' or dist < 1e-9:
+            return False
+        base = 0.0 if f.rest is None else pose[1] if f.rest == 'keep' else f.rest
+        rel = _wrap(math.degrees(math.atan2(dx, dy)) - rotation)
+        return abs(_wrap(rel - arc[0] - base)) > arc[1] + 1e-6
+
+    def spin(self):
+        kind = self.follower.kind
+        if kind == 'ball':
+            return None
+        pose = self.pose or self.capture()
+        rotation = self.origin.t.rotation
+        if kind == 'hinge':
+            dx, dy, dist = self._geometry()[5:]
+            rel = _wrap(math.degrees(math.atan2(dx, dy)) - rotation) if dist > 1e-9 else pose[1]
+            return rotation + pose[2] + _wrap(rel - pose[1])
+        return rotation + pose[2]
 
     def pull(self, ex, ey):
         o, f = self.origin, self.follower
@@ -2446,10 +2762,27 @@ class _edge():
 @_withparams
 class joint():
     _owned = ['joints', 'xoffset', 'yoffset', 'jradius', 'range', 'elasticity',
-              'durability', 'physical', 'vel', 'collide']
+              'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide', 'preset']
     _required = [transform]
     _watch = frozenset(('x', 'y', 'rotation', 'text'))
     _active = False
+    presets = {
+        'ball': {'kind': 'ball'},
+        'rod': {'kind': 'ball', 'radius': 'keep'},
+        'rope': {'kind': 'ball', 'radius': (0, 'keep'), 'physical': False},
+        'spring': {'kind': 'ball', 'radius': 'keep', 'elasticity': 8},
+        'hinge': {'kind': 'hinge', 'radius': 'keep'},
+        'fixed': {'kind': 'fixed'},
+        'slider': {'kind': 'slider'},
+        'neck': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (-45, 45)},
+        'spine': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (-25, 25)},
+        'shoulder': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (-170, 170)},
+        'elbow': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (-150, 0)},
+        'wrist': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (-70, 70)},
+        'hip': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (-100, 100)},
+        'knee': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (0, 140)},
+        'ankle': {'kind': 'hinge', 'radius': 'keep', 'rest': 'keep', 'range': (-40, 40)},
+    }
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
@@ -2458,7 +2791,11 @@ class joint():
         self._params = {}
         self._edges = {}
         self._onbreak = []
+        self._preset = None
+        self._stamp = None
         self._joints = _jointlist(self)
+        if kwargs.get('preset') is not None:
+            self.apply(kwargs['preset'])
         for name in _PARAMS:
             key = 'jradius' if name == 'radius' else name
             if key in kwargs:
@@ -2494,9 +2831,104 @@ class joint():
         if 'collide' in names:
             for edge in edges:
                 edge.rewire()
+        if _POSE & names:
+            for edge in edges:
+                edge.capture()
         if _GEOMETRY & names:
             for edge in edges:
                 self._realign(edge)
+
+    @staticmethod
+    def mirrored(spec):
+        if isinstance(spec, str):
+            spec = joint.presets[spec]
+        spec = dict(spec)
+        if spec.get('range') is not None:
+            spec['range'] = tuple(-v for v in spec['range'])
+        if spec.get('rest') not in (None, 'keep'):
+            spec['rest'] = -spec['rest']
+        if spec.get('axis'):
+            spec['axis'] = -spec['axis']
+        if spec.get('xoffset'):
+            spec['xoffset'] = -spec['xoffset']
+        return spec
+
+    @property
+    def preset(self):
+        return self._preset
+
+    @preset.setter
+    def preset(self, value):
+        self.apply(value)
+
+    def apply(self, preset=None, **settings):
+        spec = {}
+        if preset is not None:
+            if isinstance(preset, str):
+                if preset not in joint.presets:
+                    raise KeyError('unknown joint preset: ' + preset)
+                spec.update(joint.presets[preset])
+                self._preset = preset
+            else:
+                spec.update(preset)
+                self._preset = None
+        spec.update(settings)
+        for key in spec:
+            if key not in _PARAMS and key != 'jradius':
+                raise KeyError('unknown joint setting: ' + str(key))
+        for key, value in spec.items():
+            setattr(self, 'radius' if key == 'jradius' else key, value)
+        return self
+
+    def attach(self, item, preset=None, **settings):
+        if getattr(item, 'transform', None) is None:
+            raise TypeError('a jointed object needs a transform component')
+        if getattr(item, 'joint', None) is None:
+            item.set(joint)
+        item.joint.apply(preset, **settings)
+        if id(item) not in self._edges:
+            self._joints.append(item)
+        return item.joint
+
+    def repose(self, item=None):
+        for edge in list(self._edges.values()):
+            if item is None or edge.other(self).obj is item:
+                edge.capture()
+        return self
+
+    @staticmethod
+    def rope(scene, start, end, segments=10, char='o', anchor=None, tail=None, pin=None,
+             preset='rope', selfcollide=False, **kwargs):
+        if segments < 1:
+            raise ValueError('a rope needs at least one segment')
+        chars = char if callable(char) else (lambda i: char)
+        pin = anchor is None if pin is None else pin
+        parts = []
+        last = max(1, segments - 1)
+        for i in range(segments):
+            k = i / last if segments > 1 else 0
+            x = start[0] + (end[0] - start[0]) * k
+            y = start[1] + (end[1] - start[1]) * k
+            seg = dict(kwargs)
+            seg['dynamic'] = not (i == 0 and pin) and seg.get('dynamic', True)
+            parts.append(scene.obj().create(chars(i), x, y, **seg))
+        links = list(zip(parts, parts[1:]))
+        if anchor is not None:
+            links.insert(0, (anchor, parts[0]))
+        if tail is not None:
+            links.append((parts[-1], tail))
+        for parent, child in links:
+            if getattr(parent, 'joint', None) is None:
+                parent.set(joint)
+            parent.joint.attach(child, preset)
+        if not selfcollide:
+            for i, a in enumerate(parts):
+                for b in parts[i + 2:]:
+                    if not any(g is b for g in a._ghosts):
+                        a._ghosts.append(b)
+                    if not any(g is a for g in b._ghosts):
+                        b._ghosts.append(a)
+        return parts
 
     @property
     def jradius(self):
@@ -2582,6 +3014,7 @@ class joint():
                     item.set(joint)
                 edge = _edge(self, item.joint)
                 item.joint._edges[id(self.obj)] = edge
+                edge.capture()
                 fresh.append(edge)
             ordered[id(item)] = edge
         self._edges = ordered
@@ -2687,34 +3120,57 @@ class joint():
                     result.append((edge, other, comp))
         return result
 
+    def _orient(self, edge):
+        angle = edge.spin()
+        if angle is None:
+            return False
+        t = self.t
+        p = getattr(self.obj, 'physics', None)
+        solid = p is not None and p.dynamic and p.solid and not p.phantom and not p.hitbox
+        if p is not None and p.dynamic and p.avel:
+            p.avel = 0
+        if abs(_wrap(angle - t.rotation)) < 1e-6:
+            return False
+        old = t.rotation
+        t.rotation = angle
+        if solid and p.overlaps():
+            t.rotation = old
+            return False
+        return True
+
     def _fix(self, edge, near, far, motor, strict):
         ex, ey, dist = edge.error(motor)
         f = edge.follower
         if strict and f.durability and dist > f.durability:
             self._break(edge)
             return False
-        if not ex and not ey:
-            return False
-        mover = far if far.movable else near
-        if not mover.movable:
-            return False
-        dx, dy = (ex, ey) if mover is f else (-ex, -ey)
-        mover._absorb(dx, dy)
-        mover._move(dx, dy)
-        return True
+        moved = False
+        if ex or ey:
+            mover = far if far.movable else near
+            if mover.movable:
+                dx, dy = (ex, ey) if mover is f else (-ex, -ey)
+                mover._absorb(dx, dy)
+                mover._move(dx, dy)
+                moved = True
+        if f._orient(edge):
+            moved = True
+        return moved
 
-    def _settle(self, motor=None, strict=True):
+    def _settle(self, motor=False, strict=True, stamp=None):
         if joint._active:
             return
         joint._active = True
         try:
+            order = self._order()
+            if stamp is not None:
+                self._stamp = stamp
+                for edge, near, far in order:
+                    near._stamp = far._stamp = stamp
             for sweep in range(_SWEEPS):
                 moved = False
                 first = sweep == 0
-                for edge, near, far in self._order():
-                    if edge.alive and self._fix(edge, near, far,
-                                                first and motor is edge.origin,
-                                                strict and first):
+                for edge, near, far in order:
+                    if edge.alive and self._fix(edge, near, far, first and motor, strict and first):
                         moved = True
                 if not moved:
                     break
@@ -2726,7 +3182,7 @@ class joint():
             edge.origin._settle(strict=False)
 
     def _on_change(self, attr):
-        if joint._active or not self._edges or attr not in self._watch:
+        if joint._active or physics._running or not self._edges or attr not in self._watch:
             return
         self._settle()
 
@@ -2740,10 +3196,16 @@ class joint():
                 f = edge.follower
                 if f.durability and dist > f.durability:
                     self._break(edge)
-                elif ex or ey:
-                    edge.pull(ex, ey)
-        if any(e.alive and not e.physical for e in owned):
-            self._settle(motor=self)
+                else:
+                    if ex or ey:
+                        if edge.beyond():
+                            self._fix(edge, self, f, False, False)
+                        else:
+                            edge.pull(ex, ey)
+                    f._orient(edge)
+        tick = self.scene._ticks
+        if self._stamp != tick and any(e.alive and not e.physical for e in owned):
+            self._settle(motor=True, stamp=tick)
 
 
 class light():

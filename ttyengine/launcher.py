@@ -864,6 +864,7 @@ class Session():
                                 if hasattr(o, 'physics'):
                                     if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
                                         o.physics.physics()
+                            world.scene.tick()
                             for o in list(world.scene.objs):
                                 tf = getattr(o, 'transform', None)
                                 if tf is not None:

@@ -63,67 +63,12 @@ class ginf():
             return
         self.upd()
 
-class fade():
-    def __init__(self, obj, delay=0, time=2, alpha=1, bgalpha=1, callback=None, appear=False, discard=False):
-        self.obj = obj
-        self.dis = discard
-        self.delay = delay
-        self._st = time
-        self.time = time
-        self.alpha = alpha
-        self.bgalpha = bgalpha
-        self.cb = callback
-        self.appear = appear
-    def start(self, handle, session, world):
-        if hasattr(self.obj, '_fading') or not hasattr(self.obj, 'transform'):
-            handle.cancel()
-            return
-        self.obj._fading = True
-        if hasattr(self.obj, '_fadeprogress'):
-            self.time *= self.obj._fadeprogress
-        else:
-            self.obj._fadeprogress = 1
-        self.t = self.obj.transform
-        self.s = world.scene.styler.style
-        def inh(parts):
-            for p in parts:
-                track(p)
-            if parts[0] == self.obj:
-                return
-            else:
-                handle.cancel()
-            for p in parts:
-                p._fadeprogress = self.obj._fadeprogress
-                world.launch(lambda p=p: fade(p, self.delay, self._st, self.alpha, self.bgalpha, self.cb, self.appear, self.dis))
-        self.t.onsplit(inh)
-        self.lerp(self.obj._fadeprogress)
-    def lerp(self, progress, init=False):
-        progress = 1-progress if self.appear else progress
-        if not init:
-            self.obj._fadeprogress = progress
-        ct = self.t.vrtext
-        new_alpha = self.alpha * progress
-        new_bgalpha = self.bgalpha * progress
-        self.t.vrtext = self.s(ct, alpha=new_alpha, bgalpha=new_bgalpha, onbg=True, clean=True)
-        self.t.rotate(self.t.rotation, True)
-        self.t.vrtext = ct
-    def final(self, scene, session, handle):
-        if self.obj is None or not hasattr(self.obj, 'transform'):
-            handle.cancel()
-            return
-        if self.delay > 0:
-            self.delay -= 1/scene.framerate
-            return
-        if self.time <= 0:
-            self.lerp(0)
-            delattr(self.obj, '_fading')
-            if self.cb: self.cb()
-            if self.dis: self.obj.discard()
-            handle.cancel()
-            return
-        self.time -= 1/scene.framerate
-        progress = max(0, self.time / self._st)
-        self.lerp(progress)
+def vanish(o, *args, **kwargs):
+    t = getattr(o, 'transform', None)
+    if t is None:
+        return None
+    t.onsplit(lambda parts: [track(p) for p in parts])
+    return t.fade(*args, **kwargs)
 
 class explode():
     def __init__(self, x, y, delay=0, time=0.5, radius=25, force=100, callback=None, explode=True):
@@ -157,29 +102,6 @@ class explode():
         t.x -= t.xlen()/2
         t.y += t.ylen()/2
 
-class flash():
-    def __init__(self, scene, session, delay=0, time=1, tar=None, st=None):
-        self.de = delay
-        self._sti = time
-        self.ti = time
-        self.tar = tar if tar else scene.bgcolor
-        self.st = st if st else session.fgcolor
-    def update(self, scene, handle):
-        if self.de > 0:
-            self.de -= 1/scene.framerate
-            return
-        if self.ti <= 0:
-            handle.cancel()
-            scene.bgcolor = self.tar
-            return
-        self.ti -= 1/scene.framerate
-        p = 1 - (max(0, self.ti) / self._sti)
-        fin = []
-        for i in range(3):
-            val = int(self.st[i] + (self.tar[i] - self.st[i]) * p)
-            fin.append(min(255, max(0, val)))
-        scene.bgcolor = tuple(fin)
-
 class asteroid():
     def start(self, scene, handle, session, world):
         self.a = None
@@ -190,9 +112,9 @@ class asteroid():
         r = random.randrange
         style = session.style
         pt = plr.transform
-        width = r(16, 32)
-        height = r(20, 40)
-        cx, cy = width / 2.0, height / 2.0
+        width = r(8, 30)
+        height = r(10, 30)
+        cx, cy = width / 2.0, height / 1.0
         base_radius = min(cx, cy) * 0.85
         txt = ""
         for y in range(height):
@@ -212,7 +134,7 @@ class asteroid():
         x, y = pt.forward(r(70, 100), 0, dr)
         al = r(7, 10)/10
         self.a = track(scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10)))
-        self.a.forvanish = {'delay': 0.5, 'time': 1, 'alpha': al, 'discard': True}
+        self.a.forvanish = {'delay': 0.5, 'time': 1, 'discard': True}
         self.a.imast = True
         self.a.ast = True
         def ont(obj2, inter):
@@ -221,12 +143,15 @@ class asteroid():
             if obj2.physics.phantom or hasattr(obj2, 'imast'): return
             if obj2 == plr:
                 self.a.physics.offtouch(ont)
+                for xi, yi in inter:
+                    world.launch(lambda: explode(xi, yi, time=0.3, radius=15, force=50, explode=False))
+                    break
                 if not lost: ginfo[1] += 1
                 scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True) if hasattr(self.a, 'physics') else None)
                 if hasattr(self.a, 'imast'):
                     delattr(self.a, 'imast')
                 if hasattr(self.a, 'forvanish'):
-                    world.launch(lambda: fade(self.a, **self.a.forvanish))
+                    vanish(self.a, **self.a.forvanish)
                 handle.cancel()
             t = self.a.transform
             olx,oly = t.x,t.y
@@ -240,9 +165,6 @@ class asteroid():
                     obj2.transform.cut(wx,wy)
             obj2.transform.split()
             t.x,t.y = olx,oly
-            for xi, yi in inter:
-                world.launch(lambda: explode(xi, yi, time=0.3, radius=15, force=50, explode=False))
-                break
         self.a.physics.ontouch(ont)
     def update(self, handle):
         if self.gid != game_id:
@@ -286,8 +208,8 @@ class player():
         self.thrustmax = 3*p.mass
         self.thrustbreak = 0.9
 
-        '''thr1 = scene.obj().create(style('████\n████', color=(220,180,0)))
-        thr2 = scene.obj().create(style('████\n████', color=(220,180,0)))
+        '''thr1 = scene.obj().create(style('████\n████', color=(220,180,0)), dynamic=True)
+        thr2 = scene.obj().create(style('████\n████', color=(220,180,0)), dynamic=True)
         def att(th, nu):
             th.create(yoffset=-t.ylen())
             if nu==2:
@@ -310,7 +232,7 @@ class player():
             lst = lsinfo.transform
             lst.x = scene.camx + scene.iround((scene.dimx - lst.xlen()) / 2)
             lst.y = scene.camy - scene.iround(scene.dimy / 4) + scene.iround(lst.ylen() / 2)
-            world.launch(lambda: fade(lsinfo, 0, 2, appear=True))
+            lst.fade(1, time=2, start=0)
             self.lsinfo = lsinfo
         self.trigger_lost = trigger_lost
 
@@ -375,15 +297,15 @@ class player():
                     delattr(obj2, 'imast')
                 tr.cutpoints(points)
                 vanish_data = getattr(obj2, 'forvanish', None)
-                tr.split()
                 if vanish_data:
-                    world.launch(lambda: fade(obj2, **vanish_data))
+                    vanish(obj2, **vanish_data)
+                tr.split()
             def dis():
                 maxi = 1
                 if abs(bp.xvel) <= maxi and abs(bp.yvel)*1/bt.scene.aspect <= maxi:
                     bullet.discard()
             bp.ontouch(destroy, when=lambda o: o is not plr)
-            world.launch(lambda: fade(bullet, 0.5, 1, callback=bullet.discard))
+            vanish(bullet, 0, time=1, delay=0.5, discard=True)
         self._shoot = shoot
         self._shoot_delay = 0
 
@@ -400,10 +322,10 @@ class player():
                 return
             self.started = True
             self._ad = 0
-            world.launch(lambda scene, session: flash(scene, session, time=0.5, st=(255,255,255)))
+            scene.fade(scene.bgcolor, time=0.5, start=(255,255,255))
             if hasattr(self.info, 'transform'):
                 self.info['text'] = session.style('STARTED!', size=3, color='white', bgcolor='blue')
-                world.launch(lambda: fade(self.info, 0.5, 0.5, callback=self.info.discard))
+                vanish(self.info, 0, time=0.5, delay=0.5, discard=True)
                 world.launch(ginf)
         inp.onpress('f', onf, True)
 
@@ -482,7 +404,7 @@ class background():
         alpha = round(r() * 0.5 + 0.4, 1)
         text = st('★', alpha=alpha)
         star = scene.obj().create(text, x=x, y=y, z=-10)
-        world.launch(lambda: fade(star, 0, 0.3, alpha, 1, lambda: world.launch(lambda: fade(star, 1, 1, alpha, 1, star.discard)), True))
+        star.transform.fade(1, time=0.3, start=0, callback=lambda: vanish(star, 0, time=1, delay=1, discard=True))
         star.ondiscard(lambda: self.s.remove(star) if star in self.s else None)
         self.s.append(star)
 

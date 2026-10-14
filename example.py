@@ -206,7 +206,7 @@ def dev(Session=Session): #DEBUG
                 if(k('w')):
                     self.tary += cmspeed/2
                     #if self.plr: self.plr.yvel += self.plrspeed if abs(self.plr.yvel) < self.plrmaxspeed else 0
-                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.touch[1] and abs(self.plr.physics.yvel) < self.plr.physics.mass*0.2 else 0
+                    if self.plr: self.plr.physics.yvel += self.plrjumppower if self.plr.physics.grounded and abs(self.plr.physics.yvel) < self.plr.physics.mass*0.2 else 0
                 if(k('s')):
                     self.tary += -cmspeed/2
                     #if self.plr: self.plr.yvel += -self.plrspeed if abs(self.plr.xvel) < self.plrmaxspeed else 0
