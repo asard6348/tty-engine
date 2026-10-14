@@ -392,13 +392,10 @@ class Scene:
 
     def focus(self, target):
         t = getattr(target, 'transform', target)
-        rotmap = getattr(t, '_rotmap', False)
-        if rotmap is False:
+        pivot = getattr(t, 'pivot', None)
+        if pivot is None:
             return target[0], target[1]
-        if rotmap is None:
-            return t.x + t.vx, t.y + t.vy
-        ox, oy = t._origin()
-        return ox + rotmap[0] - rotmap[2], oy - (rotmap[1] - rotmap[3])
+        return pivot()
 
     def follow(self, target=None, y=None, smooth=1, offset=(0, 0)):
         if target is None or isinstance(target, (int, float)):

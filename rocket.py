@@ -63,10 +63,18 @@ class ginf():
             return
         self.upd()
 
+def ghostplr(o):
+    p = getattr(o, 'physics', None)
+    if p is not None:
+        p.ghost(lambda other: other is plr)
+
 def vanish(o, *args, **kwargs):
     t = getattr(o, 'transform', None)
     if t is None:
         return None
+    if getattr(o, 'ast', False):
+        ghostplr(o)
+        t.onsplit(lambda parts: [ghostplr(p) for p in parts])
     t.onsplit(lambda parts: [track(p) for p in parts])
     return t.fade(*args, **kwargs)
 
@@ -112,8 +120,8 @@ class asteroid():
         r = random.randrange
         style = session.style
         pt = plr.transform
-        width = r(8, 30)
-        height = r(10, 30)
+        width = r(20, 30)
+        height = r(20, 30)
         cx, cy = width / 2.0, height / 1.0
         base_radius = min(cx, cy) * 0.85
         txt = ""
@@ -132,8 +140,9 @@ class asteroid():
             txt += row_str.rstrip() + "\n"
         dr = r(-180, 180)
         x, y = pt.forward(r(70, 100), 0, dr)
+        ox, oy = pt.pivot()
         al = r(7, 10)/10
-        self.a = track(scene.obj().create(style(txt, color='gray', alpha=al), x+pt.x, y+pt.y, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10)))
+        self.a = track(scene.obj().create(style(txt, color='gray', alpha=al), x+ox, y+oy, avel=r(-180,180), xvel=r(-10,10), yvel=r(-10,10)))
         self.a.forvanish = {'delay': 0.5, 'time': 1, 'discard': True}
         self.a.imast = True
         self.a.ast = True
@@ -198,9 +207,14 @@ class player():
 
         plr = track(scene.obj().create(style('''
     █
+    █
+   ███
    ███
   ██ ██
+  ██ ██
  ██   ██
+ ██   ██
+██     ██
 ██     ██''', color='brightblue'),dynamic=True, hitbox=False, mass=50))
         t = plr.transform
         p = plr.physics
@@ -208,7 +222,7 @@ class player():
         self.thrustmax = 3*p.mass
         self.thrustbreak = 0.9
 
-        thr1 = scene.obj().create(style('████████', color=(120,180,220)), dynamic=True)
+        '''thr1 = scene.obj().create(style('████████', color=(120,180,220)), dynamic=True)
         thr2 = scene.obj().create(style('████████', color=(120,180,220)), dynamic=True)
         def att(th, nu):
             th.create(yoffset=-abs(t.yc(t.rtext)))
@@ -216,7 +230,8 @@ class player():
         att(thr1, 1)
         att(thr2, 2)
         t.onchange(lambda at: (att(thr1, 1) and att(thr2, 2)) if at=='rtext' else None)
-        plr.create(joints=[thr1,thr2])
+        plr.add('joint')
+        plr.joint.attach((thr1, thr2), 'fixed')'''
 
         def trigger_lost():
             global lost
@@ -265,13 +280,18 @@ class player():
         def shoot():
             t = plr.transform
             p = plr.physics
-            sx, sy = t.forward(t.ylen())
-            spawn_x = t.x + t.xc() + sx
-            spawn_y = t.y - t.yc() + sy
-            bullet = track(scene.obj().create(style('●\n●\n●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = t.rotation, mass=0, phantom=True))
+            px, py = t.pivot()
+            sx, sy = t.forward(t.ylen(t.rtext))
+            spawn_x = px + sx
+            spawn_y = py + sy
+            aim = t.point(inp._mouse_x + scene.camx, scene.camy - inp._mouse_y, origin=(spawn_x, spawn_y))
+            bullet = track(scene.obj().create(style('●\n●\n●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = aim, mass=0, phantom=True))
             bt = bullet.transform
             bp = bullet.physics
-            for i, d in enumerate(t.forward(3)):
+            lx, ly = bt.pivot(True)
+            bt.x = spawn_x - lx
+            bt.y = spawn_y - ly
+            for i, d in enumerate(t.forward(3, angle=aim)):
                 if i==0: bp.xvel += d
                 else: bp.yvel += d
             def destroy(obj2, points):
@@ -370,7 +390,7 @@ class player():
             world.launch(lambda: asteroid())
 
         if not self.lsinfo:
-            p.avel = t.alerp(t.point(inp._mouse_x + scene.camx - t.xc(), scene.camy - inp._mouse_y + t.yc()))*plr.physics.mass
+            p.avel = t.alerp(t.point(inp._mouse_x + scene.camx, scene.camy - inp._mouse_y)) * p.mass
 
     def final(self, scene):
         if hasattr(plr, 'transform'):

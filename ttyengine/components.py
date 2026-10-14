@@ -1090,15 +1090,25 @@ class transform(_change_callback):
         y = math.cos(angle) * self.scene.aspect * move
         return (x, y)
 
-    def point(self, tx, ty, offset=0):
-        dx = tx - self._x
-        dy = ty - self._y
+    def pivot(self, local=False):
+        m = self._rotmap
+        if m is None:
+            return (0.0, 0.0) if local else (self._x + self.vx, self._y + self.vy)
+        if local:
+            return m[0], -m[1]
+        ox, oy = self._origin()
+        return ox + m[0] - m[2], oy - (m[1] - m[3])
+
+    def point(self, tx, ty, offset=0, origin=None):
+        ox, oy = self.pivot() if origin is None else origin
+        dx = tx - ox
+        dy = ty - oy
         ASPECT = self.scene.aspect
         angle = math.degrees(math.atan2(-dy, dx * ASPECT))+90
         return angle + offset
 
     def aim(self, obj, offset=0):
-        return self.point(obj.transform.x, obj.transform.y, offset=offset)
+        return self.point(*obj.transform.pivot(), offset=offset)
 
     def alerp(self, angle):
         return (angle - self._rotation + 540) % 360 - 180
@@ -1513,6 +1523,10 @@ class physics(_change_callback):
             cb.__closure__[0].cell_contents is not callback
         ]
 
+    def ghost(self, other):
+        if not any(g is other for g in self.obj._ghosts):
+            self.obj._ghosts.append(other)
+
     def getpixels(self, x=None, y=None, text=None):
         default_call = x is None and y is None and text is None
         if default_call and self._pixel_cache is not None:
@@ -1915,6 +1929,8 @@ class physics(_change_callback):
         self._depenskip = 4
 
     def _depenetrate(self):
+        if self.phantom:
+            return
         if self._depenskip > 0:
             self._depenskip -= 1
             return
