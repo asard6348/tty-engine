@@ -68,13 +68,18 @@ def ghostplr(o):
     if p is not None:
         p.ghost(lambda other: other is plr)
 
+def shatter(o):
+    if o is None or getattr(o, 'shattered', False) or not hasattr(o, 'transform'):
+        return
+    o.shattered = True
+    o.ast = True
+    ghostplr(o)
+    o.transform.onsplit(lambda parts: [shatter(track(p)) for p in parts])
+
 def vanish(o, *args, **kwargs):
     t = getattr(o, 'transform', None)
     if t is None:
         return None
-    '''if getattr(o, 'ast', False):
-        ghostplr(o)
-        t.onsplit(lambda parts: [ghostplr(p) for p in parts])'''
     t.onsplit(lambda parts: [track(p) for p in parts])
     return t.fade(*args, **kwargs)
 
@@ -120,8 +125,9 @@ class asteroid():
         r = random.randrange
         style = session.style
         pt = plr.transform
-        width = r(20, 30)
-        height = r(20, 30)
+        scl = 0.8
+        width = int(r(20, 30)*scl)
+        height = int(r(20, 30)*scl)
         cx, cy = width / 2.0, height / 1.0
         base_radius = min(cx, cy) * 0.85
         txt = ""
@@ -149,6 +155,7 @@ class asteroid():
         def ont(obj2, inter):
             global lost
             if self.gid != game_id: return
+            if not hasattr(self.a, 'imast'): return
             if obj2.physics.phantom or hasattr(obj2, 'imast'): return
             if obj2 == plr:
                 self.a.physics.offtouch(ont)
@@ -156,7 +163,6 @@ class asteroid():
                     world.launch(lambda: explode(xi, yi, time=0.3, radius=15, force=50, explode=False))
                     break
                 if not lost: ginfo[1] += 1
-                scene.pending.append(lambda: setattr(self.a.physics, 'phantom', True) if hasattr(self.a, 'physics') else None)
                 if hasattr(self.a, 'imast'):
                     delattr(self.a, 'imast')
                 if hasattr(self.a, 'forvanish'):
@@ -217,15 +223,22 @@ class player():
         self.thrustmax = 3*p.mass
         self.thrustbreak = 0.9
 
-        '''thr1 = scene.obj().create(style('████████', color=(120,180,220)), dynamic=True)
-        thr2 = scene.obj().create(style('████████', color=(120,180,220)), dynamic=True)
+        '''thr1 = scene.obj().create(style('██████\n██████', color=(120,180,220)), dynamic=True, phantom=True)
+        thr2 = scene.obj().create(style('██████\n██████', color=(120,180,220)), dynamic=True, phantom=True)
+        plr.add('joint')
         def att(th, nu):
             th.create(yoffset=-abs(t.yc(t.rtext)))
             th.create(xoffset=-(abs(t.xc(t.rtext))-1)*(-1 if nu==2 else 1))
+        def place(th):
+            ax, ay = plr.joint._anchor(th.joint.xoffset, th.joint.yoffset)
+            cx, cy = th.transform.extent()[:2]
+            th.transform.x += ax - cx
+            th.transform.y += ay - cy
         att(thr1, 1)
         att(thr2, 2)
+        place(thr1)
+        place(thr2)
         t.onchange(lambda at: (att(thr1, 1) and att(thr2, 2)) if at=='rtext' else None)
-        plr.add('joint')
         plr.joint.attach((thr1, thr2), 'fixed')'''
 
         def trigger_lost():
@@ -295,10 +308,9 @@ class player():
                 tr = obj2.transform
                 if hasattr(obj2, 'imast'):
                     if not lost: ginfo[0] += 1
-                    if getattr(obj2, 'ast', False):
-                        ghostplr(obj2)
-                        tr.onsplit(lambda parts: [ghostplr(p) for p in parts])
                     delattr(obj2, 'imast')
+                if getattr(obj2, 'ast', False):
+                    shatter(obj2)
                 tr.cutpoints(points)
                 vanish_data = getattr(obj2, 'forvanish', None)
                 if vanish_data:

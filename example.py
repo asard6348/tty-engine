@@ -7,6 +7,7 @@ def dev(Session=Session): #DEBUG
 
     #MODULES
     import sys
+    import math
 
     #TITLE
     sys.stdout.write(f"\033]0;TTY Simulator\007")
@@ -36,7 +37,7 @@ def dev(Session=Session): #DEBUG
             t.x, t.y = self.pos
             t.x -= t.xlen()/2
             t.y += t.ylen()/2
-        
+
     class main():
         def __init__(self, scene, world, session):   #INITIALIZATION (OPTIONAL)
             self.scene = scene
@@ -55,18 +56,22 @@ def dev(Session=Session): #DEBUG
             scene.drag = 0.97
             #scene.drag = 1
             self.pencolor = None#(0,255,255)
-        
+
         def start(self):    #START
             sc = self.scene
             world = self.world
             inp = self.session.inp
             style = self.session.style
             obj = sc.obj
+            def w2(mx, my):
+                return mx + sc.iround(sc.camx), sc.iround(sc.camy) - my
+            self.w2 = w2
             self.tarx = 0*sc.dimx/2
             self.tary = -sc.dimy/2
 
             self.scene.gravity = (0,-0.05)
-            self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
+            self.psp = obj().create('PAUSED', y=-1, show=world.pausephysics, z=50)
+            '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
                             )
             self.plr = obj().create(plrtext,0,0,hitbox=True,renderspaces=False)
@@ -89,7 +94,7 @@ def dev(Session=Session): #DEBUG
             ip=20
             for i in range(0,6):
                 pp("OOOOOOOOO", p3.transform.x-ip,p3.transform.y)
-                ip+=20
+                ip+=20'''
 
             '''c = {'g': style("█",(24,30,24),reset=False)*2,
                  'dp': style("█",(143,8,112),reset=False)*2,
@@ -143,22 +148,103 @@ def dev(Session=Session): #DEBUG
             
             if not hasattr(self, 'plr'): self.plr = None
 
-            self.pen = obj().create(penchar='█')
+            self.pen = obj().create(penchar='█', pradius=2)
             self.penc = 0
             def on_click_pen(mx, my, data):
-                self.pen.pen.x = mx + sc.camx
-                self.pen.pen.y = sc.camy - my
+                self.pen.pen.pradius=2 if data==0 else 1
+                self.pen.pen.x, self.pen.pen.y = w2(mx, my)
                 self.pen.pen.down(char=style(self.pen.pen.char, color=(self.penc+13 if data==0 else 'gray') if not self.pencolor else self.pencolor))
                 self.penc = 0 if self.penc >= 13 else self.penc + 1
                 if data == 2:
                     self.pen.pen.cancel()
-            def on_release_pen(mx, my, data):
+            def on_release_pen(mx, my, data, dynamic):
+                if self.pen.pen.active:
+                    self.pen.pen.move(*w2(mx, my))
                 if data == 2:
                     self.pen.pen.drop()
                     self.pen.pen.cutcommit(r=0, hitbox=False)
-                self.pen.pen.up(dynamic=True)
+                self.pen.pen.up(dynamic=dynamic)
             inp.onmouse('click', on_click_pen)
-            inp.onmouse('release', on_release_pen)
+            inp.onmouse('release', lambda mx, my, data: on_release_pen(mx, my, data, False))
+            def on_move_pen(mx, my, data):
+                if inp.held('space'):
+                    on_click_pen(mx, my, 0)
+                wx, wy = w2(mx, my)
+                for p in (self.pen.pen, self.tpen.pen):
+                    if p.active:
+                        p.move(wx, wy, rebuild=False)
+                if inp.held('z', delay=0.2):
+                    self.erase(wx, wy)
+            inp.onmouse('move', on_move_pen)
+            inp.onrelease('space', lambda: on_release_pen(inp._mouse_x, inp._mouse_y, 0, True))
+
+            self.epen = obj().create(penchar='█', pradius=2)
+            self.esize = 2
+            self.erasing = False
+            shape = set(self.epen.pen.footprint(self.esize))
+            self.curx = max(x for x, _ in shape)
+            self.cury = max(y for _, y in shape)
+            def rim(x, y):
+                return (x, y) in shape and not all((x + a, y + b) in shape for a, b in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+            box = [''.join('█' if rim(x, y) else ' ' for x in range(-self.curx, self.curx + 1)) for y in range(self.cury, -self.cury - 1, -1)]
+            self.cursor = obj().create(style('\n'.join(box), 'white'), 0, 0, show=False, phantom=True, dynamic=False, z=20)
+            def erasable(o):
+                p = getattr(o, 'physics', None)
+                if p is None or p.phantom:
+                    return False
+                return all(o is not s for s in (self.push, self.cursor, self.pen.pen.current_obj, self.tpen.pen.current_obj))
+            def erase(wx, wy):
+                self.epen.pen.cut(wx, wy, r=self.esize, when=erasable)
+            self.erase = erase
+
+            self.tpen = obj().create(penchar='█', pradius=2)
+            self.tgrab = []
+            self.tpts = {}
+            def following(o):
+                j = getattr(o, 'joint', None)
+                return j is not None and any(e.follower is j for e in j._edges.values())
+            def ballink(a, b, coll=False):
+                if a is b or not hasattr(a, 'transform') or not hasattr(b, 'transform'):
+                    return
+                if following(b):
+                    a, b = b, a
+                    if following(b):
+                        return
+                for x, y in ((a, b), (b, a)):
+                    j = getattr(x, 'joint', None)
+                    if j is not None and id(y) in j._edges:
+                        return
+                if getattr(a, 'joint', None) is None:
+                    a.add('joint')
+                if getattr(b, 'joint', None) is None:
+                    b.add('joint')
+                # join at the point where the stroke crossed from one object into the other, so the
+                # two objects meet at that edge (pin on both) instead of at b's centre
+                at = self.tpts.get((id(a), id(b))) or self.tpts.get((id(b), id(a)))
+                a.joint.attach(b, 'ball', radius='keep', physical=True, collide=coll, at=at)
+            def tdown():
+                pen = self.tpen.pen
+                if pen.active:
+                    return
+                pen.x, pen.y = w2(inp._mouse_x, inp._mouse_y)
+                self.tgrab = []
+                self.tpts = {}
+                pen.down(char=style(pen.char, color='cyan'), phantom=True, dynamic=False)
+            def tup(coll=False):
+                pen = self.tpen.pen
+                if not pen.active:
+                    return
+                stroke = pen.up()
+                stroke.transform.fade(0, time=0.3, discard=True)
+                objs = [o for o in self.tgrab if hasattr(o, 'transform')]
+                for a, b in zip(objs, objs[1:]):
+                    ballink(a, b, coll)
+                self.tgrab = []
+                self.tpts = {}
+            inp.onpress('t', tdown, True)
+            inp.onpress('y', tdown, True)
+            inp.onrelease('t', tup, True)
+            inp.onrelease('y', lambda: tup(True), True)
 
             self.push = sc.obj().create(force=30*40, cap=30, radius=40, show=False)
             self.push.transform.text = sc.styler.shapes.circle(5, style('X', 'red'), aspect=sc.aspect)
@@ -178,11 +264,10 @@ def dev(Session=Session): #DEBUG
                 def t():
                     if self.plr: self.plr.rendering.show = not self.plr.rendering.show
                 def p():
-                    self.world.pause = not self.world.pause
+                    self.world.pausephysics = not self.world.pausephysics
+                    self.psp.rendering.show=world.pausephysics
                 def x():
-                    mx, my = inp.mouse
-                    ax=mx + self.scene.camx
-                    ay=self.scene.camy - my
+                    ax, ay = self.w2(*inp.mouse)
                     world.launch(lambda scene: explode(scene=scene,x=ax,y=ay,timer=0.3,radius=50,force=1000))
                 for but in [w,q,f,r,t,p,x]:
                     def close():
@@ -214,9 +299,7 @@ def dev(Session=Session): #DEBUG
                     self.tarx += -cmspeed
                     if self.plr: self.plr.physics.xvel += -self.plrspeed if abs(self.plr.physics.xvel) < self.plrmaxspeed else 0
                 if(k('c')):
-                    mx, my = inp.mouse
-                    ax=mx + self.scene.camx
-                    ay=self.scene.camy - my
+                    ax, ay = self.w2(*inp.mouse)
                     self.push.transform.x = ax - self.push.transform.xc()
                     self.push.transform.y = ay + self.push.transform.yc()
                     self.push.rendering.show = True
@@ -229,9 +312,21 @@ def dev(Session=Session): #DEBUG
                 if(k('left')): sc.dimxoffset += -1#self.tarx += -self.camspeed
             whilepressed()
             
-            for o in self.scene.objs:
-                if(hasattr(o, 'physics') and o.transform.y<self.void):
+            # fell below the void: put it back at the origin. Jointed objects go back together
+            # (one rigid move, velocities cleared); resetting them one at a time left the others
+            # far below, and the joints then flung everything apart.
+            done = set()
+            for o in list(self.scene.objs):
+                if id(o) in done or not (hasattr(o, 'physics') and o.transform.y<self.void):
+                    continue
+                jt = getattr(o, 'joint', None)
+                members = jt.group() if jt is not None else [o]
+                done.update(id(m) for m in members)
+                if jt is not None and len(members) > 1:
+                    jt.teleport(-o.transform.x, -o.transform.y)
+                else:
                     o.transform.y=0;o.transform.x=0
+                    o.physics.xvel = o.physics.yvel = o.physics.avel = 0
             if self.plr:
                 self.plr.physics.xvel *= self.plrspeedfriction
                 #self.plr.physics.yvel *= self.plrspeedfriction
@@ -254,15 +349,50 @@ def dev(Session=Session): #DEBUG
             if hasattr(self, 'info'):
                 self.info.transform.x = sc.camx
                 self.info.transform.y = sc.camy
+            if hasattr(self, 'psp'):
+                self.psp.transform.x = sc.camx
+                self.psp.transform.y = sc.camy-1
             if self.pen.pen.active:
-                self.pen.pen.move(inp._mouse_x + sc.camx, sc.camy - inp._mouse_y)
+                self.pen.pen.move(*self.w2(inp._mouse_x, inp._mouse_y))
+            tp = self.tpen.pen
+            if tp.active:
+                tp.move(*self.w2(inp._mouse_x, inp._mouse_y))
+                so = tp.current_obj
+                if hasattr(so, 'physics'):
+                    trail = {q: i for i, q in enumerate(tp.trail())}
+                    found = []
+                    hits = so.physics.collides([s for s in sc.solids if s is not so], full=True)
+                    for o, inter in hits.items():
+                        op = o.physics
+                        if op.dynamic and not op.phantom and o not in self.tgrab:
+                            entry = min(inter, key=lambda q: trail.get(q, len(trail)))
+                            found.append((trail.get(entry, len(trail)), o, entry))
+                    found.sort(key=lambda f: f[0])
+                    for _, o, entry in found:
+                        if self.tgrab:
+                            # world point (cell centre) where the stroke entered o
+                            self.tpts[(id(self.tgrab[-1]), id(o))] = (entry[0] + 0.5, entry[1] - 0.5)
+                        self.tgrab.append(o)
             if inp.mouseheld(2):
                 self.pen.pen.cut(
-                    inp._mouse_x + sc.camx,
-                    sc.camy - inp._mouse_y,
+                    *self.w2(inp._mouse_x, inp._mouse_y),
                     r=0, when=lambda o: hasattr(o, 'physics')
                 )
             
+            ep = self.epen.pen
+            if inp.held('z', delay=0.2):
+                wx, wy = self.w2(inp._mouse_x, inp._mouse_y)
+                self.erase(wx, wy)
+                ep.cutcommit(r=self.esize, keep=True, hitbox=False)
+                self.cursor.transform.x = round(wx) - self.curx
+                self.cursor.transform.y = round(wy) + self.cury
+                self.cursor.rendering.show = True
+                self.erasing = True
+            elif self.erasing:
+                ep.cancel()
+                self.cursor.rendering.show = False
+                self.erasing = False
+
             self.session.dinfo = [sc.recomp.sub('', x) for x in sc.dinfo]
 
     #LAUNCH THE SCENES

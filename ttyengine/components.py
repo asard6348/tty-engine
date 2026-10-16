@@ -38,6 +38,29 @@ def _offsets(radius, aspect):
                     found.append((cost - (0.01 if dy > 0 else 0), dx, dy))
     found.sort()
     return tuple((dx, dy) for _, dx, dy in found)
+_SHAPES = ('circle', 'square', 'diamond')
+
+@functools.lru_cache(maxsize=64)
+def _footprint(radius, aspect, shape):
+    if shape not in _SHAPES:
+        raise ValueError('shape must be one of: ' + ', '.join(_SHAPES))
+    reach = max(1, radius) - 0.5
+    span_x = int(reach / aspect) + 1
+    span_y = int(reach) + 1
+    found = []
+    for dy in range(-span_y, span_y + 1):
+        for dx in range(-span_x, span_x + 1):
+            ux, uy = abs(dx) * aspect, abs(dy)
+            if shape == 'circle':
+                inside = math.hypot(ux, uy) < reach
+            elif shape == 'square':
+                inside = ux < reach and uy < reach
+            else:
+                inside = ux + uy < reach
+            if inside:
+                found.append((dx, dy))
+    return tuple(found)
+
 _SGR = re.compile(r'\x1b\[([0-9;]*)m')
 _FGCODE = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 _BGCODE = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
@@ -827,19 +850,15 @@ class transform(_change_callback):
                 self.y = self._y + before[1] - after[1]
         return True
 
-    def cut(self, wx, wy, r=1):
-        cells = []
-        for dy in range(-(r - 1), r):
-            for dx in range(-(r - 1), r):
-                cells.extend(self.world_to_rtext_all(wx + dx, wy + dy))
-        return self._clear(cells)
+    def cut(self, wx, wy, r=1, shape='circle'):
+        return self.cutpoints([(wx, wy)], r, shape)
 
-    def cutpoints(self, points, r=1):
+    def cutpoints(self, points, r=1, shape='circle'):
+        offsets = _footprint(r, self.scene.aspect, shape)
         cells = []
         for wx, wy in points:
-            for dy in range(-(r - 1), r):
-                for dx in range(-(r - 1), r):
-                    cells.extend(self.world_to_rtext_all(wx + dx, wy + dy))
+            for dx, dy in offsets:
+                cells.extend(self.world_to_rtext_all(wx + dx, wy + dy))
         return self._clear(cells)
 
     def _notify_whole(self, callback):
@@ -944,6 +963,8 @@ class transform(_change_callback):
                     fp.yvel = (vy + omega * rx) * fp.mass
                     fp.avel = spin * fp.mass
                 parts.append(part)
+            if getattr(obj_ref, 'joint', None) is not None:
+                joint.transfer(obj_ref, parts)
             if callable(cb):
                 l = _argslen(cb)
                 if l > 1: cb(parts, obj_ref)
@@ -2125,7 +2146,7 @@ class physics(_change_callback):
         self._probe()
 
 class pen():
-    _owned = ['penchar', 'penx', 'peny']
+    _owned = ['penchar', 'penx', 'peny', 'pradius', 'pshape']
     _required = [transform]
 
     def __init__(self, obj, **kwargs):
@@ -2136,9 +2157,13 @@ class pen():
         self._px = self._x
         self._py = self._y
         self.char = kwargs.get('penchar', '█')
+        self.pradius = kwargs.get('pradius', 1)
+        self.pshape = kwargs.get('pshape', 'circle')
         self.active = False
         self.current_obj = None
         self._pixels = {}
+        self._path = []
+        self._hits = {}
         self._ox = 0
         self._oy = 0
         self._pcut = None
@@ -2157,6 +2182,26 @@ class pen():
     @y.setter
     def y(self, value):
         self._y = value
+
+    @property
+    def pradius(self):
+        return self._pradius
+    @pradius.setter
+    def pradius(self, value):
+        # same meaning as `r` in cut/cutcommit (1 = a single cell). Values below 1 are treated as 1.
+        self._pradius = max(1, value)
+
+    @property
+    def pshape(self):
+        return self._pshape
+    @pshape.setter
+    def pshape(self, value):
+        if value not in _SHAPES:
+            raise ValueError('shape must be one of: ' + ', '.join(_SHAPES))
+        self._pshape = value
+
+    def footprint(self, r=None, shape=None):
+        return _footprint(self._pradius if r is None else r, self.scene.aspect, self._pshape if shape is None else shape)
 
     @property
     def char(self):
@@ -2178,11 +2223,19 @@ class pen():
         self._px = self._ox
         self._py = self._oy
         self._pchar = char or self.char
-        self._pixels[(0, 0)] = self._pchar
+        self._pixels = {}
+        self._brush(0, 0)
+        self._path = [(0, 0)]
+        self._hits = {(0, 0): 1}
         for key, value in (('text', self._pchar), ('x', self._ox), ('y', self._oy)):
             kwargs.setdefault(key, value)
         self.current_obj = self.scene.obj().create(**kwargs)
+        if self._pradius > 1:
+            self._rebuild()
         return self.current_obj
+
+    def trail(self):
+        return [(self._ox + x, self._oy + y) for (x, y) in self._pixels]
 
     def commit(self, **kwargs):
         if self.current_obj is None or self.current_obj not in self.scene.objs:
@@ -2203,32 +2256,60 @@ class pen():
         self.current_obj = None
         self._pixels = {}
 
-    def move(self, x, y):
+    def move(self, x, y, rebuild=True):
         self._x = x
         self._y = y
         if self.active:
-            self._plot()
+            self._plot(rebuild)
 
-    def _plot(self):
+    def _plot(self, rebuild=True):
         nx = round(self._x)
         ny = round(self._y)
         for (ix, iy) in self._line(self._px, self._py, nx, ny):
-            self._pixels[(ix - self._ox, iy - self._oy)] = self._pchar
+            self._stamp(ix - self._ox, iy - self._oy)
         self._px = nx
         self._py = ny
-        self._rebuild()
+        if rebuild:
+            self._rebuild()
+
+    def _stamp(self, x, y):
+        path = self._path
+        if path and path[-1] == (x, y):
+            return
+        path.append((x, y))
+        self._brush(x, y)
+        self._hits[(x, y)] = self._hits.get((x, y), 0) + 1
+        if len(path) < 3 or self._pradius > 1:
+            return
+        ax, ay = path[-3]
+        bx, by = path[-2]
+        if abs(x - ax) == 1 and abs(y - ay) == 1 and (bx, by) in ((ax, y), (x, ay)) and self._hits[(bx, by)] == 1:
+            del self._pixels[(bx, by)]
+            del self._hits[(bx, by)]
+            del path[-2]
+
+    def _brush(self, x, y):
+        for dx, dy in self.footprint():
+            self._pixels[(x + dx, y + dy)] = self._pchar
 
     def _line(self, x0, y0, x1, y1):
-        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
-        seen = set()
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
         points = []
-        for i in range(steps + 1):
-            t = i / steps
-            p = (round(x0 + t * (x1 - x0)), round(y0 + t * (y1 - y0)))
-            if p not in seen:
-                seen.add(p)
-                points.append(p)
-        return points
+        while True:
+            points.append((x0, y0))
+            if x0 == x1 and y0 == y1:
+                return points
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
 
     def _rebuild(self):
         if not self._pixels or self.current_obj is None or self.current_obj not in self.scene.objs:
@@ -2251,7 +2332,8 @@ class pen():
         t.y = self._oy + max_y
         t.rtext = '\n'.join(rows)
 
-    def cut(self, wx, wy, r=0, when=True):
+    def cut(self, wx, wy, r=0, when=True, shape=None):
+        shape = self._pshape if shape is None else shape
         end = (round(wx), round(wy))
         start = self._pcut if self._pcut is not None else end
         self._pcut = end
@@ -2269,12 +2351,12 @@ class pen():
                     cut = True
             else:
                 for ix, iy in self._line(*start, *end):
-                    if t.cut(ix, iy, r=r):
+                    if t.cut(ix, iy, r=r, shape=shape):
                         self._cut_walls.setdefault(id(o), (o, None))
                         cut = True
         return cut
 
-    def cutcommit(self, r=0, callback=None, diagonal=True, **kwargs):
+    def cutcommit(self, r=0, callback=None, diagonal=True, keep=False, **kwargs):
         cut_objs = []
         for o, wall_pixels in list(self._cut_walls.values()):
             if o not in self.scene.objs:
@@ -2286,7 +2368,8 @@ class pen():
                 o.transform.split(callback=callback, diagonal=diagonal)
             cut_objs.append(o)
         self._cut_walls = {}
-        self._pcut = None
+        if not keep:
+            self._pcut = None
         return cut_objs
 
     def cancel(self):
@@ -2517,9 +2600,11 @@ _PARAMS = {
     'rest': (None, _check_rest),
     'axis': (0, None),
     'slide': (None, _check_slide),
+    'pinx': (0, None),
+    'piny': (0, None),
 }
-_GEOMETRY = frozenset(('xoffset', 'yoffset', 'radius', 'range', 'physical', 'kind', 'rest', 'axis', 'slide'))
-_POSE = frozenset(('xoffset', 'yoffset', 'kind', 'axis'))
+_GEOMETRY = frozenset(('xoffset', 'yoffset', 'pinx', 'piny', 'radius', 'range', 'physical', 'kind', 'rest', 'axis', 'slide'))
+_POSE = frozenset(('xoffset', 'yoffset', 'pinx', 'piny', 'kind', 'axis'))
 _SWEEPS = 4
 _RELIEF = 1
 _KEEP = object()
@@ -2669,6 +2754,16 @@ class _edge():
     def anchor(self):
         return self.origin._anchor(self.follower.xoffset, self.follower.yoffset)
 
+    def pin(self):
+        f = self.follower
+        if not (f.pinx or f.piny):
+            return f.t.extent()[:2]
+        return f._anchor(f.pinx, f.piny)
+
+    @property
+    def pinned(self):
+        return bool(self.follower.pinx or self.follower.piny)
+
     def rewire(self):
         want = self.alive and not self.colliding
         if want == self.held:
@@ -2686,7 +2781,7 @@ class _edge():
         f = self.follower
         A = f.scene.aspect
         ax, ay = self.anchor()
-        cx, cy = f.t.extent()[:2]
+        cx, cy = self.pin()
         dx = (cx - ax) * A
         dy = cy - ay
         return A, ax, ay, cx, cy, dx, dy, math.hypot(dx, dy)
@@ -2791,6 +2886,21 @@ class _edge():
         pvx, pvy = o.velocity
         fx = -(cvx - pvx) * damp
         fy = -(cvy - pvy) * damp
+        if self.pinned and f.kind == 'ball':
+            # joined at a point away from the centres: act on the pin/anchor points so the
+            # bodies swing about the joint instead of sliding
+            fvx, fvy = f._pointvel(self.pin())
+            ovx, ovy = o._pointvel(self.anchor())
+            fx = -(fvx - ovx) * damp
+            fy = -(fvy - ovy) * damp
+            for comp, point, w in ((f, self.pin(), wc), (o, self.anchor(), -wp)):
+                p = getattr(comp.obj, 'physics', None)
+                if p is not None and p.dynamic:
+                    if w:
+                        comp._kick(point, (ex * k + fx) * w, (ey * k + fy) * w)
+                else:
+                    comp._push(ex * w * k, ey * w * k)
+            return
         f._push(ex * wc * k, ey * wc * k)
         o._push(-ex * wp * k, -ey * wp * k)
         for comp, w in ((f, wc), (o, -wp)):
@@ -2801,7 +2911,7 @@ class _edge():
 
 @_withparams
 class joint():
-    _owned = ['joints', 'xoffset', 'yoffset', 'jradius', 'range', 'elasticity',
+    _owned = ['joints', 'xoffset', 'yoffset', 'pinx', 'piny', 'jradius', 'range', 'elasticity',
               'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide', 'preset']
     _required = [transform]
     _watch = frozenset(('x', 'y', 'rotation', 'text'))
@@ -2933,7 +3043,7 @@ class joint():
             setattr(self, 'radius' if key == 'jradius' else key, value)
         return self
 
-    def attach(self, item, preset=None, link_collide=_KEEP, **settings):
+    def attach(self, item, preset=None, link_collide=_KEEP, at=None, **settings):
         if getattr(item, 'transform', None) is None:
             try:
                 items = list(item)
@@ -2944,15 +3054,126 @@ class joint():
                     raise TypeError('a jointed object needs a transform component')
                 if each is self.obj:
                     raise ValueError('an object cannot be jointed to itself')
-            return [self.attach(each, preset, link_collide, **settings) for each in items]
+            return [self.attach(each, preset, link_collide, at, **settings) for each in items]
         if getattr(item, 'joint', None) is None:
             item.set(joint)
         item.joint.apply(preset, **settings)
-        if id(item) not in self._edges:
+        if at is not None:
+            if id(item) not in self._edges:
+                self._connect(item)
+            self.anchor_at(item, at)
+            item.joint._realign(self._edges[id(item)])
+        elif id(item) not in self._edges:
             self._joints.append(item)
         if link_collide is not _KEEP:
             self._edges[id(item)].collide = link_collide
         return item.joint
+
+    def _local(self, point):
+        # world point -> (xoffset, yoffset) in this object's frame (inverse of _anchor)
+        cx, cy = self.t.extent()[:2]
+        A = self.scene.aspect
+        r = math.radians(self.t.rotation)
+        dx, dy = (point[0] - cx) * A, point[1] - cy
+        return (dx * math.cos(r) - dy * math.sin(r)) / A, dx * math.sin(r) + dy * math.cos(r)
+
+    def _connect(self, item):
+        # link self -> item without moving anything (offsets are expected to be set afterwards)
+        edge = _edge(self, item.joint)
+        self._edges[id(item)] = edge
+        item.joint._edges[id(self.obj)] = edge
+        edge.rewire()
+        return edge
+
+    def anchor_at(self, item, point):
+        # join self and item at one world point: the anchor sits on self and the pin on item,
+        # so the pair meets at that point (e.g. the edge of two sticks) instead of at item's centre
+        edge = self._edges.get(id(item))
+        if edge is None or edge.origin is not self:
+            raise KeyError('object is not a follower of this joint')
+        f = edge.follower
+        f._params['xoffset'], f._params['yoffset'] = self._local(point)
+        f._params['pinx'], f._params['piny'] = f._local(point)
+        edge.capture()
+        return edge
+
+    def group(self):
+        # every object connected to this one through joints (this one included)
+        seen = {id(self.obj): self.obj}
+        queue = [self]
+        for comp in queue:
+            for edge in list(comp._edges.values()):
+                if not edge.alive:
+                    continue
+                other = edge.other(comp)
+                if id(other.obj) not in seen:
+                    seen[id(other.obj)] = other.obj
+                    queue.append(other)
+        return list(seen.values())
+
+    def teleport(self, dx, dy, stop=True):
+        # move the whole connected group rigidly. Moving members one by one lets the joints see
+        # a huge stretch (the first member is already there, the others are not) and fling them.
+        members = self.group()
+        joint._active = True
+        try:
+            for o in members:
+                t = o.transform
+                t.x += dx
+                t.y += dy
+                p = getattr(o, 'physics', None)
+                if stop and p is not None:
+                    p.xvel = p.yvel = p.avel = 0
+        finally:
+            joint._active = False
+        return members
+
+    @staticmethod
+    def transfer(old, parts):
+        # `old` is being split into `parts` (and then discarded): hand each of its joints to the
+        # part that holds the joint point, so that part stays joined to the same partner.
+        jt = getattr(old, 'joint', None)
+        if jt is None or not jt._edges:
+            return
+        A = old.scene.aspect
+        cells = []
+        for part in parts:
+            t = getattr(part, 'transform', None)
+            cells.append(((wx + 0.5, wy - 0.5) for wx, wy in t.worldcells()) if t is not None else ())
+        cells = [list(c) for c in cells]
+        plan = []
+        for edge in list(jt._edges.values()):
+            if not edge.alive:
+                continue
+            as_origin = edge.origin is jt
+            point = edge.anchor() if as_origin else edge.pin()
+            best, bd = None, None
+            for part, pts in zip(parts, cells):
+                if not pts:
+                    continue
+                d = min(((px - point[0]) * A) ** 2 + (py - point[1]) ** 2 for px, py in pts)
+                if bd is None or d < bd - 1e-9 or (abs(d - bd) <= 1e-9 and len(pts) > len(cells[parts.index(best)])):
+                    best, bd = part, d
+            if best is not None:
+                plan.append((edge, as_origin, point, best))
+        for edge, as_origin, point, part in plan:
+            if getattr(part, 'joint', None) is None:
+                part.set(joint)
+            pj = part.joint
+            if as_origin:
+                f = edge.follower
+                new = pj._connect(f.obj)
+                f._params['xoffset'], f._params['yoffset'] = pj._local(point)
+            else:
+                o = edge.origin
+                new = o._connect(part)
+                pj._params.update(jt._params)
+                pj._preset = jt._preset
+                pj._onbreak = list(jt._onbreak)
+                pj._params['pinx'], pj._params['piny'] = pj._local(point)
+            new._collide = edge._collide
+            new.rewire()
+            new.capture()
 
     def link(self, item):
         edge = self._edges.get(id(item))
@@ -3174,6 +3395,34 @@ class joint():
             p.yvel += dy * p.mass
         else:
             self._move(dx, dy)
+
+    def _pointvel(self, point):
+        p = getattr(self.obj, 'physics', None)
+        if p is None or not p.dynamic:
+            return 0.0, 0.0
+        A = self.scene.aspect
+        cx, cy, _ = p.body()
+        rx, ry = (point[0] - cx - 0.5) * A, point[1] - cy + 0.5
+        om = p._omega()
+        return p.xvel / p.mass - om * ry / A, p.yvel / p.mass + om * rx
+
+    def _kick(self, point, gx, gy):
+        # change the velocity of `point` on this body by (gx, gy), spreading it between
+        # linear and angular motion so the point itself moves by about that much
+        p = self.obj.physics
+        if p._invinertia():
+            A = self.scene.aspect
+            cx, cy, spread = p.body()
+            rx, ry = (point[0] - cx - 0.5) * A, point[1] - cy + 0.5
+            n = math.hypot(gx * A, gy)
+            if n > 1e-12:
+                cross = (rx * gy - ry * gx * A) / n
+                s = 1.0 / (1.0 + cross * cross / spread)
+                gx *= s
+                gy *= s
+                p._spin((rx * gy - ry * gx * A) * p.mass)
+        p.xvel += gx * p.mass
+        p.yvel += gy * p.mass
 
     def _absorb(self, ex, ey):
         p = getattr(self.obj, 'physics', None)
