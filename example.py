@@ -52,9 +52,6 @@ def dev(Session=Session): #DEBUG
             self.camspeed = 0.7
             self.void = -100
             #scene.bgcolor = (255,255,255)
-            scene.gravity = (0,0)#-0.05)
-            scene.drag = 0.97
-            #scene.drag = 1
             self.pencolor = None#(0,255,255)
 
         def start(self):    #START
@@ -70,6 +67,7 @@ def dev(Session=Session): #DEBUG
             self.tary = -sc.dimy/2
 
             self.scene.gravity = (0,-0.05)
+            #scene.drag = 0.97
             self.psp = obj().create('PAUSED', y=-1, show=world.pausephysics, z=50)
             '''self.info = obj().create(style('Press "q" to quit. Hold "e" to rotate.', color='magenta', bgcolor='pink'),0,0,renderspaces=True,z=10)
             plrtext = style(f"{style(' O ', color=(241,194,125), reset=False)}\n{style('(|)', color='brightblue', reset=False)}\n{style(' | ', color='green', reset=False)}\n{style('[ ]', color='gray', reset=False)}",
@@ -145,7 +143,7 @@ def dev(Session=Session): #DEBUG
 {c['y']}{c['g']*4}{c['y']*3}
   {c['y']*4}
 """),dynamic=True)'''
-            
+
             if not hasattr(self, 'plr'): self.plr = None
 
             self.pen = obj().create(penchar='█', pradius=2)
@@ -163,7 +161,7 @@ def dev(Session=Session): #DEBUG
                 if data == 2:
                     self.pen.pen.drop()
                     self.pen.pen.cutcommit(r=0, hitbox=False)
-                self.pen.pen.up(dynamic=dynamic)
+                self.pen.pen.up(dynamic=dynamic, friction=0.97)
             inp.onmouse('click', on_click_pen)
             inp.onmouse('release', lambda mx, my, data: on_release_pen(mx, my, data, False))
             def on_move_pen(mx, my, data):
@@ -249,6 +247,55 @@ def dev(Session=Session): #DEBUG
             self.push = sc.obj().create(force=30*40, cap=30, radius=40, show=False)
             self.push.transform.text = sc.styler.shapes.circle(5, style('X', 'red'), aspect=sc.aspect)
 
+            self.grips = []
+            self.gripping = False
+            self.nogrip = False
+            self.gripspeed = 20
+            self.gripelastic = 1
+            self.gripkeys = ('kind', 'collide', 'elasticity', 'xoffset', 'yoffset', 'pinx', 'piny')
+            def grabbable(o):
+                p = getattr(o, 'physics', None)
+                if p is None or p.phantom or not p.dynamic:
+                    return False
+                return all(o is not s for s in (self.push, self.cursor, self.pen, self.epen, self.tpen, self.pen.pen.current_obj, self.tpen.pen.current_obj))
+            def grip(x, y):
+                self.grips = []
+                point = (x + 0.5, y - 0.5)
+                for o in list(sc.objs):
+                    if not grabbable(o):
+                        continue
+                    px = o.physics.getpixels()
+                    if not any((x + i, y + j) in px for i in (-1, 0, 1) for j in (-1, 0, 1)):
+                        continue
+                    g = obj().create(x=point[0], y=point[1], dynamic=False, phantom=True, show=False)
+                    if following(o):
+                        if getattr(o, 'joint', None) is None:
+                            o.add('joint')
+                        o.joint.attach(g, 'ball', at=point, collide=False, elasticity=self.gripelastic)
+                    else:
+                        g.add('joint')
+                        g.joint.attach(o, 'ball', at=point, collide=False, elasticity=self.gripelastic)
+                    self.grips.append(g)
+            def drag(x, y):
+                tx, ty = x + 0.5, y - 0.5
+                lim = self.gripspeed
+                for g in self.grips:
+                    t = g.transform
+                    t.x += max(-lim, min(lim, tx - t.x))
+                    t.y += max(-lim, min(lim, ty - t.y))
+            def release():
+                for g in self.grips:
+                    jt = getattr(g, 'joint', None)
+                    partners = [e.follower for e in jt._edges.values() if e.follower is not jt] if jt is not None else []
+                    g.discard()
+                    for f in partners:
+                        for k in self.gripkeys:
+                            f._params.pop(k, None)
+                self.grips = []
+            self.grip = grip
+            self.drag = drag
+            self.release = release
+
             def onpress(): # key press events
                 def w():
                     pass
@@ -279,7 +326,7 @@ def dev(Session=Session): #DEBUG
             sc = self.scene
             inp = self.session.inp
             cmspeed = self.camspeed*((sc.dimx+sc.dimy)/100)
-            
+
             def whilepressed(): # key hold events
                 def k(but):
                     return inp.held(but, delay=0.2)
@@ -311,7 +358,7 @@ def dev(Session=Session): #DEBUG
                 if(k('right')): sc.dimxoffset += 1#self.tarx += self.camspeed
                 if(k('left')): sc.dimxoffset += -1#self.tarx += -self.camspeed
             whilepressed()
-            
+
             # fell below the void: put it back at the origin. Jointed objects go back together
             # (one rigid move, velocities cleared); resetting them one at a time left the others
             # far below, and the joints then flung everything apart.
@@ -334,9 +381,9 @@ def dev(Session=Session): #DEBUG
         def final(self):    #FINAL
             sc = self.scene
             inp = self.session.inp
-            
+
             # camera follow
-            camtarx = (inp._mouse_x-sc.dimx/2)*0 
+            camtarx = (inp._mouse_x-sc.dimx/2)*0
             camtary = (-inp._mouse_y+sc.dimy/2)*0
             #sc.dimxoffset += ((camtarx)-sc.dimxoffset)/self.camrange
             #sc.dimyoffset += ((camtary)-sc.dimyoffset)/self.camrange
@@ -364,7 +411,7 @@ def dev(Session=Session): #DEBUG
                     hits = so.physics.collides([s for s in sc.solids if s is not so], full=True)
                     for o, inter in hits.items():
                         op = o.physics
-                        if op.dynamic and not op.phantom and o not in self.tgrab:
+                        if not op.phantom and o not in self.tgrab:
                             entry = min(inter, key=lambda q: trail.get(q, len(trail)))
                             found.append((trail.get(entry, len(trail)), o, entry))
                     found.sort(key=lambda f: f[0])
@@ -378,7 +425,7 @@ def dev(Session=Session): #DEBUG
                     *self.w2(inp._mouse_x, inp._mouse_y),
                     r=0, when=lambda o: hasattr(o, 'physics')
                 )
-            
+
             ep = self.epen.pen
             if inp.held('z', delay=0.2):
                 wx, wy = self.w2(inp._mouse_x, inp._mouse_y)
@@ -393,6 +440,24 @@ def dev(Session=Session): #DEBUG
                 self.cursor.rendering.show = False
                 self.erasing = False
 
+            if inp.held('g', delay=0.2):
+                gx, gy = self.w2(inp._mouse_x, inp._mouse_y)
+                if not self.gripping:
+                    self.grip(gx, gy)
+                    if self.grips:
+                        self.gripping = True
+                    else:
+                        self.nogrip = True
+                self.drag(gx, gy)
+                self.cursor.transform.x = round(gx) - self.curx
+                self.cursor.transform.y = round(gy) + self.cury
+                self.cursor.rendering.show = True
+            elif self.gripping or self.nogrip:
+                self.release()
+                self.gripping = False
+                self.nogrip = False
+                self.cursor.rendering.show = False
+
             self.session.dinfo = [sc.recomp.sub('', x) for x in sc.dinfo]
 
     #LAUNCH THE SCENES
@@ -405,7 +470,7 @@ def dev(Session=Session): #DEBUG
             st = session.style
             scene.obj().create('hey\nhow are you\nyou knew that you can have millions of worlds in one terminal session?\nalso with '+st('c', 0)+st('o', 2)+st('l', 3)+st('o', 5)+st('r', 6)+st('s', 7)+st('!', 'violet'))
     ww.launch(m)
-    
+
     #RUN THE SESSION MAIN LOOP (SYNCHRONOUSLY)
     main_session.run()
 
