@@ -866,9 +866,6 @@ class Session():
                                         o.physics.physics()
                             world.scene.tick()
                             for o in list(world.scene.objs):
-                                tf = getattr(o, 'transform', None)
-                                if tf is not None:
-                                    tf.tick()
                                 jnt = getattr(o, 'joint', None)
                                 if jnt is not None and not world.pausephysics and not self.pausephysics:
                                     jnt.step()

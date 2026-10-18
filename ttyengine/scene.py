@@ -386,6 +386,13 @@ class Scene:
 
     def tick(self):
         self._ticks += 1
+        self._tickfade()
+        for o in list(self.objs):
+            tf = getattr(o, 'transform', None)
+            if tf is not None:
+                tf._tick()
+
+    def _tickfade(self):
         f = self._fade
         if f is None:
             return

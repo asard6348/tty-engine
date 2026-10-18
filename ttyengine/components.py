@@ -61,11 +61,11 @@ def _footprint(radius, aspect, shape):
                 found.append((dx, dy))
     return tuple(found)
 
-_SILHOUETTES = ('physics', 'visual', 'hitbox')
+_SHADOWS = ('physics', 'visual', 'hitbox')
 
-def _check_silhouette(value):
-    if value is not None and value not in _SILHOUETTES:
-        raise ValueError('silhouette must be None or one of: ' + ', '.join(_SILHOUETTES))
+def _check_shadow(value):
+    if value is not None and value not in _SHADOWS:
+        raise ValueError('shadow must be None or one of: ' + ', '.join(_SHADOWS))
     return value
 
 def _contact_point_cells(pixels, nx, ny, center):
@@ -249,11 +249,11 @@ class transform(_change_callback):
         'rotaspect',
         'fg', 'bg', 'alpha', 'bgalpha',
         'flip',
-        'silhouette',
+        'shadow',
     ]
     _default = True
     _settings = ('x', 'y', 'text', 'rtext', 'htext', 'rotation', 'aspect', 'fg', 'bg', 'alpha', 'bgalpha',
-                 'flip', 'silhouette')
+                 'flip', 'shadow')
     _aliases = {'aspect': 'rotaspect'}
 
     def __init__(self, obj, **kwargs):
@@ -284,7 +284,7 @@ class transform(_change_callback):
         self._rot_cache_angle = None
         self._rotaspect = kwargs.get('rotaspect', None)
         self._flip = kwargs.get('flip', None)
-        self._silhouette = _check_silhouette(kwargs.get('silhouette', None))
+        self._shadow = _check_shadow(kwargs.get('shadow', None))
         self._cells_cache = None
         self._anim = None
         self._onsplit = {}
@@ -467,13 +467,13 @@ class transform(_change_callback):
         self.rotaspect = value
 
     @property
-    def silhouette(self):
-        return self._silhouette
-    @silhouette.setter
-    def silhouette(self, value):
-        old = self._silhouette
-        self._silhouette = _check_silhouette(value)
-        self._change('silhouette', old)
+    def shadow(self):
+        return self._shadow
+    @shadow.setter
+    def shadow(self, value):
+        old = self._shadow
+        self._shadow = _check_shadow(value)
+        self._change('shadow', old)
 
     @property
     def vrtext(self):
@@ -656,7 +656,7 @@ class transform(_change_callback):
         return self.build_rows(merged, min(xs), max(xs), min(ys), max(ys))
 
     def cells(self, mode=None):
-        mode = self._silhouette if mode is None else _check_silhouette(mode)
+        mode = self._shadow if mode is None else _check_shadow(mode)
         p = getattr(self.obj, 'physics', None)
         if mode in (None, 'physics'):
             if p is not None:
@@ -1425,7 +1425,7 @@ class transform(_change_callback):
             self.rtext = self.vhtext
         return self
 
-    def tick(self):
+    def _tick(self):
         if self._fade is not None:
             self._tickfade()
         self._tickanim()
@@ -2953,6 +2953,7 @@ _GEOMETRY = frozenset(('xoffset', 'yoffset', 'pinx', 'piny', 'radius', 'range', 
 _POSE = frozenset(('xoffset', 'yoffset', 'pinx', 'piny', 'kind', 'axis'))
 _SWEEPS = 4
 _RELIEF = 1
+_SPINPIECES = 4
 _KEEP = object()
 
 class _param():
@@ -3238,18 +3239,20 @@ class _edge():
         ovx, ovy = o._pointvel(opoint) if okick else o.velocity
         rx, ry = fvx - ovx, fvy - ovy
         fx = fy = 0.0
-        if f.kind in ('fixed', 'slider'):
+        ux, uy = ex * A, ey
+        n = math.hypot(ux, uy)
+        full = f.kind in ('fixed', 'slider') or n <= 1e-9
+        if not full:
+            low, high = _band(f.radius, (self.pose or self.capture())[0])
+            full = high <= 1e-9
+        if full:
             fx = -rx * damp
             fy = -ry * damp
         else:
-            ux, uy = ex * A, ey
-            n = math.hypot(ux, uy)
-            if n > 1e-9:
-                along = (rx * A * ux + ry * uy) / n
-                low, high = _band(f.radius, (self.pose or self.capture())[0])
-                if along < 0 or f.kind != 'ball' or high - low <= 1e-9:
-                    fx = -along * ux / n / A * damp
-                    fy = -along * uy / n * damp
+            along = (rx * A * ux + ry * uy) / n
+            if along < 0 or f.kind != 'ball' or high - low <= 1e-9:
+                fx = -along * ux / n / A * damp
+                fy = -along * uy / n * damp
         for comp, point, w, kick in ((f, fpoint, wc, fkick), (o, opoint, -wp, okick)):
             p = getattr(comp.obj, 'physics', None)
             if p is not None and p.dynamic:
@@ -3301,6 +3304,7 @@ class joint():
         self._onbreak = []
         self._preset = None
         self._stamp = None
+        self._spun = None
         self._joints = _jointlist(self)
         if kwargs.get('preset') is not None:
             self.apply(kwargs['preset'])
@@ -3710,6 +3714,11 @@ class joint():
             other = edge.other(comp)
             if comp._edges.get(id(other.obj)) is edge:
                 del comp._edges[id(other.obj)]
+        f = edge.follower
+        p = getattr(f.obj, 'physics', None)
+        if p is not None and f.kind != 'ball' and not any(e.follower is f for e in f._edges.values()):
+            p.avel = 0
+        f._spun = None
 
     def _break(self, edge):
         o, f = edge.origin, edge.follower
@@ -3845,8 +3854,10 @@ class joint():
         p = getattr(self.obj, 'physics', None)
         solid = p is not None and p.dynamic and p.solid and not p.phantom and not p.hitbox
         turn = _wrap(angle - t.rotation)
+        step = 0 if self._spun is None else _wrap(angle - self._spun)
+        self._spun = angle
         if p is not None and p.dynamic:
-            want = turn * p.mass if edge.physical else 0
+            want = step * p.mass if edge.physical and abs(step) <= p.rprecision * _SPINPIECES else 0
             if p.avel != want:
                 p.avel = want
         if abs(turn) < 1e-6:
@@ -4135,7 +4146,7 @@ class light():
         pool = list(self.scene.solids)
         listed = {id(o) for o in pool}
         pool.extend(o for o in self.scene.objs
-                    if id(o) not in listed and getattr(getattr(o, 'transform', None), '_silhouette', None) is not None)
+                    if id(o) not in listed and getattr(getattr(o, 'transform', None), '_shadow', None) is not None)
         for o in pool:
             if o is self.obj:
                 continue
@@ -4143,9 +4154,9 @@ class light():
             if t is None:
                 continue
             p = getattr(o, 'physics', None)
-            if t._silhouette is None and (p is None or p.phantom or not p.solid):
+            if t._shadow is None and (p is None or p.phantom or not p.solid):
                 continue
-            if t._silhouette is None or (t._silhouette == 'physics' and p is not None):
+            if t._shadow is None or (t._shadow == 'physics' and p is not None):
                 b = p.bounds()
             else:
                 cells = t.cells()
@@ -4173,7 +4184,7 @@ class light():
         if self._shadows:
             sig = tuple((id(o), o.transform._x, o.transform._y, o.transform.vx, o.transform.vy,
                          o.transform._pvx, o.transform._pvy, hash(o.transform._text),
-                         hash(o.transform._ptext), hash(o.transform._htext), o.transform._silhouette,
+                         hash(o.transform._ptext), hash(o.transform._htext), o.transform._shadow,
                          getattr(getattr(o, 'physics', None), 'hitbox', None))
                         for o, t in self._casters())
         if sig != self._sig:

@@ -251,40 +251,46 @@ class Styler:
 
 class Shapes:
     @staticmethod
-    def ellipse(rx, ry, char='o', filled=False, thickness=0.15):
+    def ellipse(rx, ry, char='o', filled=False, thickness=1):
         rx = round(rx)
         ry = round(ry)
         if rx < 1 or ry < 1:
             return char
+        thickness = max(1, thickness)
+        ox, oy = rx + 0.5, ry + 0.5
+        ix, iy = ox - thickness, oy - thickness
         rows = []
         for dy in range(-ry, ry + 1):
             row = ''
             for dx in range(-rx, rx + 1):
-                val = (dx / rx) ** 2 + (dy / ry) ** 2
-                hit = val < 1 + thickness if filled else abs(val - 1) < thickness
+                hit = (dx / ox) ** 2 + (dy / oy) ** 2 <= 1
+                if hit and not filled and ix > 0 and iy > 0:
+                    hit = (dx / ix) ** 2 + (dy / iy) ** 2 >= 1
                 row += char if hit else ' '
             rows.append(row)
         return '\n'.join(rows)
 
     @staticmethod
-    def circle(radius, char='o', aspect=0.5, filled=False, thickness=0.15):
+    def circle(radius, char='o', filled=False, thickness=1, aspect=0.5):
         return Shapes.ellipse(radius * (1 / aspect), radius, char, filled, thickness)
 
     @staticmethod
-    def block(width, height=None, char='█', hollow=False, aspect=0.5):
+    def block(width, height=None, char='█', filled=False, thickness=1, aspect=0.5):
         width = max(1, round(width))
         height = max(1, round(width * aspect) if height is None else round(height))
+        thickness = max(1, round(thickness))
         rows = []
         for i in range(height):
-            if hollow and 0 < i < height - 1:
-                rows.append(char + ' ' * (width - 2) + char if width > 1 else char)
-            else:
+            if filled or i < thickness or i >= height - thickness or width <= 2 * thickness:
                 rows.append(char * width)
+            else:
+                rows.append(char * thickness + ' ' * (width - 2 * thickness) + char * thickness)
         return '\n'.join(rows)
 
     @staticmethod
-    def triangle(height, base=None, char='█', filled=True, aspect=0.5, direction='up'):
+    def triangle(height, base=None, char='█', filled=False, thickness=1, aspect=0.5, direction='up'):
         height = max(1, round(height))
+        thickness = max(1, round(thickness))
         if base is None:
             base = height / aspect
         half = max(0, round((base - 1) / 2))
@@ -292,31 +298,38 @@ class Shapes:
         full = widths[-1]
         rows = []
         for i, w in enumerate(widths):
-            if filled or i == height - 1 or w < 2:
+            if filled or i >= height - thickness or w <= 2 * thickness:
                 body = char * w
             else:
-                body = char + ' ' * (w - 2) + char
+                body = char * thickness + ' ' * (w - 2 * thickness) + char * thickness
             rows.append(' ' * ((full - w) // 2) + body)
         if direction == 'down':
             rows.reverse()
         return '\n'.join(rows)
 
     @staticmethod
-    def diamond(radius, char='█', filled=True, aspect=0.5):
+    def diamond(radius, char='█', filled=False, thickness=1, aspect=0.5):
         ry = max(1, round(radius))
         rx = max(1, round(radius * (1 / aspect)))
+        thickness = max(1, round(thickness))
         rows = []
         for dy in range(-ry, ry + 1):
             hw = round(rx * (1 - abs(dy) / ry))
             w = 2 * hw + 1
-            body = char * w if filled or w < 2 else char + ' ' * (w - 2) + char
+            if filled or w <= 2 * thickness:
+                body = char * w
+            else:
+                body = char * thickness + ' ' * (w - 2 * thickness) + char * thickness
             rows.append(' ' * (rx - hw) + body)
         return '\n'.join(rows)
 
     @staticmethod
-    def line(length, char='█', vertical=False):
+    def line(length, char='█', thickness=1, vertical=False):
         length = max(1, round(length))
-        return '\n'.join([char] * length) if vertical else char * length
+        thickness = max(1, round(thickness))
+        if vertical:
+            return '\n'.join([char * thickness] * length)
+        return '\n'.join([char * length] * thickness)
 
 
 _default_styler = Styler()
