@@ -44,6 +44,41 @@ def _findcomp(name):
             return comp, params
     raise KeyError(f'Unknown component: {name!r}')
 
+def _scopes():
+    found = {}
+    for cls in _comps:
+        names = getattr(cls, '_settings', None)
+        owned = getattr(cls, '_owned', None)
+        if not names or not owned:
+            continue
+        aliases = getattr(cls, '_aliases', {})
+        mapping = {name: aliases.get(name, name) for name in names}
+        if all(flat in owned for flat in mapping.values()):
+            found[cls.__name__] = (cls, mapping)
+    return found
+_scoped = _scopes()
+
+def _expand(kwargs):
+    if not any(name in kwargs for name in _scoped):
+        return kwargs, ()
+    flat = {}
+    scoped = {}
+    forced = []
+    for key, value in kwargs.items():
+        scope = _scoped.get(key)
+        if scope is None or not (isinstance(value, dict) or (value is True and key not in scope[0]._owned)):
+            flat[key] = value
+            continue
+        cls, mapping = scope
+        forced.append(cls)
+        if isinstance(value, dict):
+            for name, val in value.items():
+                if name not in mapping:
+                    raise TypeError(f'unknown {key} setting: {name}')
+                scoped[mapping[name]] = val
+    flat.update(scoped)
+    return flat, forced
+
 def _comname(c):
     if isinstance(c, str):
         return c
@@ -63,6 +98,7 @@ class obj:
         setattr(getattr(self, _attrs[key].__name__), key, value)
 
     def add(self, com, **kwargs):
+        kwargs, _ = _expand(kwargs)
         if isinstance(com, str):
             comp, params = _findcomp(com)
         else:
@@ -94,6 +130,7 @@ class obj:
         return compins
 
     def set(self, comn, **kwargs):
+        kwargs, _ = _expand(kwargs)
         com = comn if isinstance(comn, (tuple, list)) else [comn]
         for c in com:
             if isinstance(c, str):
@@ -141,45 +178,39 @@ class obj:
         kwargs.update(overrides)
         return self.scene.obj().create(**kwargs)
 
+    def _ensure(self, comp, kwargs, processed):
+        if comp in processed:
+            return
+        if not hasattr(self, comp.__name__):
+            for rcom in getattr(comp, '_required', ()):
+                if rcom not in processed:
+                    if not hasattr(self, rcom.__name__):
+                        self.add(rcom, **kwargs)
+                    else:
+                        self.set(rcom, **kwargs)
+                    processed.add(rcom)
+            self.add(comp, **kwargs)
+        else:
+            self.set(comp, **kwargs)
+        processed.add(comp)
+
     def create(self, text=None, x=None, y=None, **kwargs):
         kwargs.update({k: v for k, v in {'text': text, 'x': x, 'y': y}.items() if v is not None})
+        kwargs, forced = _expand(kwargs)
         processed = set()
 
         for com in _defls:
-            if com not in processed:
-                if not hasattr(self, com.__name__):
-                    if hasattr(com, '_required'):
-                        for rcom in com._required:
-                            if rcom not in processed:
-                                if not hasattr(self, rcom.__name__):
-                                    self.add(rcom, **kwargs)
-                                else:
-                                    self.set(rcom, **kwargs)
-                                processed.add(rcom)
-                    self.add(com, **kwargs)
-                else: 
-                    self.set(com, **kwargs)
-                processed.add(com)
+            self._ensure(com, kwargs, processed)
 
         for k in list(kwargs.keys()):
             comp = _attrs.get(k)
             if comp:
-                if comp not in processed:
-                    if not hasattr(self, comp.__name__):
-                        if hasattr(comp, '_required'):
-                            for rcomp in comp._required:
-                                if rcomp not in processed:
-                                    if not hasattr(self, rcomp.__name__):
-                                        self.add(rcomp, **kwargs)
-                                    else: 
-                                        self.set(rcomp, **kwargs)
-                                    processed.add(rcomp)
-                        self.add(comp, **kwargs)
-                    else: 
-                        self.set(comp, **kwargs)
-                    processed.add(comp)
+                self._ensure(comp, kwargs, processed)
             else:
                 setattr(self, k, kwargs[k])
+
+        for comp in forced:
+            self._ensure(comp, kwargs, processed)
 
         if self not in self.scene.objs:
             self.scene.objs.append(self)
