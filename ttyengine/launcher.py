@@ -860,18 +860,7 @@ class Session():
                             self._compositor.invalidate()
 
                         for idx, world in enumerate(itworlds):
-                            for o in list(world.scene.objs):
-                                if hasattr(o, 'physics'):
-                                    if not world.pausephysics and not self.pausephysics and o.physics.dynamic:
-                                        o.physics.physics()
-                            world.scene.tick()
-                            for o in list(world.scene.objs):
-                                jnt = getattr(o, 'joint', None)
-                                if jnt is not None and not world.pausephysics and not self.pausephysics:
-                                    jnt.step()
-                                lgt = getattr(o, 'light', None)
-                                if lgt is not None:
-                                    lgt.step()
+                            world.scene.tick(not (world.pausephysics or self.pausephysics))
 
                             for handle in world.ordered_handles():
                                 if handle.pause: continue

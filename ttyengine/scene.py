@@ -384,13 +384,25 @@ class Scene:
             else:
                 cb()
 
-    def tick(self):
+    def tick(self, physics=True):
+        if physics:
+            for o in list(self.objs):
+                phy = getattr(o, 'physics', None)
+                if phy is not None and phy.dynamic:
+                    phy.physics()
         self._ticks += 1
         self._tickfade()
         for o in list(self.objs):
             tf = getattr(o, 'transform', None)
             if tf is not None:
                 tf._tick()
+        for o in list(self.objs):
+            jnt = getattr(o, 'joint', None)
+            if physics and jnt is not None:
+                jnt.step()
+            lgt = getattr(o, 'light', None)
+            if lgt is not None:
+                lgt.step()
 
     def _tickfade(self):
         f = self._fade
