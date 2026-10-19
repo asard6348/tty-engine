@@ -17,6 +17,7 @@ def wrap_property(component_attr: str, prop: property) -> property:
 
 from . import components as _components
 from .ascii_styler import Styler
+from .compositor import Compositor
 _comps = []
 _attrs = {}
 _temps = []
@@ -273,6 +274,7 @@ class Scene:
         self._bgcolor = (0, 0, 0)
         self._fade = None
         self._ticks = 0
+        self._compositor = None
         self.fgcolor = (204, 204, 204)
         self.styler = Styler(self)
         self.recomp =re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07?|\x1b[()]?[A-Za-z0-9])')
@@ -403,6 +405,19 @@ class Scene:
             lgt = getattr(o, 'light', None)
             if lgt is not None:
                 lgt.step()
+
+    @property
+    def compositor(self):
+        if self._compositor is None:
+            self._compositor = Compositor()
+        return self._compositor
+
+    def render(self, region=None, outer=None, autobg=True, full=False):
+        comp = self.compositor
+        if full:
+            comp.invalidate()
+        x, y, w, h = region if region is not None else (0, 0, self.termx, self.termy)
+        return comp.compose([self], [self], (x, y, w, h), (x + w, y + h), outer, autobg)
 
     def _tickfade(self):
         f = self._fade
