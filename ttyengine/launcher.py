@@ -351,6 +351,7 @@ class World():
 #COMPOSITOR CLASS
 class Compositor:
     runs = re.compile(b'\x01(?:\x00{0,3}\x01)*')
+    sgr = re.compile(r'\033\[([0-9;]*)m')
 
     def __init__(self):
         self.front = None
@@ -359,6 +360,7 @@ class Compositor:
         self.known = {}
         self.glows = {}
         self.styles = {}
+        self.bgfound = {}
         self.region = None
 
     def invalidate(self):
@@ -444,6 +446,29 @@ class Compositor:
             ))
         return style
 
+    def hasbg(self, style):
+        found = self.bgfound.get(style)
+        if found is None:
+            if len(self.bgfound) > 4096:
+                self.bgfound.clear()
+            found = False
+            for match in self.sgr.finditer(style):
+                params = match.group(1).split(';')
+                i = 0
+                while i < len(params):
+                    code = int(params[i]) if params[i] else 0
+                    if code == 48 or 40 <= code <= 47 or 100 <= code <= 107:
+                        found = True
+                        break
+                    if code == 38:
+                        i += 3 if i + 1 < len(params) and params[i + 1] == '5' else 5
+                    else:
+                        i += 1
+                if found:
+                    break
+            self.bgfound[style] = found
+        return found
+
     def shine(self, scene, back, spans, lit, plain):
         bg = self.bgstyle(scene.bgcolor)
         base = tuple(scene.bgcolor)
@@ -500,7 +525,7 @@ class Compositor:
                         line[x] = (char, glow)
                     elif style.startswith(bg):
                         rest = style[len(bg):]
-                        if '48;' not in rest:
+                        if not self.hasbg(rest):
                             line[x] = (char, glow + rest)
                     elif style == '' or style == plain:
                         line[x] = (char, glow)
@@ -527,7 +552,7 @@ class Compositor:
                     line[x] = (char, glow)
                 elif style.startswith(bg):
                     rest = style[len(bg):]
-                    if '48;' not in rest:
+                    if not self.hasbg(rest):
                         line[x] = (char, glow + rest)
                 elif style == '' or style == plain:
                     line[x] = (char, glow)
