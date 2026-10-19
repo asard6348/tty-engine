@@ -2713,6 +2713,50 @@ class pen():
         self._pcut = None
         self._cut_walls = {}
 
+_CONDITIONS = {
+    'physical': lambda o, p: p is not None,
+    'solid': lambda o, p: p is not None and bool(p.solid) and not p.phantom,
+    'phantom': lambda o, p: p is not None and bool(p.phantom),
+    'dynamic': lambda o, p: p is not None and bool(p.dynamic),
+    'static': lambda o, p: p is not None and not p.dynamic,
+}
+
+def _condition(name):
+    negate = name.startswith('!')
+    check = _CONDITIONS.get(name[1:] if negate else name)
+    if check is None:
+        raise ValueError('unknown affect condition: ' + name)
+    return lambda o: check(o, getattr(o, 'physics', None)) != negate
+
+def _matches(rule, o):
+    if rule is None:
+        return True
+    if isinstance(rule, str):
+        return _condition(rule)(o)
+    if hasattr(rule, 'transform'):
+        return rule is o
+    if callable(rule):
+        return bool(rule(o))
+    return any(_matches(r, o) for r in rule)
+
+def _compile(rule):
+    if rule is None:
+        return None
+    ids = set()
+    checks = []
+    def walk(r):
+        if isinstance(r, str):
+            checks.append(_condition(r))
+        elif hasattr(r, 'transform'):
+            ids.add(id(r))
+        elif callable(r):
+            checks.append(lambda o, r=r: bool(r(o)))
+        else:
+            for item in r:
+                walk(item)
+    walk(rule)
+    return lambda o: id(o) in ids or any(c(o) for c in checks)
+
 class force():
     _owned = ['affect', 'cap', 'force', 'position', 'radius', 'torque', 'shield']
     _required = [transform]
@@ -2749,18 +2793,12 @@ class force():
         return o.transform.extent()[:2]
 
     def targets(self):
-        affect = self.affect
-        if affect is None:
-            candidates = list(self.scene.objs)
-        elif hasattr(affect, 'transform'):
-            candidates = [affect]
-        else:
-            candidates = list(affect)
-        alive = {id(o) for o in self.scene.objs}
+        accept = _compile(self.affect)
+        me = self.obj
         return [
-            o for o in candidates
-            if o is not self.obj and id(o) in alive
-            and hasattr(o, 'transform') and hasattr(o, 'physics') and o.physics.dynamic
+            o for o in self.scene.objs
+            if o is not me and hasattr(o, 'transform') and hasattr(o, 'physics') and o.physics.dynamic
+            and (accept is None or accept(o))
         ]
 
     @staticmethod
@@ -3950,7 +3988,8 @@ class light():
     _required = [transform]
     _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'rotaspect'))
     _settings = ('color', 'alpha', 'radius', 'falloff', 'shadows', 'shadowalpha', 'selfshadow',
-                 'cone', 'direction', 'offset', 'mix', 'affect', 'on')
+                 'cone', 'direction', 'offset', 'mix', 'affect', 'on', 'glow', 'length', 'focus')
+    _stamps = {}
 
     def on_discard(self):
         self.scene.lights = [l for l in self.scene.lights if l is not self]
@@ -3962,7 +4001,10 @@ class light():
         self._version = 0
         self._sig = None
         self._occ = None
+        self._boxes = []
         self._origin = (0.0, 0.0)
+        self._heading = None
+        self._normal = (0.0, 1.0)
         self._color = (255, 255, 255)
         self._alpha = 1.0
         self._radius = 15
@@ -3976,6 +4018,11 @@ class light():
         self._mix = 0.35
         self._affect = None
         self._on = True
+        self._glow = False
+        self._length = 0.0
+        self._focus = 0.0
+        self._glowkey = None
+        self._glowrows = []
         self._cfg = kwargs.get('light', True)
         self.light = self._cfg
         def cb(attr):
@@ -4121,13 +4168,34 @@ class light():
         self._on = bool(value)
         self._touch()
 
+    @property
+    def glow(self):
+        return self._glow
+    @glow.setter
+    def glow(self, value):
+        self._glow = bool(value)
+        self._touch()
+
+    @property
+    def length(self):
+        return self._length
+    @length.setter
+    def length(self, value):
+        if value < 0:
+            raise ValueError('length must not be negative')
+        self._length = float(value)
+        self._touch()
+
+    @property
+    def focus(self):
+        return self._focus
+    @focus.setter
+    def focus(self, value):
+        self._focus = max(0.0, min(1.0, value))
+        self._touch()
+
     def _affects(self, o):
-        a = self._affect
-        if a is None:
-            return True
-        if hasattr(a, 'transform'):
-            return a is o
-        return any(x is o for x in a)
+        return _matches(self._affect, o)
 
     def origin(self):
         cx, cy = self.t.extent()[:2]
@@ -4140,8 +4208,9 @@ class light():
 
     def _casters(self):
         ox, oy = self._origin
-        reach_x = self._radius / self.scene.aspect + 2
-        reach_y = self._radius + 2
+        span = self._radius + self._length / 2
+        reach_x = span / self.scene.aspect + 2
+        reach_y = span + 2
         found = []
         pool = list(self.scene.solids)
         listed = {id(o) for o in pool}
@@ -4170,11 +4239,18 @@ class light():
     def _prepare(self):
         self._origin = self.origin()
         occ = {}
+        boxes = []
         if self._shadows:
             for o, t in self._casters():
-                for pixel in t.cells():
+                cells = t.cells()
+                for pixel in cells:
                     occ[pixel] = id(o)
+                if cells:
+                    xs = [c[0] for c in cells]
+                    ys = [c[1] for c in cells]
+                    boxes.append((min(xs), max(xs), min(ys), max(ys)))
         self._occ = occ
+        self._boxes = boxes
 
     def step(self):
         if not self._on:
@@ -4191,10 +4267,43 @@ class light():
             self._sig = sig
             self._touch()
 
-    def _shadowed(self, cx, cy, owner):
-        ox, oy = self._origin
-        n = max(1, int(math.ceil(max(abs(cx - ox), abs(cy - oy)) * 2)))
+    def _shadowed(self, cx, cy, owner, origin=None):
         occ = self._occ
+        if not occ:
+            return False
+        ox, oy = origin or self._origin
+        dx = cx - ox
+        dy = cy - oy
+        for bx0, bx1, by0, by1 in self._boxes:
+            lo = 0.0
+            hi = 1.0
+            if dx:
+                a = (bx0 - ox) / dx
+                b = (bx1 + 1 - ox) / dx
+                if a > b:
+                    a, b = b, a
+                if a > lo:
+                    lo = a
+                if b < hi:
+                    hi = b
+            elif ox < bx0 or ox > bx1 + 1:
+                continue
+            if dy:
+                a = (by0 - 1 - oy) / dy
+                b = (by1 - oy) / dy
+                if a > b:
+                    a, b = b, a
+                if a > lo:
+                    lo = a
+                if b < hi:
+                    hi = b
+            elif oy < by0 - 1 or oy > by1:
+                continue
+            if lo <= hi + 1e-9:
+                break
+        else:
+            return False
+        n = max(1, int(math.ceil(max(abs(cx - ox), abs(cy - oy)) * 2)))
         me = id(self.obj)
         for i in range(1, n):
             f = i / n
@@ -4203,28 +4312,137 @@ class light():
                 return True
         return False
 
-    def contribution(self, cx, cy, owner=None):
-        if self._occ is None:
-            self._prepare()
-        ox, oy = self._origin
-        A = self.scene.aspect
-        dx = (cx - ox) * A
-        dy = cy - oy
+    def _facing(self):
+        angle = self.t.rotation + self._direction
+        if angle != self._heading:
+            self._heading = angle
+            radians = math.radians(angle)
+            self._normal = (math.sin(radians), math.cos(radians))
+        return self._normal
+
+    def _foot(self, dx, dy):
+        if not self._length:
+            return 0.0, 0.0
+        nx, ny = self._facing()
+        half = self._length / 2
+        s = max(-half, min(half, dx * ny - dy * nx))
+        return s * ny, -s * nx
+
+    def _source(self, dx, dy, origin=None):
+        if not self._length:
+            return origin
+        ox, oy = origin or self._origin
+        qx, qy = self._foot(dx, dy)
+        return (ox + qx / self.scene.aspect, oy + qy)
+
+    def _level(self, dx, dy):
+        qx, qy = self._foot(dx, dy)
+        dx -= qx
+        dy -= qy
         dist = math.hypot(dx, dy)
         if dist >= self._radius:
             return 0.0
         amount = self._alpha * (1 - dist / self._radius) ** self._falloff
-        if self._cone is not None and dist > 0.5:
-            diff = abs(_wrap(math.degrees(math.atan2(dx, dy)) - (self.t.rotation + self._direction)))
-            half = self._cone / 2
-            if diff >= half:
-                return 0.0
-            amount *= min(1.0, (half - diff) / (self._cone * 0.1))
+        if dist > 0.5:
+            if self._cone is not None:
+                diff = abs(_wrap(math.degrees(math.atan2(dx, dy)) - (self.t.rotation + self._direction)))
+                half = self._cone / 2
+                if diff >= half:
+                    return 0.0
+                amount *= min(1.0, (half - diff) / (self._cone * 0.1))
+            if self._focus:
+                nx, ny = self._facing()
+                amount *= 1 - self._focus + self._focus * max(0.0, (dx * nx + dy * ny) / dist)
+        return max(amount, 0.0)
+
+    def contribution(self, cx, cy, owner=None):
+        if self._occ is None:
+            self._prepare()
+        ox, oy = self._origin
+        dx = (cx - ox) * self.scene.aspect
+        dy = cy - oy
+        amount = self._level(dx, dy)
         if amount <= 0:
             return 0.0
-        if self._shadows and self._shadowed(cx, cy, owner):
+        if self._shadows and self._shadowed(cx, cy, owner, self._source(dx, dy)):
             amount *= 1 - self._shadowalpha
         return amount
+
+    def glowing(self):
+        return self._glow and self._on
+
+    def _stamp(self):
+        aspect = self.scene.aspect
+        angular = self._cone is not None or self._focus or self._length
+        key = (self._radius, self._alpha, self._falloff, aspect, self._cone, self._length, self._focus,
+               round((self.t.rotation + self._direction) % 360) if angular else 0)
+        stamp = light._stamps.get(key)
+        if stamp is None:
+            if len(light._stamps) > 64:
+                light._stamps.clear()
+            span = self._radius + self._length / 2
+            reach_x = int(span / aspect) + 1
+            reach_y = int(span) + 1
+            rows = []
+            for j in range(-reach_y, reach_y + 1):
+                amounts = [self._level(i * aspect, j) for i in range(-reach_x, reach_x + 1)]
+                lit = [k for k, a in enumerate(amounts) if a > 0]
+                if lit:
+                    rows.append((j, lit[0] - reach_x, amounts[lit[0]:lit[-1] + 1]))
+            stamp = light._stamps[key] = (key, rows, reach_x, reach_y)
+        return stamp
+
+    def _spot(self):
+        if self._occ is None:
+            self._prepare()
+        return int(math.floor(self._origin[0])), int(math.ceil(self._origin[1]))
+
+    def glowbox(self, camx, camy, xoff, yoff, view):
+        gx, gy = self._spot()
+        _, _, reach_x, reach_y = self._stamp()
+        return (max(view[0], gx - reach_x - camx + xoff),
+                max(view[1], camy - gy - reach_y - yoff),
+                min(view[2], gx + reach_x - camx + xoff + 1),
+                min(view[3], camy - gy + reach_y - yoff + 1))
+
+    def glowkey(self, camx, camy, xoff, yoff, view):
+        gx, gy = self._spot()
+        return (gx, gy, self._stamp()[0], self._version if self._occ else 0,
+                self._color, self._mix, camx, camy, xoff, yoff, view)
+
+    def glowrows(self, camx, camy, xoff, yoff, view):
+        key = self.glowkey(camx, camy, xoff, yoff, view)
+        if key == self._glowkey:
+            return self._glowrows
+        gx, gy = self._spot()
+        rows = self._stamp()[1]
+        aspect = self.scene.aspect
+        origin = (gx + 0.5, gy - 0.5)
+        clear = 1 - self._shadowalpha
+        out = []
+        for j, i0, amounts in rows:
+            y = camy - gy - j - yoff
+            if y < view[1] or y >= view[3]:
+                continue
+            x = gx + i0 - camx + xoff
+            lo = max(view[0] - x, 0)
+            hi = min(view[2] - x, len(amounts))
+            if lo >= hi:
+                continue
+            if lo or hi < len(amounts):
+                amounts = amounts[lo:hi]
+                x += lo
+            if self._occ:
+                cy = gy + j - 0.5
+                base = gx + i0 + lo
+                amounts = [a * clear if a and self._shadowed(base + k + 0.5, cy, None,
+                                                             self._source((base + k + 0.5 - origin[0]) * aspect, j, origin))
+                           else a
+                           for k, a in enumerate(amounts)]
+            out.append((y, x, amounts))
+        self._glowkey = key
+        self._glowrows = out
+        return out
 
     @staticmethod
     def shade(scene, obj, text):

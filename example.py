@@ -52,7 +52,8 @@ def dev(Session=Session): #DEBUG
             self.camspeed = 0.7
             self.void = -100
             #scene.bgcolor = (255,255,255)
-            self.pencolor = None#(0,255,255)
+            self.pencolor = (50, 120, 155)
+            self.scpencolor = (155, 120, 50)
 
         def start(self):    #START
             sc = self.scene
@@ -148,10 +149,11 @@ def dev(Session=Session): #DEBUG
 
             self.pen = obj().create(penchar='█', pradius=2)
             self.penc = 0
-            def on_click_pen(mx, my, data):
+            def on_click_pen(mx, my, data, pencolor=None):
+                if pencolor is None: pencolor = self.pencolor
                 self.pen.pen.pradius=2 if data==0 else 1
                 self.pen.pen.x, self.pen.pen.y = w2(mx, my)
-                self.pen.pen.down(char=style(self.pen.pen.char, color=(self.penc+13 if data==0 else 'gray') if not self.pencolor else self.pencolor))
+                self.pen.pen.down(char=style(self.pen.pen.char, color=(self.penc+13 if data==0 else 'gray') if not pencolor else pencolor))
                 self.penc = 0 if self.penc >= 13 else self.penc + 1
                 if data == 2:
                     self.pen.pen.cancel()
@@ -161,12 +163,12 @@ def dev(Session=Session): #DEBUG
                 if data == 2:
                     self.pen.pen.drop()
                     self.pen.pen.cutcommit(r=0, hitbox=False)
-                self.pen.pen.up(dynamic=dynamic, friction=0.97)
+                self.pen.pen.up(dynamic=dynamic, friction=0.99)
             inp.onmouse('click', on_click_pen)
             inp.onmouse('release', lambda mx, my, data: on_release_pen(mx, my, data, False))
             def on_move_pen(mx, my, data):
                 if inp.held('space'):
-                    on_click_pen(mx, my, 0)
+                    on_click_pen(mx, my, 0, self.scpencolor)
                 wx, wy = w2(mx, my)
                 for p in (self.pen.pen, self.tpen.pen):
                     if p.active:

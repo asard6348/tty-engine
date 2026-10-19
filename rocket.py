@@ -282,6 +282,8 @@ class player():
 
         scene.follow(plr)
 
+        plr.create(light={'mix':0.4,'color':'brightblue','radius':30,'glow':True,'affect':'physical'})
+
         self.info = track(scene.obj().create(session.style('ZOOM OUT BY "CTRL" + "-", QUIT BY "Q", START GAME BY "F"', color='black', bgcolor='white'), renderspaces=True))
         self._ad = -1
 
@@ -293,7 +295,7 @@ class player():
             spawn_x = px + sx
             spawn_y = py + sy
             aim = t.point(inp._mouse_x + scene.camx, scene.camy - inp._mouse_y, origin=(spawn_x, spawn_y))
-            bullet = track(scene.obj().create(style('●\n●\n●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = aim, mass=0, phantom=True))
+            bullet = track(scene.obj().create(style('●\n●\n●', color='yellow', bgcolor='yellow'), spawn_x, spawn_y, rotation = aim, mass=0, phantom=True, light={'mix':1,'color':'yellow','radius':10,'glow':True}))
             bt = bullet.transform
             bp = bullet.physics
             lx, ly = bt.pivot(True)

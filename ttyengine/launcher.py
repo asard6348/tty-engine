@@ -357,6 +357,8 @@ class Compositor:
         self.width = 0
         self.height = 0
         self.known = {}
+        self.glows = {}
+        self.styles = {}
         self.region = None
 
     def invalidate(self):
@@ -419,9 +421,121 @@ class Compositor:
             rows.append((len(cells), runs))
         return rows
 
-    def sync(self, worlds, active):
+    @staticmethod
+    def view(sc, width, height):
+        return (
+            max(0, sc.dimxoffset),
+            max(0, -sc.dimyoffset),
+            min(width, sc.termx, sc.dimxoffset + sc.dimx),
+            min(height, sc.termy, -sc.dimyoffset + sc.dimy),
+        )
+
+    def tint(self, base, red, green, blue, level):
+        key = (base, red, green, blue, level)
+        style = self.styles.get(key)
+        if style is None:
+            if len(self.styles) > 50000:
+                self.styles.clear()
+            amount = level / 256
+            style = self.styles[key] = self.bgstyle((
+                max(0, min(255, int(round(base[0] + (red - base[0]) * amount)))),
+                max(0, min(255, int(round(base[1] + (green - base[1]) * amount)))),
+                max(0, min(255, int(round(base[2] + (blue - base[2]) * amount)))),
+            ))
+        return style
+
+    def shine(self, scene, back, spans, lit, plain):
+        bg = self.bgstyle(scene.bgcolor)
+        base = tuple(scene.bgcolor)
+        groups = {}
+        for light, rows in lit:
+            gkey = (light._color, light._mix)
+            grows = groups.get(gkey)
+            if grows is None:
+                grows = groups[gkey] = {}
+            for y, x, amounts in rows:
+                span = spans.get(y)
+                if span is None:
+                    continue
+                lo = max(span[0] - x, 0)
+                hi = min(span[1] - x, len(amounts))
+                if lo >= hi:
+                    continue
+                if lo or hi < len(amounts):
+                    amounts = amounts[lo:hi]
+                start = x + lo
+                stop = start + len(amounts)
+                entry = grows.get(y)
+                if entry is None:
+                    entry = grows[y] = [[0.0] * len(back[y]), start, stop]
+                else:
+                    if start < entry[1]:
+                        entry[1] = start
+                    if stop > entry[2]:
+                        entry[2] = stop
+                row = entry[0]
+                for xx, amount in enumerate(amounts, start):
+                    row[xx] += amount
+        ys = set()
+        for grows in groups.values():
+            ys.update(grows)
+        for y in ys:
+            line = back[y]
+            entries = [(color, mix, grows[y]) for (color, mix), grows in groups.items() if y in grows]
+            if len(entries) == 1:
+                color, mix, (row, first, last) = entries[0]
+                lut = self.styles.get((base, color))
+                if lut is None:
+                    lut = self.styles[(base, color)] = [None] * 257
+                for x in range(first, last):
+                    total = row[x]
+                    if total <= 0:
+                        continue
+                    level = int(mix * (total if total < 1.0 else 1.0) * 256 + 0.5)
+                    glow = lut[level]
+                    if glow is None:
+                        glow = lut[level] = self.tint(base, color[0], color[1], color[2], level)
+                    char, style = line[x]
+                    if style == bg:
+                        line[x] = (char, glow)
+                    elif style.startswith(bg):
+                        rest = style[len(bg):]
+                        if '48;' not in rest:
+                            line[x] = (char, glow + rest)
+                    elif style == '' or style == plain:
+                        line[x] = (char, glow)
+                continue
+            first = min(e[2][1] for e in entries)
+            last = max(e[2][2] for e in entries)
+            for x in range(first, last):
+                total = mixsum = red = green = blue = 0.0
+                for color, mix, (row, a, b) in entries:
+                    if a <= x < b:
+                        amount = row[x]
+                        if amount > 0:
+                            total += amount
+                            mixsum += amount * mix
+                            red += amount * color[0]
+                            green += amount * color[1]
+                            blue += amount * color[2]
+                if total <= 0:
+                    continue
+                glow = self.tint(base, int(round(red / total)), int(round(green / total)), int(round(blue / total)),
+                                 int(mixsum / total * min(1.0, total) * 256 + 0.5))
+                char, style = line[x]
+                if style == bg:
+                    line[x] = (char, glow)
+                elif style.startswith(bg):
+                    rest = style[len(bg):]
+                    if '48;' not in rest:
+                        line[x] = (char, glow + rest)
+                elif style == '' or style == plain:
+                    line[x] = (char, glow)
+
+    def sync(self, worlds, active, width, height):
         rects = []
         seen = set()
+        glowing = set()
         known = self.known
         for w in worlds:
             sc = w.scene
@@ -459,6 +573,24 @@ class Compositor:
                     x, y, _, xo, yo = current
                     rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
                 state[0] = current
+            if live:
+                view = self.view(sc, width, height)
+                for light in sc.lights:
+                    if not light.glowing():
+                        continue
+                    glowing.add(light)
+                    key = (light.glowkey(camx, camy, xoff, yoff, view), bgcolor)
+                    previous = self.glows.get(light)
+                    if previous is None or previous[0] != key:
+                        if previous is not None:
+                            rects.append(previous[1])
+                        box = light.glowbox(camx, camy, xoff, yoff, view)
+                        rects.append(box)
+                        self.glows[light] = (key, box)
+            else:
+                glowing.update(light for light in sc.lights if light in self.glows)
+        for light in [light for light in self.glows if light not in glowing]:
+            rects.append(self.glows.pop(light)[1])
         for r in [r for r in known if r not in seen]:
             state = known.pop(r)
             if state[0][2]:
@@ -470,12 +602,7 @@ class Compositor:
         layers = []
         for w in worlds:
             sc = w.scene
-            view = (
-                max(0, sc.dimxoffset),
-                max(0, -sc.dimyoffset),
-                min(width, sc.termx, sc.dimxoffset + sc.dimx),
-                min(height, sc.termy, -sc.dimyoffset + sc.dimy),
-            )
+            view = self.view(sc, width, height)
             bg = self.bgstyle(sc.bgcolor) if autobg and w.autobg else None
             sprites = []
             for r in sorted([o.rendering for o in sc.objs if hasattr(o, 'rendering')], key=lambda r: r.z):
@@ -489,12 +616,21 @@ class Compositor:
                     state[3] = max(row[0] for row in state[2])
                 x, y, _, xo, yo = state[0]
                 sprites.append((x + xo, y - yo, state[2]))
-            layers.append((view, bg, sprites))
+            lit = []
+            if view[0] < view[2] and view[1] < view[3]:
+                camx = sc.iround(sc.camx)
+                camy = sc.iround(sc.camy)
+                for light in sc.lights:
+                    if light.glowing():
+                        rows = light.glowrows(camx, camy, sc.dimxoffset, sc.dimyoffset, view)
+                        if rows:
+                            lit.append((light, rows))
+            layers.append((view, bg, sprites, sc, lit))
         return layers
 
     def compose(self, worlds, active, region, bounds, outer, autobg):
         regx, regy, width, height = region
-        rects = self.sync(worlds, active)
+        rects = self.sync(worlds, active, width, height)
         prefix = ''
         moved = self.region is not None and self.region != region
         if moved:
@@ -527,7 +663,7 @@ class Compositor:
         right = max(s[1] for s in spans.values())
         base = (' ', self.bgstyle(outer) if outer is not None else '')
         back = {y: [base] * width for y in spans}
-        for view, bg, sprites in self.layers(worlds, width, height, autobg):
+        for view, bg, sprites, sc, lit in self.layers(worlds, width, height, autobg):
             vx0, vy0, vx1, vy1 = view
             if bg is not None:
                 cell = (' ', bg)
@@ -559,6 +695,8 @@ class Compositor:
                         e = min(b, x + offset + len(cells))
                         if s < e:
                             line[s:e] = cells[s - x - offset:e - x - offset]
+            if lit:
+                self.shine(sc, back, spans, lit, base[1])
         out = []
         style = None
         for y in sorted(spans):

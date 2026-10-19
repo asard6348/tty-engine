@@ -112,7 +112,7 @@ class obj:
             compins = comp()
         ow = getattr(compins, '_owned', None)
         ch = getattr(compins, '_changed', None)
-        
+
         for k, v in kwargs.items():
             if ow and k in ow:
                 val = getattr(compins, k, None)
@@ -498,29 +498,39 @@ class Scene:
             elif l > 1: orig(att, old)
             elif l > 0: orig(att)
             else: orig()
+        wrapped.__wrapped__ = orig
         store[wrapped] = 3
         return wrapped
 
-    def oncam(self, callback):
-        self._oncamcb[callback] = _argslen(callback)
+    def _register(self, callback, store, once):
+        if once:
+            self._register_once(callback, store, once)
+        else:
+            store[callback] = _argslen(callback)
         return callback
+
+    @staticmethod
+    def _unregister(store, callback):
+        return {cb: pars for cb, pars in store.items()
+                if cb is not callback and getattr(cb, '__wrapped__', None) is not callback}
+
+    def oncam(self, callback, once=False):
+        return self._register(callback, self._oncamcb, once)
 
     def offcam(self, callback):
-        self._oncamcb = {cb: pars for cb, pars in self._oncamcb.items() if cb is not callback}
+        self._oncamcb = self._unregister(self._oncamcb, callback)
 
-    def ondim(self, callback):
-        self._ondimcb[callback] = _argslen(callback)
-        return callback
+    def ondim(self, callback, once=False):
+        return self._register(callback, self._ondimcb, once)
 
     def offdim(self, callback):
-        self._ondimcb = {cb: pars for cb, pars in self._ondimcb.items() if cb is not callback}
+        self._ondimcb = self._unregister(self._ondimcb, callback)
 
-    def ondimoffset(self, callback):
-        self._ondimoffsetcb[callback] = _argslen(callback)
-        return callback
+    def ondimoffset(self, callback, once=False):
+        return self._register(callback, self._ondimoffsetcb, once)
 
     def offdimoffset(self, callback):
-        self._ondimoffsetcb = {cb: pars for cb, pars in self._ondimoffsetcb.items() if cb is not callback}
+        self._ondimoffsetcb = self._unregister(self._ondimoffsetcb, callback)
 
     def iround(self, x):
         return int((x + 0.5) // 1)
