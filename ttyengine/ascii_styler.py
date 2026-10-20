@@ -68,7 +68,7 @@ ALPHA_FGBACK = 1300
 ALPHA_BG = 1600
 alphamark = re.compile(r'\033\[(1[0-8]\d\d)m')
 _figlet_cache = {}
-DEFAULT_SHADES = " .:-=+*#%@"
+DEFAULT_SHADES = "█"#" .:-=+*#%@"
 
 
 def alphacode(base, alpha):
