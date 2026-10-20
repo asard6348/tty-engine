@@ -1,10 +1,33 @@
 import re
 from itertools import groupby
 from operator import itemgetter
+from .ascii_styler import alphamark, alphaparse, bgrecomp, fgrecomp
+
+COVER = {' ': 0.0, '█': 1.0, '▓': 0.75, '▒': 0.5, '░': 0.25, '▀': 0.5, '▄': 0.5, '▌': 0.5, '▐': 0.5}
+_kinds = {}
 
 
 def scene_of(item):
     return getattr(item, 'scene', item)
+
+
+def kind(active):
+    found = _kinds.get(active)
+    if found is None:
+        if len(_kinds) > 4096:
+            _kinds.clear()
+        fa, back, ba = alphaparse(active)
+        if fa is None and ba is None:
+            found = 0
+        else:
+            own = bgrecomp.search(active) is not None
+            found = 2 if (ba is not None and own) or (fa is not None and (back or not own)) else 1
+        _kinds[active] = found
+    return found
+
+
+def clamp(color):
+    return tuple(max(0, min(255, int(round(v)))) for v in color)
 
 
 class Compositor:
@@ -19,6 +42,8 @@ class Compositor:
         self.glows = {}
         self.styles = {}
         self.bgfound = {}
+        self.palettes = {}
+        self.glasses = {}
         self.region = None
 
     def invalidate(self):
@@ -64,22 +89,92 @@ class Compositor:
                     elif part.startswith('\033[') and part.endswith('m'):
                         active += part
                     continue
-                style = bg + active
+                shape = kind(active)
+                if shape == 2:
+                    for char in part:
+                        cells.append((char, active, True) if spaces or char != ' ' else None)
+                    continue
+                style = bg + (alphamark.sub('', active) if shape else active)
                 for char in part:
                     cells.append((char, style) if spaces or char != ' ' else None)
             runs = []
-            start = None
-            for i, cell in enumerate(cells):
-                if cell is None:
-                    if start is not None:
-                        runs.append((start, cells[start:i]))
-                        start = None
-                elif start is None:
-                    start = i
-            if start is not None:
-                runs.append((start, cells[start:]))
-            rows.append((len(cells), runs))
+            glass = []
+            at = 0
+            for width, group in groupby(cells, key=lambda cell: 0 if cell is None else len(cell)):
+                items = list(group)
+                if width == 2:
+                    runs.append((at, items))
+                elif width == 3:
+                    glass.append((at, [(cell[0], cell[1]) for cell in items]))
+                at += len(items)
+            rows.append((len(cells), runs, glass))
         return rows
+
+    def palette(self, style, base, front):
+        key = (style, base, front)
+        found = self.palettes.get(key)
+        if found is None:
+            if len(self.palettes) > 4096:
+                self.palettes.clear()
+            backs = bgrecomp.findall(style)
+            fronts = fgrecomp.findall(style)
+            found = self.palettes[key] = (
+                tuple(int(v) for v in backs[-1]) if backs else base,
+                tuple(int(v) for v in fronts[-1]) if fronts else front,
+            )
+        return found
+
+    def see(self, scene, under, char, active):
+        base = tuple(scene.bgcolor)
+        front = tuple(scene.fgcolor)
+        fa, back, ba = alphaparse(active)
+        backs = bgrecomp.findall(active)
+        fronts = fgrecomp.findall(active)
+        own = bool(backs)
+        if char == ' ' and not own:
+            return None, None
+        if (char == ' ' or (fa is not None and fa <= 0)) and (not own or (ba is not None and ba <= 0)):
+            return None, None
+        ubg, ufg = self.palette(under[1], base, front)
+        cover = COVER.get(under[0], 0.5)
+        seen = tuple(ubg[k] + (ufg[k] - ubg[k]) * cover for k in range(3))
+        if own:
+            baked = tuple(int(v) for v in backs[-1])
+            ground = baked if ba is None else tuple(baked[k] + (seen[k] - base[k]) * (1 - ba) for k in range(3))
+        else:
+            baked = None
+            ground = seen
+        style = self.bgstyle(clamp(ground)) + alphamark.sub('', fgrecomp.sub('', bgrecomp.sub('', active)))
+        share = None
+        if fronts:
+            paint = tuple(int(v) for v in fronts[-1])
+            if fa is not None:
+                old, new = (base, seen) if back or not own else (baked, ground)
+                paint = tuple(paint[k] + (new[k] - old[k]) * (1 - fa) for k in range(3))
+                if back or not own:
+                    share = 1 - fa
+            style += '\033[38;2;%d;%d;%dm' % clamp(paint)
+        return (char, style), share
+
+    def glass(self, scene, under, char, active):
+        key = (under, char, active, tuple(scene.bgcolor), tuple(scene.fgcolor))
+        found = self.glasses.get(key)
+        if found is None:
+            if len(self.glasses) > 20000:
+                self.glasses.clear()
+            found = self.glasses[key] = self.see(scene, under, char, active)
+        return found
+
+    def seep(self, glow, rest, base, share):
+        match = bgrecomp.search(glow)
+        if match is None:
+            return rest
+        goal = [int(v) for v in match.groups()]
+
+        def shift(found):
+            old = [int(v) for v in found.groups()]
+            return '\033[38;2;%d;%d;%dm' % clamp(old[k] + (goal[k] - base[k]) * share for k in range(3))
+        return fgrecomp.sub(shift, rest)
 
     @staticmethod
     def view(sc, width, height):
@@ -127,7 +222,7 @@ class Compositor:
             self.bgfound[style] = found
         return found
 
-    def shine(self, scene, back, spans, lit, plain):
+    def shine(self, scene, back, spans, lit, plain, warm=None):
         bg = self.bgstyle(scene.bgcolor)
         base = tuple(scene.bgcolor)
         groups = {}
@@ -184,6 +279,10 @@ class Compositor:
                     elif style.startswith(bg):
                         rest = style[len(bg):]
                         if not self.hasbg(rest):
+                            if warm:
+                                entry = warm.get((y, x))
+                                if entry is not None and entry[1] == line[x]:
+                                    rest = self.seep(glow, rest, base, entry[0])
                             line[x] = (char, glow + rest)
                     elif style == '' or style == plain:
                         line[x] = (char, glow)
@@ -211,6 +310,10 @@ class Compositor:
                 elif style.startswith(bg):
                     rest = style[len(bg):]
                     if not self.hasbg(rest):
+                        if warm:
+                            entry = warm.get((y, x))
+                            if entry is not None and entry[1] == line[x]:
+                                rest = self.seep(glow, rest, base, entry[0])
                         line[x] = (char, glow + rest)
                 elif style == '' or style == plain:
                     line[x] = (char, glow)
@@ -348,6 +451,7 @@ class Compositor:
         back = {y: [base] * width for y in spans}
         for view, bg, sprites, sc, lit in self.layers(items, width, height, autobg):
             vx0, vy0, vx1, vy1 = view
+            warm = {}
             if bg is not None:
                 cell = (' ', bg)
                 for y in range(max(vy0, top), min(vy1, bottom)):
@@ -361,7 +465,7 @@ class Compositor:
             for x, y, grid in sprites:
                 if y >= bottom or y + len(grid) <= top or x >= right:
                     continue
-                for i, (rowwidth, runs) in enumerate(grid):
+                for i, (rowwidth, runs, glass) in enumerate(grid):
                     ry = y + i
                     if ry < vy0 or ry >= vy1:
                         continue
@@ -378,8 +482,18 @@ class Compositor:
                         e = min(b, x + offset + len(cells))
                         if s < e:
                             line[s:e] = cells[s - x - offset:e - x - offset]
+                    for offset, cells in glass:
+                        s = max(a, x + offset)
+                        e = min(b, x + offset + len(cells))
+                        for xx in range(s, e):
+                            char, active = cells[xx - x - offset]
+                            cell, share = self.glass(sc, line[xx], char, active)
+                            if cell is not None:
+                                line[xx] = cell
+                                if share is not None:
+                                    warm[(ry, xx)] = (share, cell)
             if lit:
-                self.shine(sc, back, spans, lit, base[1])
+                self.shine(sc, back, spans, lit, base[1], warm)
         out = []
         style = None
         for y in sorted(spans):

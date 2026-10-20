@@ -5,6 +5,7 @@
 
 #MODULES
 import math, re, statistics, inspect, collections.abc, functools
+from .ascii_styler import alphaparse, alphamark
 
 #GLOBAL
 _NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
@@ -129,6 +130,16 @@ def _mtv_cells(mine, other_pixels, aspect):
     return best
 
 _SGR = re.compile(r'\x1b\[([0-9;]*)m')
+_ALPHAS = functools.lru_cache(maxsize=4096)(alphaparse)
+_HOLD = object()
+
+def _unbake(baked, ref, alpha):
+    if alpha <= 0:
+        return baked
+    return tuple((baked[k] - ref[k] * (1 - alpha)) / alpha for k in range(3))
+
+def _rebake(ref, source, alpha):
+    return tuple(max(0, min(255, int(round(ref[k] * (1 - alpha) + source[k] * alpha)))) for k in range(3))
 _FGCODE = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 _BGCODE = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 
@@ -239,7 +250,67 @@ class _change_callback(metaclass=_metainit, init='_chinit'):
 
 
 #COMPONENTS
-class transform(_change_callback):
+class _lerpable:
+    _angles = frozenset()
+    _colors = frozenset()
+
+    def _lerpbase(self, key):
+        return None
+
+    def _lerpkeep(self, key, value):
+        return value
+
+    @staticmethod
+    def _lerpturn(current, target):
+        return (target - current + 540) % 360 - 180
+
+    def _lerpcolor(self, value):
+        if isinstance(value, list):
+            value = tuple(value)
+        return self.scene.styler.rgb(value)
+
+    def _lerpvalue(self, key, current, target, alpha):
+        if key in self._colors:
+            goal = self._lerpcolor(target)
+            if goal is None:
+                raise ValueError('unknown color: ' + repr(target))
+            start = self._lerpbase(key) if current is None else self._lerpcolor(current)
+            if start is None:
+                return target if alpha >= 1 else _HOLD
+            return tuple(int(round(a + (b - a) * alpha)) for a, b in zip(start, goal))
+        if current is None:
+            current = self._lerpbase(key)
+        if (isinstance(current, (tuple, list)) and isinstance(target, (tuple, list))
+                and len(current) == len(target)):
+            parts = [self._lerpvalue(key, a, b, alpha) for a, b in zip(current, target)]
+            if any(part is _HOLD for part in parts):
+                return target if alpha >= 1 else _HOLD
+            return type(current)(parts)
+        numeric = (int, float)
+        if (isinstance(current, numeric) and isinstance(target, numeric)
+                and not isinstance(current, bool) and not isinstance(target, bool)):
+            if key in self._angles:
+                return current + self._lerpturn(current, target) * alpha
+            return current + (target - current) * alpha
+        return target if alpha >= 1 else _HOLD
+
+    def lerp(self, weight=1, /, **kwargs):
+        for key, target in kwargs.items():
+            if not hasattr(self, key):
+                raise AttributeError('%s has no attribute %r' % (type(self).__name__, key))
+            if weight == 1:
+                value = target
+            else:
+                value = self._lerpvalue(key, getattr(self, key), target, weight)
+                if value is _HOLD:
+                    continue
+            setattr(self, key, self._lerpkeep(key, value))
+        return self
+
+
+class transform(_change_callback, _lerpable):
+    _angles = frozenset(('rotation',))
+    _colors = frozenset(('fg', 'bg'))
     _owned = [
         'x', 'y',
         'vx', 'vy',
@@ -269,6 +340,7 @@ class transform(_change_callback):
         self._bg = kwargs.get('bg', None)
         self._alpha = kwargs.get('alpha', None)
         self._bgalpha = kwargs.get('bgalpha', None)
+        self._opacity_cache = None
         self._style_cache = {}
         self._styled_for = None
         self._fade = None
@@ -1522,20 +1594,52 @@ class transform(_change_callback):
             self._frame(a['frames'][a['index']])
             a['wait'] += a['delays'][a['index']]
 
-    def lerp(self, alpha=1, **kwargs):
-        for key, target in kwargs.items():
-            current = getattr(self, key)
-            if alpha == 1:
-                value = target
-            elif key == 'rotation':
-                value = current + self.alerp(target) * alpha
-            else:
-                value = current + (target - current) * alpha
-            setattr(self, key, value)
-        return self
+    def _lerpbase(self, key):
+        if key in ('alpha', 'bgalpha'):
+            return 1.0
+        if key == 'fg':
+            return tuple(self.scene.fgcolor)
+        if key == 'bg':
+            return tuple(self.scene.bgcolor)
+        return None
+
+    def _lerpkeep(self, key, value):
+        if key in ('alpha', 'bgalpha') and value is not None:
+            value = max(0.0, value)
+            return None if value >= 1 else value
+        return value
+
+    def opacities(self):
+        text = self.vtext
+        cached = self._opacity_cache
+        if cached is not None and cached[0] is text:
+            return cached[1]
+        found = {}
+        if text and alphamark.search(text):
+            recomp = self.scene.recomp
+            for ri, row in enumerate(text.splitlines()):
+                ci = 0
+                active = ''
+                for part in recomp.split(row):
+                    if not part:
+                        continue
+                    if recomp.match(part):
+                        active = '' if part in ('\033[0m', '\033[m') else active + part
+                        continue
+                    fa, _, ba = _ALPHAS(active)
+                    if fa is not None or ba is not None:
+                        own = _BGCODE.search(active) is not None
+                        value = (1.0 if ba is None else ba) if own else (1.0 if fa is None else fa)
+                        if value < 1.0:
+                            for k, char in enumerate(part):
+                                if own or char != ' ':
+                                    found[(ci + k, ri)] = value
+                    ci += len(part)
+        self._opacity_cache = (text, found)
+        return found
 
 
-class rendering():
+class rendering(_lerpable):
     _owned = ['show', 'renderspaces', 'z']
     _required = [transform]
     _default = True
@@ -1601,7 +1705,7 @@ class rendering():
         self.z = self.scene._firstz -1
 
 
-class physics(_change_callback):
+class physics(_change_callback, _lerpable):
     _owned = [
         'xvel', 'yvel', 'avel',
         'dynamic',
@@ -2445,7 +2549,7 @@ class physics(_change_callback):
         self._depenetrate()
         self._probe()
 
-class pen():
+class pen(_lerpable):
     _owned = ['penchar', 'penx', 'peny', 'pradius', 'pshape']
     _required = [transform]
     _settings = ('char', 'x', 'y', 'radius', 'shape')
@@ -2757,7 +2861,7 @@ def _compile(rule):
     walk(rule)
     return lambda o: id(o) in ids or any(c(o) for c in checks)
 
-class force():
+class force(_lerpable):
     _owned = ['affect', 'cap', 'force', 'position', 'radius', 'torque', 'shield']
     _required = [transform]
     _settings = ('affect', 'cap', 'strength', 'position', 'radius', 'torque', 'shield')
@@ -3306,7 +3410,8 @@ class _edge():
                 comp._push(ex * w * k, ey * w * k)
 
 @_withparams
-class joint():
+class joint(_lerpable):
+    _angles = frozenset(('rest', 'axis'))
     _owned = ['joints', 'xoffset', 'yoffset', 'pinx', 'piny', 'jradius', 'range', 'elasticity',
               'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide', 'preset']
     _required = [transform]
@@ -3983,12 +4088,14 @@ class joint():
             self._settle(motor=True, stamp=tick)
 
 
-class light():
+class light(_lerpable):
+    _angles = frozenset(('direction',))
+    _colors = frozenset(('color',))
     _owned = ['light']
     _required = [transform]
     _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'rotaspect'))
     _settings = ('color', 'alpha', 'radius', 'falloff', 'shadows', 'shadowalpha', 'selfshadow',
-                 'cone', 'direction', 'offset', 'mix', 'affect', 'on', 'glow', 'length', 'focus')
+                 'cone', 'direction', 'offset', 'mix', 'affect', 'on', 'glow', 'length', 'focus', 'translucent')
     _stamps = {}
 
     def on_discard(self):
@@ -4001,6 +4108,7 @@ class light():
         self._version = 0
         self._sig = None
         self._occ = None
+        self._thin = {}
         self._boxes = []
         self._origin = (0.0, 0.0)
         self._heading = None
@@ -4012,6 +4120,7 @@ class light():
         self._shadows = True
         self._shadowalpha = 1.0
         self._selfshadow = False
+        self._translucent = True
         self._cone = None
         self._direction = 0
         self._offset = (0, 0)
@@ -4115,6 +4224,14 @@ class light():
     @selfshadow.setter
     def selfshadow(self, value):
         self._selfshadow = bool(value)
+        self._touch()
+
+    @property
+    def translucent(self):
+        return self._translucent
+    @translucent.setter
+    def translucent(self, value):
+        self._translucent = bool(value)
         self._touch()
 
     @property
@@ -4239,17 +4356,37 @@ class light():
     def _prepare(self):
         self._origin = self.origin()
         occ = {}
+        thin = {}
         boxes = []
         if self._shadows:
             for o, t in self._casters():
                 cells = t.cells()
-                for pixel in cells:
-                    occ[pixel] = id(o)
+                ops = t.opacities() if self._translucent else None
+                if ops:
+                    ox, oy = t._origin()
+                    for pixel in cells:
+                        value = ops.get((pixel[0] - ox, oy - pixel[1]))
+                        if value is None:
+                            occ[pixel] = id(o)
+                            thin.pop(pixel, None)
+                        elif pixel in occ and pixel not in thin:
+                            continue
+                        else:
+                            old = thin.get(pixel)
+                            thin[pixel] = value if old is None else 1 - (1 - old) * (1 - value)
+                            occ[pixel] = id(o)
+                else:
+                    for pixel in cells:
+                        occ[pixel] = id(o)
+                    if thin:
+                        for pixel in cells:
+                            thin.pop(pixel, None)
                 if cells:
                     xs = [c[0] for c in cells]
                     ys = [c[1] for c in cells]
                     boxes.append((min(xs), max(xs), min(ys), max(ys)))
         self._occ = occ
+        self._thin = thin
         self._boxes = boxes
 
     def step(self):
@@ -4260,7 +4397,8 @@ class light():
         if self._shadows:
             sig = tuple((id(o), o.transform._x, o.transform._y, o.transform.vx, o.transform.vy,
                          o.transform._pvx, o.transform._pvy, hash(o.transform._text),
-                         hash(o.transform._ptext), hash(o.transform._htext), o.transform._shadow,
+                         hash(o.transform._ptext), hash(o.transform._htext), hash(o.transform.vtext),
+                         o.transform._shadow,
                          getattr(getattr(o, 'physics', None), 'hitbox', None))
                         for o, t in self._casters())
         if sig != self._sig:
@@ -4270,10 +4408,13 @@ class light():
     def _shadowed(self, cx, cy, owner, origin=None):
         occ = self._occ
         if not occ:
-            return False
+            return 0.0
         ox, oy = origin or self._origin
         dx = cx - ox
         dy = cy - oy
+        hit = False
+        first = 1.0
+        last = 0.0
         for bx0, bx1, by0, by1 in self._boxes:
             lo = 0.0
             hi = 1.0
@@ -4300,17 +4441,35 @@ class light():
             elif oy < by0 - 1 or oy > by1:
                 continue
             if lo <= hi + 1e-9:
-                break
-        else:
-            return False
+                hit = True
+                if lo < first:
+                    first = lo
+                if hi > last:
+                    last = hi
+        if not hit:
+            return 0.0
         n = max(1, int(math.ceil(max(abs(cx - ox), abs(cy - oy)) * 2)))
         me = id(self.obj)
-        for i in range(1, n):
+        thin = self._thin
+        crossed = None
+        for i in range(max(1, int(first * n) - 1), min(n, int(last * n) + 3)):
             f = i / n
-            who = occ.get((math.floor(ox + (cx - ox) * f), math.ceil(oy + (cy - oy) * f)))
+            key = (math.floor(ox + (cx - ox) * f), math.ceil(oy + (cy - oy) * f))
+            who = occ.get(key)
             if who is not None and who != me and (self._selfshadow or who != owner):
-                return True
-        return False
+                opacity = thin.get(key)
+                if opacity is None:
+                    return 1.0
+                if crossed is None:
+                    crossed = {}
+                if opacity > crossed.get(who, 0.0):
+                    crossed[who] = opacity
+        if crossed is None:
+            return 0.0
+        clear = 1.0
+        for opacity in crossed.values():
+            clear *= 1 - opacity
+        return 1 - clear
 
     def _facing(self):
         angle = self.t.rotation + self._direction
@@ -4364,8 +4523,10 @@ class light():
         amount = self._level(dx, dy)
         if amount <= 0:
             return 0.0
-        if self._shadows and self._shadowed(cx, cy, owner, self._source(dx, dy)):
-            amount *= 1 - self._shadowalpha
+        if self._shadows:
+            blocked = self._shadowed(cx, cy, owner, self._source(dx, dy))
+            if blocked:
+                amount *= 1 - self._shadowalpha * blocked
         return amount
 
     def glowing(self):
@@ -4418,7 +4579,6 @@ class light():
         rows = self._stamp()[1]
         aspect = self.scene.aspect
         origin = (gx + 0.5, gy - 0.5)
-        clear = 1 - self._shadowalpha
         out = []
         for j, i0, amounts in rows:
             y = camy - gy - j - yoff
@@ -4435,10 +4595,15 @@ class light():
             if self._occ:
                 cy = gy + j - 0.5
                 base = gx + i0 + lo
-                amounts = [a * clear if a and self._shadowed(base + k + 0.5, cy, None,
-                                                             self._source((base + k + 0.5 - origin[0]) * aspect, j, origin))
-                           else a
-                           for k, a in enumerate(amounts)]
+                softened = []
+                for k, a in enumerate(amounts):
+                    if a:
+                        blocked = self._shadowed(base + k + 0.5, cy, None,
+                                                 self._source((base + k + 0.5 - origin[0]) * aspect, j, origin))
+                        if blocked:
+                            a *= 1 - self._shadowalpha * blocked
+                    softened.append(a)
+                amounts = softened
             out.append((y, x, amounts))
         self._glowkey = key
         self._glowrows = out
@@ -4491,14 +4656,26 @@ class light():
                     out = [out[k] + (tint[k] - out[k]) * amount for k in range(3)]
                 return tuple(max(0, min(255, int(round(v)))) for v in out)
 
+            fa, back, ba = _ALPHAS(style) if style else (None, False, None)
             fgm = _FGCODE.search(style)
             fg = tuple(int(g) for g in fgm.groups()) if fgm else fgdef
             newstyle = _BGCODE.sub('', _FGCODE.sub('', style))
             bgm = _BGCODE.search(style)
+            bgold = bgnew = bgdef
             if bgm:
-                newstyle += '\033[48;2;%d;%d;%dm' % blend(tuple(int(g) for g in bgm.groups()))
+                bgold = tuple(int(g) for g in bgm.groups())
+                if ba is not None:
+                    bgnew = _rebake(bgdef, blend(_unbake(bgold, bgdef, ba)), ba)
+                else:
+                    bgnew = blend(bgold)
+                newstyle += '\033[48;2;%d;%d;%dm' % bgnew
             if char != ' ':
-                newstyle += '\033[38;2;%d;%d;%dm' % blend(fg)
+                if fa is not None:
+                    refold, refnew = (bgdef, bgdef) if back or not bgm else (bgold, bgnew)
+                    fgnew = _rebake(refnew, blend(_unbake(fg, refold, fa)), fa)
+                else:
+                    fgnew = blend(fg)
+                newstyle += '\033[38;2;%d;%d;%dm' % fgnew
             elif fgm:
                 newstyle += fgm.group(0)
             shaded[(ci, ri)] = (char, newstyle)

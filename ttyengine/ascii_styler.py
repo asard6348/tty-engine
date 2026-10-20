@@ -62,7 +62,31 @@ DEFAULT_FG = RGB_MAP["default"]
 bgrecomp = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 fgrecomp = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
 recomp = re.compile(r'\x1b\[[0-9;]*m')
+ALPHA_FG = 1000
+ALPHA_FGBACK = 1300
+ALPHA_BG = 1600
+alphamark = re.compile(r'\033\[(1[0-8]\d\d)m')
 _figlet_cache = {}
+
+
+def alphacode(base, alpha):
+    return '\033[%dm' % (base + int(round(max(0.0, min(1.0, alpha)) * 255)))
+
+
+def alphaparse(text):
+    fa = ba = None
+    back = False
+    for match in alphamark.finditer(text):
+        code = int(match.group(1))
+        if ALPHA_BG <= code <= ALPHA_BG + 255:
+            ba = (code - ALPHA_BG) / 255
+        elif ALPHA_FGBACK <= code <= ALPHA_FGBACK + 255:
+            fa = (code - ALPHA_FGBACK) / 255
+            back = True
+        elif ALPHA_FG <= code <= ALPHA_FG + 255:
+            fa = (code - ALPHA_FG) / 255
+            back = False
+    return fa, back, ba
 
 
 class Styler:
@@ -157,15 +181,22 @@ class Styler:
         user_bgcolor = bgcolor
         bgcolor_rgb = rgb(bgcolor)
         color_rgb   = rgb(color)
+        old_fa, old_back, old_ba = alphaparse(text) if clean else (None, False, None)
+        fg_mark = ""
+        bg_mark = ""
         if user_bgcolor is not None or bgalpha is not None:
             _bgalpha = bgalpha if bgalpha is not None else 1.0
             transparent_bg = False
             if bgcolor_rgb is None:
                 bgcolor_rgb, match_bgcolor = getcolor(text, True, bg_rgb)
                 transparent_bg = not match_bgcolor
+                if old_ba is not None:
+                    _bgalpha *= old_ba
             if transparent_bg:
                 ansi_bgcolor = ""
             else:
+                if _bgalpha < 1:
+                    bg_mark = alphacode(ALPHA_BG, _bgalpha)
                 rb = int(bg_rgb[0] * (1 - _bgalpha) + bgcolor_rgb[0] * _bgalpha)
                 gb = int(bg_rgb[1] * (1 - _bgalpha) + bgcolor_rgb[1] * _bgalpha)
                 bb = int(bg_rgb[2] * (1 - _bgalpha) + bgcolor_rgb[2] * _bgalpha)
@@ -173,10 +204,19 @@ class Styler:
         else:
             bgcolor_rgb, match_bgcolor = getcolor(text, True, bg_rgb)
             ansi_bgcolor = ""
+            if match_bgcolor and old_ba is not None and old_ba < 1:
+                bg_mark = alphacode(ALPHA_BG, old_ba)
         if user_color is not None or alpha is not None:
             _alpha = alpha if alpha is not None else 1.0
+            fg_back = bool(onbg)
             if color_rgb is None:
                 color_rgb, match_color = getcolor(text, False, fg_rgb)
+                if old_fa is not None:
+                    _alpha *= old_fa
+                    if alpha is None:
+                        fg_back = old_back
+            if _alpha < 1:
+                fg_mark = alphacode(ALPHA_FGBACK if fg_back else ALPHA_FG, _alpha)
             activebg_rgb = bg_rgb if onbg else bgcolor_rgb
             r = int(activebg_rgb[0] * (1 - _alpha) + color_rgb[0] * _alpha)
             g = int(activebg_rgb[1] * (1 - _alpha) + color_rgb[1] * _alpha)
@@ -201,7 +241,7 @@ class Styler:
             name = FONT_MAP[max(1, min(5, font))] if isinstance(font, int) else font
             ascii_art = self.getfiglet(font=name, width=width).renderText(ascii_art)
         ansi_attrs = ('\033[1m' if bold else '') + ('\033[3m' if italic else '') + ('\033[4m' if underline else '')
-        prefix = ansi_bgcolor + ansi_color + ansi_attrs
+        prefix = ansi_bgcolor + ansi_color + ansi_attrs + bg_mark + fg_mark
         suffix = "\033[0m" if reset else ""
         trailing = '\n' if ascii_art.endswith('\n') else ''
 
