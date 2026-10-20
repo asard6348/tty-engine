@@ -42,7 +42,7 @@ class ginf():
             self._lost = lost
             kill(self.info)
             self.info = track(sc.obj().create(
-                style(new_txt, color='darkorange', alpha=0.5 if lost else 1, size=1, width=500),
+                style(new_txt, color='darkorange', alpha=0.5 if lost else 1, font=1, width=500),
                 z=30))
         t = self.info.transform
         t.x = sc.camx + sc.iround((sc.dimx - t.xlen()) / 2)
@@ -248,7 +248,7 @@ class player():
             lost = True
             self.smcam = 20
             lsinfo = track(scene.obj().create(
-                style('YOU LOST!', size=2, color='black', bgcolor='red') + '\n' +
+                style('YOU LOST!', font=2, color='black', bgcolor='red') + '\n' +
                 style('PRESS R TO RESET', color='black', bgcolor='red'),
                 z=20, renderspaces=True))
             lst = lsinfo.transform
@@ -342,7 +342,7 @@ class player():
             self._ad = 0
             scene.fade(scene.bgcolor, time=0.5, start=(255,255,255))
             if hasattr(self.info, 'transform'):
-                self.info['text'] = session.style('STARTED!', size=3, color='white', bgcolor='blue')
+                self.info['text'] = session.style('STARTED!', font=3, color='white', bgcolor='blue')
                 vanish(self.info, 0, time=0.5, delay=0.5, discard=True)
                 world.launch(ginf)
         inp.onpress('f', onf, True)

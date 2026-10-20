@@ -1,6 +1,7 @@
 import re, shutil, colorsys
 from typing import Optional, Union
 from functools import lru_cache
+from .figlet import Figlet, available
 
 RGB_MAP = {
     "red": (205, 49, 49),
@@ -52,7 +53,7 @@ RGB_MAP = {
     "white": (255, 255, 255), # 8 gray scale colors
 }
 
-SIZE_MAP = {
+FONT_MAP = {
     1: "standard", 2: "big", 3: "slant", 4: "doom", 5: "bubble",
 }
 
@@ -91,16 +92,12 @@ class Styler:
     def getfiglet(font, width):
         key = (font, width)
         if key not in _figlet_cache:
-            try:
-                from pyfiglet import Figlet
-            except ImportError as e:
-                raise ImportError(
-                    "pyfiglet is required to render figlet-style text (i.e. when "
-                    "style() is called with a `size` argument). Install it with "
-                    "`pip install pyfiglet`."
-                ) from e
             _figlet_cache[key] = Figlet(font=font, width=width)
         return _figlet_cache[key]
+
+    @staticmethod
+    def fonts():
+        return available()
 
     @staticmethod
     @lru_cache(maxsize=512)
@@ -147,9 +144,9 @@ class Styler:
         color = matches[-1].group(0) if matches else ""
         return tupl, color
 
-    def _style(self, text: str, color=None, alpha=None, size=None, width=80, bgcolor=None,
+    def _style(self, text: str, color=None, alpha=None, font=None, width=80, bgcolor=None,
                bgalpha=None, bg=DEFAULT_BG, fg=DEFAULT_FG, onbg=False, reset=True, clean=False,
-               bold=False, italic=False, underline=False):
+               bold=False, italic=False, underline=False, size=None):
         rgb = self.rgb
         getcolor = self.getcolor
         bg_rgb  = rgb(bg)  or bg
@@ -198,11 +195,11 @@ class Styler:
                 ansi_color   = match_color
         else:
             ascii_art = text
-        if size is not None:
-            ascii_font = SIZE_MAP[max(1, min(5, size))] if isinstance(size, int) else size
-            if size >= 1:
-                fig = self.getfiglet(font=ascii_font, width=width)
-                ascii_art = fig.renderText(ascii_art)
+        if font is None:
+            font = size
+        if font is not None and (not isinstance(font, int) or font >= 1):
+            name = FONT_MAP[max(1, min(5, font))] if isinstance(font, int) else font
+            ascii_art = self.getfiglet(font=name, width=width).renderText(ascii_art)
         ansi_attrs = ('\033[1m' if bold else '') + ('\033[3m' if italic else '') + ('\033[4m' if underline else '')
         prefix = ansi_bgcolor + ansi_color + ansi_attrs
         suffix = "\033[0m" if reset else ""
@@ -337,5 +334,6 @@ rgb = Styler.rgb
 hsv = Styler.hsv
 getcolor = Styler.getcolor
 getfiglet = Styler.getfiglet
+fonts = Styler.fonts
 fill = Styler.fill
 style = _default_styler._style
