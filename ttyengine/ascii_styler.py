@@ -2,6 +2,7 @@ import re, shutil, colorsys
 from typing import Optional, Union
 from functools import lru_cache
 from .figlet import Figlet, available
+from .image_reader import read as readimage
 
 RGB_MAP = {
     "red": (205, 49, 49),
@@ -67,6 +68,7 @@ ALPHA_FGBACK = 1300
 ALPHA_BG = 1600
 alphamark = re.compile(r'\033\[(1[0-8]\d\d)m')
 _figlet_cache = {}
+DEFAULT_SHADES = " .:-=+*#%@"
 
 
 def alphacode(base, alpha):
@@ -289,6 +291,65 @@ class Styler:
             for row in range(y_start, y_end)
         )
 
+    @staticmethod
+    def image(path, width=None, height=None, shades=DEFAULT_SHADES, aspect=0.5, color=None):
+        if not shades:
+            raise ValueError("shades must not be empty")
+        if color is None:
+            color = len(shades) == 1
+        iw, ih, px = readimage(path)
+        if width is None and height is None:
+            termx, termy = shutil.get_terminal_size()
+            width = min(termx, int(termy * iw / (ih * aspect)))
+        if width is None:
+            width = round(height * iw / (ih * aspect))
+        if height is None:
+            height = round(width * ih / iw * aspect)
+        width = max(1, int(width))
+        height = max(1, int(height))
+        top = len(shades) - 1
+        lines = []
+        for cy in range(height):
+            y0 = cy * ih // height
+            y1 = max(y0 + 1, (cy + 1) * ih // height)
+            sr = [0] * iw
+            sg = [0] * iw
+            sb = [0] * iw
+            sa = [0] * iw
+            for y in range(y0, y1):
+                o = y * iw * 4
+                r = px[o:o + iw * 4:4]
+                g = px[o + 1:o + iw * 4:4]
+                b = px[o + 2:o + iw * 4:4]
+                a = px[o + 3:o + iw * 4:4]
+                sr = [t + v * w for t, v, w in zip(sr, r, a)]
+                sg = [t + v * w for t, v, w in zip(sg, g, a)]
+                sb = [t + v * w for t, v, w in zip(sb, b, a)]
+                if color:
+                    sa = [t + w for t, w in zip(sa, a)]
+            row = []
+            current = None
+            for cx in range(width):
+                x0 = cx * iw // width
+                x1 = max(x0 + 1, (cx + 1) * iw // width)
+                norm = (x1 - x0) * (y1 - y0) * 255
+                red = sum(sr[x0:x1]) / norm
+                green = sum(sg[x0:x1]) / norm
+                blue = sum(sb[x0:x1]) / norm
+                level = (54 * red + 183 * green + 19 * blue) / 65280
+                char = shades[min(top, int(level * len(shades)))]
+                if color:
+                    if not sum(sa[x0:x1]):
+                        char = ' '
+                    elif char != ' ':
+                        rgb = (round(red), round(green), round(blue))
+                        if rgb != current:
+                            row.append("\033[38;2;%d;%d;%dm" % rgb)
+                            current = rgb
+                row.append(char)
+            line = ''.join(row).rstrip(' ')
+            lines.append(line + "\033[0m" if current else line)
+        return '\n'.join(lines)
 
 class Shapes:
     @staticmethod
@@ -380,4 +441,5 @@ getcolor = Styler.getcolor
 getfiglet = Styler.getfiglet
 fonts = Styler.fonts
 fill = Styler.fill
+image = Styler.image
 style = _default_styler._style
