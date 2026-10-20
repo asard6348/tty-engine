@@ -33,7 +33,7 @@ def dev(Session=Session): #DEBUG
             t = self.bomb.transform
             ex = self.bomb.force
             delta = (self.timer/self.begin) if self.begin != 0 else 0
-            t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=scene.aspect), alpha=max(0,min(1,self.power/20)*delta), color='orange', bgcolor=scene.bgcolor)
+            t.text = session.style(scene.styler.shapes.circle((ex.radius/2)*(1-delta), 'X', aspect=scene.aspect), alpha=max(0,min(1,self.power/20)*delta), color='orange')
             t.x, t.y = self.pos
             t.x -= t.xlen()/2
             t.y += t.ylen()/2

@@ -140,10 +140,10 @@ class Compositor:
         seen = tuple(ubg[k] + (ufg[k] - ubg[k]) * cover for k in range(3))
         if own:
             baked = tuple(int(v) for v in backs[-1])
-            ground = baked if ba is None else tuple(baked[k] + (seen[k] - base[k]) * (1 - ba) for k in range(3))
+            ground = baked if ba is None else tuple(baked[k] + (ubg[k] - base[k]) * (1 - ba) for k in range(3))
         else:
             baked = None
-            ground = seen
+            ground = ubg
         style = self.bgstyle(clamp(ground)) + alphamark.sub('', fgrecomp.sub('', bgrecomp.sub('', active)))
         share = None
         if fronts:
@@ -152,7 +152,9 @@ class Compositor:
                 old, new = (base, seen) if back or not own else (baked, ground)
                 paint = tuple(paint[k] + (new[k] - old[k]) * (1 - fa) for k in range(3))
                 if back or not own:
-                    share = 1 - fa
+                    share = (1 - fa) * (1 - cover)
+                    if share <= 0:
+                        share = None
             style += '\033[38;2;%d;%d;%dm' % clamp(paint)
         return (char, style), share
 

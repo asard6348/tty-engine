@@ -186,17 +186,18 @@ class Styler:
         bg_mark = ""
         if user_bgcolor is not None or bgalpha is not None:
             _bgalpha = bgalpha if bgalpha is not None else 1.0
+            bg_marked = _bgalpha
             transparent_bg = False
             if bgcolor_rgb is None:
                 bgcolor_rgb, match_bgcolor = getcolor(text, True, bg_rgb)
                 transparent_bg = not match_bgcolor
                 if old_ba is not None:
-                    _bgalpha *= old_ba
+                    bg_marked = _bgalpha * old_ba
             if transparent_bg:
                 ansi_bgcolor = ""
             else:
-                if _bgalpha < 1:
-                    bg_mark = alphacode(ALPHA_BG, _bgalpha)
+                if bg_marked < 1:
+                    bg_mark = alphacode(ALPHA_BG, bg_marked)
                 rb = int(bg_rgb[0] * (1 - _bgalpha) + bgcolor_rgb[0] * _bgalpha)
                 gb = int(bg_rgb[1] * (1 - _bgalpha) + bgcolor_rgb[1] * _bgalpha)
                 bb = int(bg_rgb[2] * (1 - _bgalpha) + bgcolor_rgb[2] * _bgalpha)
@@ -208,15 +209,16 @@ class Styler:
                 bg_mark = alphacode(ALPHA_BG, old_ba)
         if user_color is not None or alpha is not None:
             _alpha = alpha if alpha is not None else 1.0
+            fg_marked = _alpha
             fg_back = bool(onbg)
             if color_rgb is None:
                 color_rgb, match_color = getcolor(text, False, fg_rgb)
                 if old_fa is not None:
-                    _alpha *= old_fa
+                    fg_marked = _alpha * old_fa
                     if alpha is None:
                         fg_back = old_back
-            if _alpha < 1:
-                fg_mark = alphacode(ALPHA_FGBACK if fg_back else ALPHA_FG, _alpha)
+            if fg_marked < 1:
+                fg_mark = alphacode(ALPHA_FGBACK if fg_back else ALPHA_FG, fg_marked)
             activebg_rgb = bg_rgb if onbg else bgcolor_rgb
             r = int(activebg_rgb[0] * (1 - _alpha) + color_rgb[0] * _alpha)
             g = int(activebg_rgb[1] * (1 - _alpha) + color_rgb[1] * _alpha)
@@ -224,6 +226,8 @@ class Styler:
             ansi_color = f"\033[38;2;{r};{g};{b}m"
         else:
             ansi_color = ""
+            if old_fa is not None:
+                fg_mark = alphacode(ALPHA_FGBACK if old_back else ALPHA_FG, old_fa)
         if clean:
             bold      = bold      or '\033[1m' in text
             italic    = italic    or '\033[3m' in text
