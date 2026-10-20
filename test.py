@@ -12,7 +12,7 @@ class main:
         self.txt.physics.ontouch(brk)
         self.inp = session.inp
         def box():
-            bx=scene.obj().create('OOOO\nOOOO',rand(0,scene.dimx),-rand(0,scene.dimy), dynamic=True)
+            bx=scene.obj().create('OOOO\nOOOO',rand(0,scene.dimx),-rand(0,scene.dimy), dynamic=True, light={'color':'violet','glow':True})
             bt=bx.transform
             def onc(nm):
                 if (nm=="x" and (bt.x<0 or bt.x>=scene.dimx+bt.xlen())) or (nm=="y" and (bt.y>0 or bt.y<-scene.dimy-bt.ylen())):
@@ -23,8 +23,9 @@ class main:
         t=self.txt.transform
         p=self.txt.physics
         p.avel+=((-600-p.avel)/10)
-        p.xvel=((self.inp._mouse_x-t.xc()-t.x)/1)*p.mass
-        p.yvel=((-self.inp._mouse_y+t.yc()-t.y)/1)*p.mass
+        cx,cy=t.center()
+        p.xvel=(self.inp._mouse_x-cx)*p.mass
+        p.yvel=(-self.inp._mouse_y-cy)*p.mass
 se = Session()
 w = se.World()
 w.launch(main)

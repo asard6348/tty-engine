@@ -1425,6 +1425,9 @@ class transform(_change_callback, _lerpable):
         return (self._x + self.vx + (lo + hi) / 2, self._y + self.vy - len(rows) / 2,
                 (hi - lo) / 2, len(rows) / 2)
 
+    def center(self):
+        return self.extent()[:2]
+
     def forward(self, move=1, offset=0, angle=None):
         angle = math.radians((self._rotation if angle is None else angle) + offset)
         x = math.sin(angle) * move

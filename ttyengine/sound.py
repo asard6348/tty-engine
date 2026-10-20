@@ -23,8 +23,7 @@ def _locate(spec):
         x = t.x + t.vx
         y = t.y + t.vy
         try:
-            x += t.xlen() / 2.0
-            y -= t.ylen() / 2.0
+            x, y = t.center()
         except Exception:
             pass
         return float(x), float(y)
