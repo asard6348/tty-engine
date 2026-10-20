@@ -160,7 +160,7 @@ def attemptimports():
     global scene, Terminal, inp, Styler, Mixer, Compositor
     from . import scene
     from .compositor import Compositor
-    from blessed import Terminal
+    from .terminal import Terminal
     from .input_handler import inp
     from .ascii_styler import Styler
     from .sound import Mixer
@@ -667,7 +667,6 @@ class Session():
                     self.inp.stop_all()
                     self.inp.cleanup()
                 if self.sound: self.sound.close()
-                if self.optimize: self.term.reset()
                 if self.clearonstop:
                     if self._partial():
                         sys.stdout.write(Compositor.vacate(self._compositor.region, (-1, -1, 0, 0), (self.term.width, self.term.height)) + '\033[0m'

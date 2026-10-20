@@ -6,10 +6,7 @@ try:
 except Exception:
     keyboard = None
 
-try:
-    from blessed import Terminal
-except Exception:
-    Terminal = None
+from .terminal import Terminal
 
 _WINDOWS = sys.platform == 'win32'
 if _WINDOWS:
@@ -149,7 +146,7 @@ class inp():
                 self.keyboard = None
 
         # Tier 2/3: terminal input. Kitty keyboard protocol (true press/release)
-        # if the terminal answers the probe, else term.inkey (press-only, held()
+        # if the terminal answers the probe, else raw stdin (press-only, held()
         # is emulated and only stays True while key repeats keep arriving).
         if self.keyboard is None:
             self.keyboard = _FallbackKeyboard()
@@ -159,7 +156,7 @@ class inp():
                 sys.stderr.write(
                     "input_handler: low-level keyboard unavailable, using terminal "
                     "input: kitty keyboard protocol if supported, otherwise "
-                    "term.inkey (press-only, held() needs key repeat).\n"
+                    "raw stdin (press-only, held() needs key repeat).\n"
                 )
 
         # ── mouse (raw VT sequence parser) ────────────────────────────────
@@ -181,7 +178,7 @@ class inp():
         ref = weakref.ref(self)
         atexit.register(lambda: ref() and ref().cleanup())
 
-        if term is None and Terminal is not None and _is_tty():
+        if term is None and _is_tty():
             term = Terminal()
         self.term = term # triggers setter
 
@@ -199,16 +196,13 @@ class inp():
             return False
         return True
 
-    def _uses_inkey(self):
-        return callable(getattr(self._term, 'inkey', None))
-
     @property
     def backend(self):
         if not self._kb_is_fallback:
             return 'keyboard'
         if self._kitty_state == 'on':
             return 'kitty'
-        return 'inkey' if self._uses_inkey() else 'terminal'
+        return 'terminal'
 
     #TERMINAL SETUP
     @property
@@ -306,7 +300,7 @@ class inp():
 
     def _legacy_mode(self):
         # True only for the last tier: terminal input without kitty's real
-        # press/release events (term.inkey or raw stdin), where held() is emulated.
+        # press/release events (raw stdin), where held() is emulated.
         return self._kb_is_fallback and self._kitty_state != 'on'
 
     def _term_press(self, name):
@@ -338,29 +332,11 @@ class inp():
             self._term_press(name)
 
     #MOUSE
-    def _read_inkey(self):
-        # Drain term.inkey and glue the keystrokes back into the raw stream, so
-        # mouse / focus / kitty replies still go through the same parser.
-        ink = self._term.inkey
-        out = []
-        for _ in range(512):
-            try:
-                ks = ink(timeout=0, esc_delay=0)
-            except TypeError:           # older blessed: no esc_delay argument
-                try:
-                    ks = ink(timeout=0)
-                except Exception:
-                    break
-            except Exception:
-                break
-            if not ks:
-                break
-            out.append(str(ks))
-        return ''.join(out)
-
     def _read_raw(self):
-        if self._kb_is_fallback and self._uses_inkey():
-            return self._read_inkey()
+        take = getattr(self._term, 'take', None)
+        return (take() if callable(take) else '') + self._read_stdin()
+
+    def _read_stdin(self):
         if _WINDOWS:
             chars = []
             while msvcrt.kbhit():
