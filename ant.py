@@ -24,7 +24,7 @@ class main:
                     self.pixels.remove(pxi)
                     delet = True
             if not delet:
-                self.pixels.append(o().create(st('██', 'orange'), wx, wy, rotation=0, z=10, rotaspect=1, dynamic=False, crot=0))
+                self.pixels.append(o().create(st('██', 'orange'), wx, wy, rotation=0, z=10, aspect=1, dynamic=False, crot=0))
             if self.startup:
                 self.startup.discard()
                 self.startup = None

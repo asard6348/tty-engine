@@ -317,7 +317,7 @@ class transform(_change_callback, _lerpable):
         'text', 'rtext', 'htext',
         'vtext', 'vrtext', 'vhtext',
         'rotation',
-        'rotaspect',
+        'aspect',
         'fg', 'bg', 'alpha', 'bgalpha',
         'flip',
         'shadow',
@@ -325,7 +325,6 @@ class transform(_change_callback, _lerpable):
     _default = True
     _settings = ('x', 'y', 'text', 'rtext', 'htext', 'rotation', 'aspect', 'fg', 'bg', 'alpha', 'bgalpha',
                  'flip', 'shadow')
-    _aliases = {'aspect': 'rotaspect'}
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
@@ -354,7 +353,7 @@ class transform(_change_callback, _lerpable):
         self._htext = ctext
         self._rotation = kwargs.get('rotation', 0)
         self._rot_cache_angle = None
-        self._rotaspect = kwargs.get('rotaspect', None)
+        self._aspect = kwargs.get('aspect', None)
         self._flip = kwargs.get('flip', None)
         self._shadow = _check_shadow(kwargs.get('shadow', None))
         self._cells_cache = None
@@ -506,16 +505,16 @@ class transform(_change_callback, _lerpable):
         self._change('text', oldt)
 
     @property
-    def rotaspect(self):
-        return self.scene.aspect if self._rotaspect is None else self._rotaspect
-    @rotaspect.setter
-    def rotaspect(self, value):
-        old = self._rotaspect
+    def aspect(self):
+        return self.scene.aspect if self._aspect is None else self._aspect
+    @aspect.setter
+    def aspect(self, value):
+        old = self._aspect
         oldt = self._text
-        self._rotaspect = value
+        self._aspect = value
         self._invalidate()
         self.rotate(self._rotation)
-        self._change('rotaspect', old)
+        self._change('aspect', old)
         self._change('text', oldt)
 
     @property
@@ -530,13 +529,6 @@ class transform(_change_callback, _lerpable):
         self.rotate(self._rotation)
         self._change('flip', old)
         self._change('text', oldt)
-
-    @property
-    def aspect(self):
-        return self.rotaspect
-    @aspect.setter
-    def aspect(self, value):
-        self.rotaspect = value
 
     @property
     def shadow(self):
@@ -828,7 +820,7 @@ class transform(_change_callback, _lerpable):
             mc, md = sin_a * fa + cos_a * fc, sin_a * fb + cos_a * fd
             ja, jb = fa * cos_a - fb * sin_a, fa * sin_a + fb * cos_a
             jc, jd = fc * cos_a - fd * sin_a, fc * sin_a + fd * cos_a
-        ASPECT = self.rotaspect
+        ASPECT = self.aspect
         floor = math.floor
         ident = self._flip is None and angle_degrees % 360 == 0
 
@@ -1046,7 +1038,7 @@ class transform(_change_callback, _lerpable):
             self._pvy = -self._rotorigin[1]
             self._pkey = None
             return
-        key = (angle_degrees, self._htext, self._flip, self.rotaspect)
+        key = (angle_degrees, self._htext, self._flip, self.aspect)
         if self._pkey == key:
             return
         self._pkey = key
@@ -1182,7 +1174,7 @@ class transform(_change_callback, _lerpable):
         return self.cutpoints([(wx, wy)], r, shape)
 
     def cutpoints(self, points, r=1, shape='circle'):
-        offsets = _footprint(r, self.scene.aspect, shape)
+        offsets = _footprint(r, self.aspect, shape)
         cells = []
         for wx, wy in points:
             for dx, dy in offsets:
@@ -1247,8 +1239,8 @@ class transform(_change_callback, _lerpable):
                 kw.pop(key, None)
             if parent is not None:
                 kw.update(dynamic=parent.dynamic, bounciness=parent.bounciness, friction=parent.friction)
-            if self._rotaspect is not None:
-                kw['rotaspect'] = self._rotaspect
+            if self._aspect is not None:
+                kw['aspect'] = self._aspect
             for key in ('fg', 'bg', 'alpha', 'bgalpha'):
                 value = getattr(self, key)
                 if value is not None:
@@ -1436,7 +1428,7 @@ class transform(_change_callback, _lerpable):
     def forward(self, move=1, offset=0, angle=None):
         angle = math.radians((self._rotation if angle is None else angle) + offset)
         x = math.sin(angle) * move
-        y = math.cos(angle) * self.scene.aspect * move
+        y = math.cos(angle) * self.aspect * move
         return (x, y)
 
     def pivot(self, local=False):
@@ -1452,7 +1444,7 @@ class transform(_change_callback, _lerpable):
         ox, oy = self.pivot() if origin is None else origin
         dx = tx - ox
         dy = ty - oy
-        ASPECT = self.scene.aspect
+        ASPECT = self.aspect
         angle = math.degrees(math.atan2(-dy, dx * ASPECT))+90
         return angle + offset
 
@@ -4093,7 +4085,7 @@ class light(_lerpable):
     _colors = frozenset(('color',))
     _owned = ['light']
     _required = [transform]
-    _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'rotaspect'))
+    _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'aspect'))
     _settings = ('color', 'alpha', 'radius', 'falloff', 'shadows', 'shadowalpha', 'selfshadow',
                  'cone', 'direction', 'offset', 'mix', 'affect', 'on', 'glow', 'length', 'focus', 'translucent')
     _stamps = {}
