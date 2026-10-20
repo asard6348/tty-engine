@@ -136,23 +136,25 @@ class Compositor:
         if (char == ' ' or (fa is not None and fa <= 0)) and (not own or (ba is not None and ba <= 0)):
             return None, None
         ubg, ufg = self.palette(under[1], base, front)
-        cover = COVER.get(under[0], 0.5)
+        cover = COVER.get(under[0], 0.0)
         seen = tuple(ubg[k] + (ufg[k] - ubg[k]) * cover for k in range(3))
+        reach = COVER.get(under[0], 0.5)
+        glyph = tuple(ubg[k] + (ufg[k] - ubg[k]) * reach for k in range(3))
         if own:
             baked = tuple(int(v) for v in backs[-1])
-            ground = baked if ba is None else tuple(baked[k] + (ubg[k] - base[k]) * (1 - ba) for k in range(3))
+            ground = baked if ba is None else tuple(baked[k] + (seen[k] - base[k]) * (1 - ba) for k in range(3))
         else:
             baked = None
-            ground = ubg
+            ground = seen
         style = self.bgstyle(clamp(ground)) + alphamark.sub('', fgrecomp.sub('', bgrecomp.sub('', active)))
         share = None
         if fronts:
             paint = tuple(int(v) for v in fronts[-1])
             if fa is not None:
-                old, new = (base, seen) if back or not own else (baked, ground)
+                old, new = (base, glyph) if back or not own else (baked, ground)
                 paint = tuple(paint[k] + (new[k] - old[k]) * (1 - fa) for k in range(3))
                 if back or not own:
-                    share = (1 - fa) * (1 - cover)
+                    share = (1 - fa) * (1 - reach)
                     if share <= 0:
                         share = None
             style += '\033[38;2;%d;%d;%dm' % clamp(paint)
