@@ -1,4 +1,5 @@
 import re
+import math
 from itertools import groupby
 from operator import itemgetter
 from .ascii_styler import alphamark, alphaparse, bgrecomp, fgrecomp
@@ -45,6 +46,7 @@ class Compositor:
         self.palettes = {}
         self.glasses = {}
         self.region = None
+        self.rotated = {}
 
     def invalidate(self):
         self.front = None
@@ -393,6 +395,7 @@ class Compositor:
         for w in items:
             sc = scene_of(w)
             view = self.view(sc, width, height)
+            ext = self.extent(sc, view) if sc.camrotation % 360.0 else view
             bg = self.bgstyle(sc.bgcolor) if autobg and getattr(w, 'autobg', True) else None
             sprites = []
             for r in sorted([o.rendering for o in sc.objs if hasattr(o, 'rendering')], key=lambda r: r.z):
@@ -412,11 +415,98 @@ class Compositor:
                 camy = sc.iround(sc.camy)
                 for light in sc.lights:
                     if light.glowing():
-                        rows = light.glowrows(camx, camy, sc.dimxoffset, sc.dimyoffset, view)
+                        rows = light.glowrows(camx, camy, sc.dimxoffset, sc.dimyoffset, ext)
                         if rows:
                             lit.append((light, rows))
-            layers.append((view, bg, sprites, sc, lit))
+            layers.append((view, ext, bg, sprites, sc, lit))
         return layers
+
+    def paint(self, back, spans, view, bg, sprites, sc, lit, plain, top, bottom, right):
+        vx0, vy0, vx1, vy1 = view
+        warm = {}
+        if bg is not None:
+            cell = (' ', bg)
+            for y in range(max(vy0, top), min(vy1, bottom)):
+                span = spans.get(y)
+                if span is None:
+                    continue
+                a = max(vx0, span[0])
+                b = min(vx1, span[1])
+                if a < b:
+                    back[y][a:b] = [cell] * (b - a)
+        for x, y, grid in sprites:
+            if y >= bottom or y + len(grid) <= top or x >= right:
+                continue
+            for i, (rowwidth, runs, glass) in enumerate(grid):
+                ry = y + i
+                if ry < vy0 or ry >= vy1:
+                    continue
+                span = spans.get(ry)
+                if span is None:
+                    continue
+                a = max(vx0, span[0], x)
+                b = min(vx1, span[1], x + rowwidth)
+                if a >= b:
+                    continue
+                line = back[ry]
+                for offset, cells in runs:
+                    s = max(a, x + offset)
+                    e = min(b, x + offset + len(cells))
+                    if s < e:
+                        line[s:e] = cells[s - x - offset:e - x - offset]
+                for offset, cells in glass:
+                    s = max(a, x + offset)
+                    e = min(b, x + offset + len(cells))
+                    for xx in range(s, e):
+                        char, active = cells[xx - x - offset]
+                        cell, share = self.glass(sc, line[xx], char, active)
+                        if cell is not None:
+                            line[xx] = cell
+                            if share is not None:
+                                warm[(ry, xx)] = (share, cell)
+        if lit:
+            self.shine(sc, back, spans, lit, plain, warm)
+
+    @staticmethod
+    def extent(sc, view):
+        aspect = sc.aspect or 0.5
+        cx = (view[0] + view[2]) / 2
+        cy = (view[1] + view[3]) / 2
+        radius = math.hypot((view[2] - view[0]) / 2 * aspect, (view[3] - view[1]) / 2)
+        rx = int(math.ceil(radius / aspect))
+        ry = int(math.ceil(radius))
+        return (int(math.floor(cx)) - rx, int(math.floor(cy)) - ry, int(math.ceil(cx)) + rx, int(math.ceil(cy)) + ry)
+
+    @staticmethod
+    def turn(back, local, spans, view, ext, sc, angle, clear):
+        vx0, vy0, vx1, vy1 = view
+        ex0, ey0, ex1, ey1 = ext
+        aspect = sc.aspect or 0.5
+        rad = math.radians(angle)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
+        cx = (vx0 + vx1) / 2
+        cy = (vy0 + vy1) / 2
+        ew = ex1 - ex0
+        eh = ey1 - ey0
+        for y, (lo, hi) in spans.items():
+            if y < vy0 or y >= vy1:
+                continue
+            a = max(lo, vx0)
+            b = min(hi, vx1)
+            if a >= b:
+                continue
+            line = back[y]
+            dy = y + 0.5 - cy
+            for x in range(a, b):
+                dx = (x + 0.5 - cx) * aspect
+                sx = int(math.floor((dx * cos_a - dy * sin_a) / aspect + cx)) - ex0
+                sy = int(math.floor(dx * sin_a + dy * cos_a + cy)) - ey0
+                if sx < 0 or sx >= ew or sy < 0 or sy >= eh:
+                    continue
+                cell = local[sy][sx]
+                if cell is not clear:
+                    line[x] = cell
 
     def compose(self, items, active, region, bounds, outer, autobg):
         regx, regy, width, height = region
@@ -431,6 +521,23 @@ class Compositor:
             self.width = width
             self.height = height
             rects = [(0, 0, width, height)]
+        dirty = bool(rects)
+        for w in items:
+            sc = scene_of(w)
+            if w not in active:
+                continue
+            angle = sc.camrotation % 360.0
+            previous = self.rotated.get(sc)
+            if not angle and previous is None:
+                continue
+            view = self.view(sc, width, height)
+            key = (angle, sc.aspect, view)
+            if key != previous or dirty:
+                rects.append(view)
+            if angle:
+                self.rotated[sc] = key
+            else:
+                del self.rotated[sc]
         spans = {}
         for x0, y0, x1, y1 in rects:
             x0 = max(0, x0)
@@ -453,51 +560,21 @@ class Compositor:
         right = max(s[1] for s in spans.values())
         base = (' ', self.bgstyle(outer) if outer is not None else '')
         back = {y: [base] * width for y in spans}
-        for view, bg, sprites, sc, lit in self.layers(items, width, height, autobg):
-            vx0, vy0, vx1, vy1 = view
-            warm = {}
-            if bg is not None:
-                cell = (' ', bg)
-                for y in range(max(vy0, top), min(vy1, bottom)):
-                    span = spans.get(y)
-                    if span is None:
-                        continue
-                    a = max(vx0, span[0])
-                    b = min(vx1, span[1])
-                    if a < b:
-                        back[y][a:b] = [cell] * (b - a)
-            for x, y, grid in sprites:
-                if y >= bottom or y + len(grid) <= top or x >= right:
-                    continue
-                for i, (rowwidth, runs, glass) in enumerate(grid):
-                    ry = y + i
-                    if ry < vy0 or ry >= vy1:
-                        continue
-                    span = spans.get(ry)
-                    if span is None:
-                        continue
-                    a = max(vx0, span[0], x)
-                    b = min(vx1, span[1], x + rowwidth)
-                    if a >= b:
-                        continue
-                    line = back[ry]
-                    for offset, cells in runs:
-                        s = max(a, x + offset)
-                        e = min(b, x + offset + len(cells))
-                        if s < e:
-                            line[s:e] = cells[s - x - offset:e - x - offset]
-                    for offset, cells in glass:
-                        s = max(a, x + offset)
-                        e = min(b, x + offset + len(cells))
-                        for xx in range(s, e):
-                            char, active = cells[xx - x - offset]
-                            cell, share = self.glass(sc, line[xx], char, active)
-                            if cell is not None:
-                                line[xx] = cell
-                                if share is not None:
-                                    warm[(ry, xx)] = (share, cell)
-            if lit:
-                self.shine(sc, back, spans, lit, base[1], warm)
+        clear = (' ', base[1])
+        for view, ext, bg, sprites, sc, lit in self.layers(items, width, height, autobg):
+            angle = sc.camrotation % 360.0
+            if angle and view[0] < view[2] and view[1] < view[3]:
+                ex0, ey0, ex1, ey1 = ext
+                ew = ex1 - ex0
+                eh = ey1 - ey0
+                local = {y: [clear] * ew for y in range(eh)}
+                full = {y: [0, ew] for y in range(eh)}
+                moved_sprites = [(x - ex0, y - ey0, grid) for x, y, grid in sprites]
+                moved_lit = [(light, [(y - ey0, x - ex0, amounts) for y, x, amounts in rows]) for light, rows in lit]
+                self.paint(local, full, (0, 0, ew, eh), bg, moved_sprites, sc, moved_lit, base[1], 0, eh, ew)
+                self.turn(back, local, spans, view, ext, sc, angle, clear)
+            else:
+                self.paint(back, spans, view, bg, sprites, sc, lit, base[1], top, bottom, right)
         out = []
         style = None
         for y in sorted(spans):

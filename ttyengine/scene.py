@@ -271,6 +271,7 @@ class Scene:
         self.ambient = 1.0
         self._camx = 0
         self._camy = 0
+        self._camrotation = 0.0
         self._bgcolor = (0, 0, 0)
         self._fade = None
         self._ticks = 0
@@ -454,6 +455,15 @@ class Scene:
         old = self._camy
         self._camy = value
         self._fire(self._oncamcb, 'y', old)
+
+    @property
+    def camrotation(self):
+        return self._camrotation
+    @camrotation.setter
+    def camrotation(self, value):
+        old = self._camrotation
+        self._camrotation = float(value) % 360.0
+        self._fire(self._oncamcb, 'rotation', old)
 
     def focus(self, target):
         t = getattr(target, 'transform', target)
