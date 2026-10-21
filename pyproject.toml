@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ttyengine"
 version = "0.1.0"
-description = "A terminal rendering, physics and sound engine with no required dependencies"
+description = "A terminal rendering, physics and sound engine"
 readme = "README.md"
 requires-python = ">=3.7"
 dependencies = []
@@ -20,6 +20,8 @@ classifiers = [
     "Topic :: Games/Entertainment",
     "Topic :: Software Development :: Libraries",
 ]
+license = "MPL 2.0"
+license-files = ["LICENSE"]
 
 [project.optional-dependencies]
 keyboard = ["keyboard"]
