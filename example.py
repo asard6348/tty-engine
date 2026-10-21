@@ -243,7 +243,7 @@ def dev(Session=Session): #DEBUG
                 self.tpts = {}
             inp.onpress('t', tdown, True)
             inp.onpress('y', tdown, True)
-            inp.onrelease('t', tup, True)
+            inp.onrelease('t', lambda: tup(False), True)
             inp.onrelease('y', lambda: tup(True), True)
 
             self.push = sc.obj().create(force=30*40, cap=30, radius=40, show=False)

@@ -2135,6 +2135,10 @@ class physics(_change_callback, _lerpable):
                         result = ghost()
                     if result:
                         return True
+        if intersection:
+            jt = getattr(self.obj, 'joint', None)
+            if jt is not None and jt._seam(other, intersection):
+                return True
         return False
 
     def _blocked(self, dx, dy, exclude=()):
@@ -3576,6 +3580,27 @@ class joint(_lerpable):
         r = math.radians(self.t.rotation)
         dx, dy = (point[0] - cx) * A, point[1] - cy
         return (dx * math.cos(r) - dy * math.sin(r)) / A, dx * math.sin(r) + dy * math.cos(r)
+
+    def _seam(self, other, cells):
+        edge = self._edges.get(id(other))
+        if edge is None or not edge.alive or not edge.colliding:
+            return False
+        A = self.scene.aspect
+        points = (edge.anchor(), edge.pin())
+        frontier = [c for c in cells
+                    if any(math.hypot((c[0] + 0.5 - p[0]) * A, c[1] - 0.5 - p[1]) <= 1.5 for p in points)]
+        if not frontier:
+            return False
+        seen = set(frontier)
+        while frontier:
+            x, y = frontier.pop()
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (x + dx, y + dy)
+                    if n in cells and n not in seen:
+                        seen.add(n)
+                        frontier.append(n)
+        return len(seen) == len(cells)
 
     def _connect(self, item):
         # link self -> item without moving anything (offsets are expected to be set afterwards)
