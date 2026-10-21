@@ -939,9 +939,18 @@ class transform(_change_callback, _lerpable):
             new_pixels = {}
             cells = {}
             sources = {}
+            resample = not ident and len({px[1] for px in source.values() if px[0] != ' '}) > 1
             for group in (placed, extra):
                 for cell, src in group.items():
-                    new_pixels[cell] = source[src]
+                    chosen = source[src]
+                    if resample:
+                        rx = (cell[0] - cx) * ASPECT
+                        ry = cell[1] - cy
+                        near = source.get((floor((rx * ja + ry * jb) / ASPECT + cx + 0.5 + 1e-7),
+                                           floor(rx * jc + ry * jd + cy + 0.5 + 1e-7)))
+                        if near is not None and near[0] == chosen[0]:
+                            chosen = near
+                    new_pixels[cell] = chosen
                     if maps:
                         cells[cell] = [src]
                         sources.setdefault(src, []).append(cell)
