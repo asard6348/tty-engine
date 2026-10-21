@@ -434,6 +434,8 @@ class Compositor:
                 b = min(vx1, span[1])
                 if a < b:
                     back[y][a:b] = [cell] * (b - a)
+        if lit and any(row[2] for _, _, grid in sprites for row in grid):
+            self.shine(sc, back, spans, lit, plain)
         for x, y, grid in sprites:
             if y >= bottom or y + len(grid) <= top or x >= right:
                 continue

@@ -578,12 +578,12 @@ class Session():
                 optt_stack = main_stack.enter_context(contextlib.ExitStack())
                 is_mouse = False
 
-                hc = not self._partial()
+                fs = hc = not self._partial()
                 while self.running:
                     if changed_optimized: changed_optimized = False
                     if self.optimize and not is_optimized:
                         fs = self.fullscreen if self.fullscreen is not None else not self._partial()
-                        hc = self.hidecursor if self.hidecursor is not None else fs
+                        hc = self.hidecursor if self.hidecursor is not None else True
                         if fs: opt_stack.enter_context(self.term.fullscreen())
                         opt_stack.enter_context(self.term.cbreak())
                         if hc: opt_stack.enter_context(self.term.hidden_cursor())
@@ -667,7 +667,7 @@ class Session():
                             self.autobg,
                         )
                         if frame:
-                            if not hc: frame = '\0337' + frame + '\0338'
+                            if not (hc and fs): frame = '\0337' + frame + '\0338'
                             if self.vsync: frame = '\033[?2026h' + frame + '\033[?2026l'
                             sys.stdout.write(frame)
                             sys.stdout.flush()
