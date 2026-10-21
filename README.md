@@ -48,7 +48,25 @@ session.run()
 
 A `launch()`ed handle is a class (or a plain function) whose optional
 `start`, `update` and `final` methods receive any of `scene`, `session`,
-`world`, `handle` and `sound` by parameter name.
+`world`, `handle`, `sound` and `simulation` by parameter name.
+
+## Start
+
+```python
+from ttyengine import start
+
+class main:
+    def start(self, scene, simulation):
+        scene.obj().create('hello, tty', 5, -3)
+
+sim = start(main, pausephysics=True)
+```
+
+`start(*launch, **settings)` creates a `Session`, a `World` holding every
+`launch` handle (when any are given), runs the session with `settings` and
+returns a `Simulation`. The `Simulation` exposes `sessions`, `worlds`,
+`handles` and `scenes`, can be indexed or iterated for its sessions, and has
+`session()`, `world()`, `launch()`, `run()` and `stop()` for building more.
 
 ## Licensing
 

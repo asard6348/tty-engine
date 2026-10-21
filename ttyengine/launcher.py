@@ -247,6 +247,7 @@ class World():
                 'world': self.world,
                 'session': self.world.session,
                 'sound': getattr(self.world.session, 'sound', None),
+                'simulation': getattr(self.world.session, 'simulation', None),
             }
             self.handle = handle(**getargs(handle, self.handleargs))
             if not hasattr(self.handle, 'priority'):
@@ -363,6 +364,7 @@ class Session():
         if unknown:
             raise TypeError(f"Session() got unexpected keyword argument(s): {', '.join(unknown)}")
         self.worlds = []
+        self.simulation = None
         self.World = lambda front=True, **kwargs: World(session=self, autoreg=True, front=front, **kwargs)
         self.term = Terminal()
         self.apis = {name: kwargs.get(name, default) for name, default in self.APIS.items()}
@@ -703,3 +705,78 @@ class Session():
 
     def run(self, **kwargs):
         attempt(lambda: self.run_attempt(**kwargs), self._debug_trace)
+
+class Simulation():
+    def __init__(self, *sessions):
+        self.sessions = []
+        for session in sessions:
+            self.add(session)
+
+    @property
+    def worlds(self):
+        return [w for s in self.sessions for w in s.worlds]
+
+    @property
+    def handles(self):
+        return [h for w in self.worlds for h in w.handles]
+
+    @property
+    def scenes(self):
+        return [w.scene for w in self.worlds]
+
+    def __getitem__(self, index):
+        return self.sessions[index]
+
+    def __len__(self):
+        return len(self.sessions)
+
+    def __iter__(self):
+        return iter(self.sessions)
+
+    def add(self, session):
+        session.simulation = self
+        if session not in self.sessions:
+            self.sessions.append(session)
+        return session
+
+    def session(self, **kwargs):
+        return self.add(Session(**kwargs))
+
+    def _session(self, ref=None):
+        if ref is None:
+            return self.sessions[-1] if self.sessions else self.session()
+        if isinstance(ref, Session):
+            return self.add(ref)
+        return self.sessions[ref]
+
+    def world(self, session=None, front=True, **kwargs):
+        return self._session(session).World(front=front, **kwargs)
+
+    def _world(self, ref=None, session=None):
+        if isinstance(ref, World):
+            return ref
+        target = self._session(session)
+        if ref is None:
+            return target.worlds[-1] if target.worlds else target.World()
+        return target.worlds[ref]
+
+    def launch(self, *handles, world=None, session=None, safe=True, state='start'):
+        target = self._world(world, session)
+        return [target.launch(handle, safe=safe, state=state) for handle in handles]
+
+    def run(self, session=None, **settings):
+        self._session(session).run(**settings)
+        return self
+
+    def stop(self):
+        for session in self.sessions:
+            session.running = False
+
+def start(*launch, **settings):
+    simulation = Simulation()
+    simulation.session()
+    if launch:
+        simulation.world()
+        simulation.launch(*launch)
+    simulation.run(**settings)
+    return simulation

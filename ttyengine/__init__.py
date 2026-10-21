@@ -46,11 +46,11 @@ def _installed_version():
 
 __version__ = _pyproject_version() or _installed_version() or "0+unknown"
 
-__all__ = ["Session", "World", "__version__"]
+__all__ = ["Session", "World", "Simulation", "start", "__version__"]
 
 
 def __getattr__(name):
-    if name in ("Session", "World"):
+    if name in ("Session", "World", "Simulation", "start"):
         from . import launcher
         return getattr(launcher, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
