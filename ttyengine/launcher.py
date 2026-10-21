@@ -1,4 +1,5 @@
 import os, sys, time, threading, traceback, contextlib, inspect, ctypes, re, socket, subprocess, tempfile, shlex
+from types import SimpleNamespace
 
 def highlight_traceback(tb_str: str) -> str:
     RESET, BOLD, RED, GREEN, YELLOW, CYAN, MAGENTA = (
@@ -537,8 +538,28 @@ class Session():
         h = th - y if self.termheight is None else max(0, min(self.termheight, th - y))
         return (x, y, w, h)
 
+    def _footprint(self, region):
+        x, y, w, h = region
+        if not self.worlds:
+            return region
+        right = bottom = 0
+        for world in self.worlds:
+            sc = world.scene
+            termx, termy = (w, h) if self.autoterm and world.autoterm else (sc.termx, sc.termy)
+            dimx, dimy = (termx, termy) if self.autodim and world.autodim else (sc.dimx, sc.dimy)
+            view = Compositor.view(SimpleNamespace(
+                termx=termx, termy=termy, dimx=dimx, dimy=dimy,
+                dimxoffset=sc.dimxoffset, dimyoffset=sc.dimyoffset,
+            ), w, h)
+            right = max(right, view[2])
+            bottom = max(bottom, view[3])
+        return (x, y, right, bottom)
+
     def _partial(self):
-        return self.region != (0, 0, None, None)
+        if self.region != (0, 0, None, None):
+            return True
+        full = self._resolve_region()
+        return self._footprint(full) != full
 
     def style(self, *args, **kwargs):
         if not self.apis['style']:
@@ -637,7 +658,7 @@ class Session():
 
                             world.scene.flush()
 
-                        region = self._resolve_region()
+                        region = self._footprint(self._resolve_region())
                         bounds = (self.term.width, self.term.height)
                         active = [] if self.pauserendering else [w for w in itworlds if not w.pauserendering]
                         frame = self._compositor.compose(

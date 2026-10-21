@@ -294,7 +294,7 @@ class _lerpable:
             return current + (target - current) * alpha
         return target if alpha >= 1 else _HOLD
 
-    def lerp(self, weight=1, /, **kwargs):
+    def lerp(self, weight=1, **kwargs):
         for key, target in kwargs.items():
             if not hasattr(self, key):
                 raise AttributeError('%s has no attribute %r' % (type(self).__name__, key))

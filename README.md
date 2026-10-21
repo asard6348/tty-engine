@@ -14,7 +14,7 @@ arguments you pass to `create()`.
 pip install git+https://github.com/asard6348/tty-engine
 ```
 
-Requires Python 3.8 or newer on Windows, macOS or Linux, in a terminal that
+Requires Python 3.7 or newer on Windows, macOS or Linux, in a terminal that
 supports ANSI escape sequences (truecolor and the kitty keyboard protocol are
 used when available).
 
@@ -48,15 +48,9 @@ session.run()
 
 A `launch()`ed handle is a class (or a plain function) whose optional
 `start`, `update` and `final` methods receive any of `scene`, `session`,
-`world`, `handle` and `sound` by parameter name. See `example.py`,
-`gameoflife.py`, `ant.py` and `rocket.py` for larger programs.
-
-## Tests
-
-```sh
-python -m unittest discover -s tests
-```
+`world`, `handle` and `sound` by parameter name.
 
 ## Licensing
 
+TTY Engine is licensed under the [Mozilla Public License 2.0](LICENSE).
 Bundled FIGlet fonts and code are covered by `ttyengine/figlet-LICENSE.txt`.
