@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ttyengine"
+version = "0.1.0"
+description = "A terminal rendering, physics and sound engine with no required dependencies"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+keywords = ["terminal", "tty", "cli", "ascii", "engine", "simulation", "game", "physics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.optional-dependencies]
+keyboard = ["keyboard"]
+ffmpeg = ["imageio-ffmpeg"]
+
+[project.urls]
+Homepage = "https://github.com/asard6348/tty-engine"
+Issues = "https://github.com/asard6348/tty-engine/issues"
+
+[tool.setuptools.packages.find]
+include = ["ttyengine*"]
+
+[tool.setuptools.package-data]
+ttyengine = ["fonts.zip", "figlet-LICENSE.txt"]

@@ -156,15 +156,12 @@ def latency(samples=1000):
 
 
 #MODULES
-def attemptimports():
-    global scene, Terminal, inp, Styler, Mixer, Compositor
-    from . import scene
-    from .compositor import Compositor
-    from .terminal import Terminal
-    from .input_handler import inp
-    from .ascii_styler import Styler
-    from .sound import Mixer
-attempt(attemptimports)
+from . import scene
+from .compositor import Compositor
+from .terminal import Terminal
+from .input_handler import inp
+from .ascii_styler import Styler
+from .sound import Mixer
 
 #WINDOWS INTIALIZATION
 def universal_init():
@@ -173,9 +170,14 @@ def universal_init():
         dwMode = ctypes.c_uint32()
         ctypes.windll.kernel32.GetConsoleMode(hOut, ctypes.byref(dwMode))
         ctypes.windll.kernel32.SetConsoleMode(hOut, dwMode.value | 0x0004)
-attempt(universal_init)
+try:
+    universal_init()
+except Exception:
+    pass
 
 HANDLE_STATES = ('start', 'update', 'final')
+
+_SPIN_MARGIN = 0.016 if sys.platform == 'win32' else 0.002
 
 def handle_state(state):
     if isinstance(state, str):
@@ -658,6 +660,8 @@ class Session():
                     sleep = next_tick - now
                     if sleep > self._latency and not self._pause:
                         tar = time.perf_counter() + sleep
+                        coarse = sleep - _SPIN_MARGIN
+                        if coarse > 0: time.sleep(coarse)
                         while time.perf_counter() < tar: pass
                     elif self._pause or len(self.worlds) == 0:
                         with self._resume:
