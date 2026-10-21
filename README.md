@@ -30,7 +30,7 @@ Without the `keyboard` package the engine falls back to terminal input.
 ## Quick start
 
 ```python
-from ttyengine import Session
+from ttyengine import start
 
 class main:
     def start(self, scene, session):
@@ -40,33 +40,38 @@ class main:
             session.running = False
         session.inp.onpress('x', quit)
 
-session = Session(sound=False)
-world = session.World()
-world.launch(main)
-session.run()
+start(main)
 ```
+
+`start(*launch, **settings)` creates a `Session`, a `World` holding every
+`launch` handle (when any are given), runs the session with `settings` and
+returns a `Simulation`.
 
 A `launch()`ed handle is a class (or a plain function) whose optional
 `start`, `update` and `final` methods receive any of `scene`, `session`,
 `world`, `handle`, `sound` and `simulation` by parameter name.
 
-## Start
+## Simulation
+
+The `Simulation` returned by `start()` exposes `sessions`, `worlds`, `handles`
+and `scenes`, can be indexed or iterated for its sessions, and has
+`session()`, `world()`, `launch()`, `run()` and `stop()` for building more.
+Handles can reach it through their `simulation` parameter while the session
+runs.
+
+## Manual setup
+
+Build the objects yourself when you need `Session` options such as
+`sound=False`, or several sessions and worlds:
 
 ```python
-from ttyengine import start
+from ttyengine import Session
 
-class main:
-    def start(self, scene, simulation):
-        scene.obj().create('hello, tty', 5, -3)
-
-sim = start(main, pausephysics=True)
+session = Session(sound=False)
+world = session.World()
+world.launch(main)
+session.run()
 ```
-
-`start(*launch, **settings)` creates a `Session`, a `World` holding every
-`launch` handle (when any are given), runs the session with `settings` and
-returns a `Simulation`. The `Simulation` exposes `sessions`, `worlds`,
-`handles` and `scenes`, can be indexed or iterated for its sessions, and has
-`session()`, `world()`, `launch()`, `run()` and `stop()` for building more.
 
 ## Licensing
 
