@@ -4,7 +4,7 @@
 #def on_discard() - function that will be called upon obj().discard()
 
 #MODULES
-import math, re, statistics, inspect, collections.abc, functools
+import math, inspect, collections.abc, functools
 from . import ansi
 from .ascii_styler import alphaparse, alphamark, bgrecomp, fgrecomp
 

@@ -127,7 +127,7 @@ _ESC_TIMEOUT = 0.05
 
 class inp():
     def __init__(self, term=None, watchfocus=True, trackmotion=False,
-                 legacy_hold=0.1, quiet=False):
+                 legacy_hold=0.1, quiet=True):
         self.lock         = threading.RLock()
         self.wf           = watchfocus
         self.track_motion = trackmotion

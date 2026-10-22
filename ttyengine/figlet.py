@@ -1,4 +1,4 @@
-import io, os, re, sys, zipfile
+import io, os, re, zipfile
 
 DEFAULT_FONT = 'standard'
 

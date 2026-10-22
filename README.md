@@ -179,7 +179,7 @@ flowchart TD
 | Layer | Role |
 |---|---|
 | **Simulation** | The top-level container returned by `start()`. It exposes `sessions`, `worlds`, `handles` and `scenes`, and has `session()`, `world()`, `launch()`, `run()` and `stop()` for building more. |
-| **Session** | Owns the terminal. It provides input (`session.inp`), sound (`session.sound`) and styling helpers (`session.style`, `session.styler`), and runs the main loop. |
+| **Session** | Owns the terminal. It provides input (`session.inp`), sound (`session.sound`) and styling helpers (`session.style`, `session.styler`), and runs the main loop until `session.stop()` is called or `session.running` is set to `False`. |
 | **World** | A scene together with the handles that drive it. A session can hold several worlds, which are composited into a single frame. |
 | **Scene** | The simulated space: objects, gravity, camera, lights and the background color. |
 | **Handle** | Your code. A class (or function) whose `start`, `update` and `final` methods are called by the world. |

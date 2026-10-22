@@ -290,7 +290,8 @@ class Scene:
     def dimx(self, value):
         old = self._dimx
         self._dimx = self.iround(value)
-        self._fire(self._ondimcb, 'x', old)
+        if self._dimx != old:
+            self._fire(self._ondimcb, 'x', old)
 
     @property
     def dimy(self):
@@ -299,7 +300,8 @@ class Scene:
     def dimy(self, value):
         old = self._dimy
         self._dimy = self.iround(value)
-        self._fire(self._ondimcb, 'y', old)
+        if self._dimy != old:
+            self._fire(self._ondimcb, 'y', old)
 
     @property
     def dimxoffset(self):
@@ -308,7 +310,8 @@ class Scene:
     def dimxoffset(self, value):
         old = self._dimxoffset
         self._dimxoffset = self.iround(value)
-        self._fire(self._ondimoffsetcb, 'x', old)
+        if self._dimxoffset != old:
+            self._fire(self._ondimoffsetcb, 'x', old)
 
     @property
     def dimyoffset(self):
@@ -317,7 +320,8 @@ class Scene:
     def dimyoffset(self, value):
         old = self._dimyoffset
         self._dimyoffset = self.iround(value)
-        self._fire(self._ondimoffsetcb, 'y', old)
+        if self._dimyoffset != old:
+            self._fire(self._ondimoffsetcb, 'y', old)
 
     @property
     def framerate(self):
@@ -446,7 +450,8 @@ class Scene:
     def camx(self, value):
         old = self._camx
         self._camx = value
-        self._fire(self._oncamcb, 'x', old)
+        if value != old:
+            self._fire(self._oncamcb, 'x', old)
 
     @property
     def camy(self):
@@ -455,7 +460,8 @@ class Scene:
     def camy(self, value):
         old = self._camy
         self._camy = value
-        self._fire(self._oncamcb, 'y', old)
+        if value != old:
+            self._fire(self._oncamcb, 'y', old)
 
     @property
     def camrotation(self):
@@ -464,7 +470,8 @@ class Scene:
     def camrotation(self, value):
         old = self._camrotation
         self._camrotation = float(value) % 360.0
-        self._fire(self._oncamcb, 'rotation', old)
+        if self._camrotation != old:
+            self._fire(self._oncamcb, 'rotation', old)
 
     def focus(self, target):
         t = getattr(target, 'transform', target)

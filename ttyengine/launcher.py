@@ -32,7 +32,9 @@ def highlight_traceback(tb_str: str) -> str:
             lines.append(line_hl)
     return "".join(lines)
 
-def trace(exception, lexer=None, clear=True, out=sys.stdout.write, flush=sys.stdout.flush):
+def trace(exception, lexer=None, clear=True, out=None, flush=None):
+    if out is None:
+        out, flush = sys.stdout.write, sys.stdout.flush
     try:
         if clear:
             if out: out(ansi.wrap_all(ansi.CLEAR_ALL))
@@ -41,16 +43,18 @@ def trace(exception, lexer=None, clear=True, out=sys.stdout.write, flush=sys.std
             exc = highlight_traceback(tb_raw)
             out(ansi.wrap_all(exc))
             if flush: flush()
-    except:
+    except Exception:
         raise exception
 
-def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, out=sys.stdout.write, flush=sys.stdout.flush):
+def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, out=None, flush=None):
+    if out is None:
+        out, flush = sys.stdout.write, sys.stdout.flush
     try:
         return func()
     except Exception as e:
         if reset and fatal:
             try: out(ansi.wrap(ansi.FULL_RESET))
-            except: pass
+            except Exception: pass
         catchexc = None
         if callable(catch):
             try:
@@ -61,9 +65,8 @@ def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, ou
         if catchexc: trace(catchexc, lexer, False, out, flush)
         if fatal:
             try: input()
-            except: pass
-            try: os._exit(0)
-            except: exit()
+            except (Exception, KeyboardInterrupt): pass
+            os._exit(1)
 
 DEBUG_HOLD = ansi.osc('777;hold')
 DEBUG_RECEIVER = r"""
@@ -118,7 +121,7 @@ def spawn_console(script):
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for term in ['x-terminal-emulator', 'gnome-terminal', 'xterm', 'konsole']:
         try:
-            return subprocess.Popen([term, '-e', sys.executable, '-c', script],
+            return subprocess.Popen([term, '--' if term == 'gnome-terminal' else '-e', sys.executable, '-c', script],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, close_fds=True)
         except FileNotFoundError:
@@ -162,7 +165,6 @@ from . import scene
 from .compositor import Compositor
 from .terminal import Terminal, MODE_SYNC
 from .input_handler import inp
-from .ascii_styler import Styler
 from .sound import Mixer
 
 #WINDOWS INTIALIZATION
@@ -179,7 +181,7 @@ except Exception:
 
 HANDLE_STATES = ('start', 'update', 'final')
 
-_SPIN_MARGIN = 0.016 if sys.platform == 'win32' else 0.002
+_SPIN_MARGIN = 0.016 if sys.platform == 'win32' and sys.version_info < (3, 11) else 0.002
 
 def handle_state(state):
     if isinstance(state, str):
@@ -641,7 +643,6 @@ class Session():
                         is_mouse = False
 
                     if(not self._pause):
-                        bef = time.perf_counter()
                         if self.inp: self.inp.update()
                         framerate_groups = {}
                         for w in self.worlds:
@@ -729,6 +730,11 @@ class Session():
 
     def run(self, **kwargs):
         attempt(lambda: self.run_attempt(**kwargs), self._debug_trace)
+
+    def stop(self):
+        self.running = False
+        with self._resume:
+            self._resume.notify_all()
 
 class Simulation():
     def __init__(self, *sessions):

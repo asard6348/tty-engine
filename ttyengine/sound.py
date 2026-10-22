@@ -315,11 +315,6 @@ def _ffmpeg_candidates():
     for var in ('TTYENGINE_FFMPEG', 'FFMPEG_BINARY', 'FFMPEG_PATH'):
         if os.environ.get(var):
             yield from _from_setting(os.environ[var])
-    main = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else None
-    for directory in (os.path.dirname(os.path.abspath(__file__)), os.getcwd(), main,
-                      os.path.join(os.path.expanduser('~'), '.ttyengine')):
-        if directory:
-            yield from _in_dir(directory)
     found = shutil.which('ffmpeg')
     if found:
         yield found
@@ -330,6 +325,11 @@ def _ffmpeg_candidates():
         pass
     for directory in _known_dirs():
         yield from _in_dir(directory)
+    main = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else None
+    for directory in (os.path.dirname(os.path.abspath(__file__)), main,
+                      os.path.join(os.path.expanduser('~'), '.ttyengine')):
+        if directory:
+            yield from _in_dir(directory)
 
 
 def _works(exe):

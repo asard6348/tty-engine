@@ -1,5 +1,4 @@
 import re, shutil, colorsys
-from typing import Optional, Union
 from functools import lru_cache
 from . import ansi
 from .figlet import Figlet, available

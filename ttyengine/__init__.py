@@ -28,23 +28,12 @@ def _pyproject_version():
 def _installed_version():
     try:
         from importlib.metadata import version
-    except ImportError:
-        try:
-            from importlib_metadata import version
-        except ImportError:
-            def version(name):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    import pkg_resources
-                return pkg_resources.get_distribution(name).version
-    try:
         return version(_NAME)
     except Exception:
         return None
 
 
-__version__ = _pyproject_version() or _installed_version() or "0+unknown"
+__version__ = _installed_version() or _pyproject_version() or "0+unknown"
 
 __all__ = ["Session", "World", "Simulation", "start", "__version__"]
 
