@@ -20,8 +20,6 @@ classifiers = [
     "Topic :: Games/Entertainment",
     "Topic :: Software Development :: Libraries",
 ]
-license = "MPL 2.0"
-license-files = ["LICENSE"]
 
 [project.optional-dependencies]
 keyboard = ["keyboard"]
