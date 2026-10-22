@@ -6,6 +6,7 @@ try:
 except Exception:
     keyboard = None
 
+from . import ansi
 from .terminal import Terminal
 
 _WINDOWS = sys.platform == 'win32'
@@ -26,9 +27,9 @@ if _WINDOWS:
     _ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
     _STD_INPUT_HANDLE  = -10 & 0xFFFFFFFF
     _STD_OUTPUT_HANDLE = -11 & 0xFFFFFFFF
-    _WIN_SCAN = {'H': '\x1b[A', 'P': '\x1b[B', 'M': '\x1b[C', 'K': '\x1b[D',
-                 'G': '\x1b[H', 'O': '\x1b[F', 'I': '\x1b[5~', 'Q': '\x1b[6~',
-                 'R': '\x1b[2~', 'S': '\x1b[3~'}
+    _WIN_SCAN = {'H': ansi.csi('', 'A'), 'P': ansi.csi('', 'B'), 'M': ansi.csi('', 'C'), 'K': ansi.csi('', 'D'),
+                 'G': ansi.csi('', 'H'), 'O': ansi.csi('', 'F'), 'I': ansi.csi('5', '~'), 'Q': ansi.csi('6', '~'),
+                 'R': ansi.csi('2', '~'), 'S': ansi.csi('3', '~')}
 else:
     import select
 
@@ -105,8 +106,8 @@ def _kitty_name(code):
         return 'space' if code == 32 else chr(code).lower()
     return None
 
-_CSI_RE      = re.compile(r'\x1b\[([0-9:;<=>?]*)([ -/]*)([@-~])')
-_CSI_PARTIAL_RE = re.compile(r'\x1b\[[0-9:;<=>?]*[ -/]*')
+_CSI_RE      = re.compile(ansi.CSI_RE + r'([0-9:;<=>?]*)([ -/]*)([@-~])')
+_CSI_PARTIAL_RE = re.compile(ansi.CSI_RE + r'[0-9:;<=>?]*[ -/]*')
 _ESC_TIMEOUT = 0.05
 
 
@@ -225,7 +226,7 @@ class inp():
     @staticmethod
     def _write(s):
         try:
-            sys.stdout.write(s); sys.stdout.flush()
+            sys.stdout.write(ansi.wrap_all(s)); sys.stdout.flush()
         except Exception:
             pass
 
@@ -247,19 +248,19 @@ class inp():
             _kernel32.SetConsoleMode(hout, mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
     def _enable_focus_reporting(self):
-        self._write("\x1b[?1004h")
+        self._write(ansi.mode(1004, True))
 
     def _disable_focus_reporting(self):
-        self._write("\x1b[?1004l")
+        self._write(ansi.mode(1004, False))
 
     def _enable_mouse(self):
-        codes = "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+        codes = ansi.mode(1000, True) + ansi.mode(1002, True) + ansi.mode(1006, True)
         if self.track_motion:
-            codes += "\x1b[?1003h"
+            codes += ansi.mode(1003, True)
         self._write(codes)
 
     def _disable_mouse(self):
-        self._write("\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l")
+        self._write(ansi.mode(1003, False) + ansi.mode(1002, False) + ansi.mode(1000, False) + ansi.mode(1006, False))
 
     def _start_kitty_probe(self):
         if self._kitty_state is not None:
@@ -270,7 +271,7 @@ class inp():
         except Exception:
             return
         self._kitty_state, self._kitty_t = 'probing', time.monotonic()
-        self._write("\x1b[?u\x1b[c")
+        self._write(ansi.csi('?', 'u') + ansi.csi('', 'c'))
 
     #KEYBOARD
     def _kb_event_raw(self, event):
@@ -375,7 +376,7 @@ class inp():
         i = 0
         while i < n:
             c = buf[i]
-            if c != '\x1b':
+            if c != ansi.ESC:
                 name = self._char_to_keyname(c)
                 if name:
                     self._stdin_press(name)
@@ -386,8 +387,8 @@ class inp():
                     i += 1; continue
                 break
             nxt = buf[i + 1]
-            if nxt == '[':
-                if buf.startswith('\x1b[M', i):
+            if nxt == ansi.CSI_INTRO:
+                if buf.startswith(ansi.CSI + 'M', i):
                     if n - i < 6:
                         if stale: i += 3; continue
                         break
@@ -400,7 +401,7 @@ class inp():
                 if n - i < 64 and not stale:
                     break
                 i = _CSI_PARTIAL_RE.match(buf, i).end(); continue
-            if nxt == 'O':
+            if nxt == ansi.SS3_INTRO:
                 if n - i < 3:
                     if stale:
                         self._stdin_press('esc')
@@ -431,7 +432,7 @@ class inp():
         if params[:1] == '?':
             if final == 'u' and self._kitty_state == 'probing':
                 self._kitty_state = 'on'
-                self._write("\x1b[>11u")
+                self._write(ansi.csi('>11', 'u'))
             elif final == 'c' and self._kitty_state == 'probing':
                 self._kitty_state = 'off'
             return
@@ -474,7 +475,7 @@ class inp():
             return 'tab'
         if ch in ('\x7f', '\x08'):
             return 'backspace'
-        if ch == '\x1b':
+        if ch == ansi.ESC:
             return 'esc'
         if ch.isprintable():
             return ch.lower()
@@ -732,7 +733,7 @@ class inp():
             if self.wf:
                 self._disable_focus_reporting()
             if self._kitty_state == 'on':
-                self._write("\x1b[<u")
+                self._write(ansi.csi('<', 'u'))
             self._kitty_state = None
         try:
             self.keyboard.unhook_all()

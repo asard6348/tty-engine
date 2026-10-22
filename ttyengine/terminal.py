@@ -1,4 +1,5 @@
 import os, sys, re, time, codecs, contextlib
+from . import ansi
 
 _WINDOWS = sys.platform == 'win32'
 if _WINDOWS:
@@ -14,10 +15,11 @@ MODE_MOUSE_DRAG = 1002
 MODE_MOUSE_MOTION = 1003
 MODE_MOUSE_SGR = 1006
 
-_CPR = re.compile(r'\x1b\[[0-9]+;[0-9]+R')
-_XTVERSION = re.compile(r'\x1bP>\|([^\x1b]*)\x1b\\')
-_BGCOLOR = re.compile(r'\x1b\]11;rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)(?:\x07|\x1b\\)')
-_FGCOLOR = re.compile(r'\x1b\]10;rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)(?:\x07|\x1b\\)')
+_RGB = r'rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)(?:' + ansi.BEL_RE + '|' + ansi.ST_RE + ')'
+_CPR = re.compile(ansi.CSI_RE + r'[0-9]+;[0-9]+R')
+_XTVERSION = re.compile(ansi.DCS_RE + r'>\|([^' + ansi.ESC_RE + r']*)' + ansi.ST_RE)
+_BGCOLOR = re.compile(ansi.OSC_RE + '11;' + _RGB)
+_FGCOLOR = re.compile(ansi.OSC_RE + '10;' + _RGB)
 
 
 def xparse_color(component, bits=16):
@@ -79,7 +81,7 @@ class Terminal:
 
     def _write(self, text):
         try:
-            self.stream.write(text)
+            self.stream.write(ansi.wrap_all(text))
             self.stream.flush()
         except Exception:
             pass
@@ -147,7 +149,7 @@ class Terminal:
         if not self.is_a_tty or self._fd is None:
             return None
         with self._rare():
-            self._write(query + '\x1b[6n')
+            self._write(query + ansi.csi('6', 'n'))
             boundary, data = self._read_until(_CPR, timeout)
             if boundary is not None:
                 data = data[:boundary.start()] + data[boundary.end():]
@@ -192,19 +194,20 @@ class Terminal:
                 self._write(leave)
 
     def fullscreen(self):
-        return self._sequence('\x1b[?1049h\x1b[22;0;0t', '\x1b[?1049l\x1b[23;0;0t')
+        return self._sequence(ansi.mode(1049, True) + ansi.csi('22;0;0', 't'),
+                              ansi.mode(1049, False) + ansi.csi('23;0;0', 't'))
 
     def hidden_cursor(self):
-        return self._sequence('\x1b[?25l', '\x1b[?12l\x1b[?25h')
+        return self._sequence(ansi.mode(25, False), ansi.mode(12, False) + ansi.mode(25, True))
 
     def no_line_wrap(self):
-        return self._sequence('\x1b[?7l', '\x1b[?7h')
+        return self._sequence(ansi.mode(7, False), ansi.mode(7, True))
 
     def _apple(self, timeout):
         if os.environ.get('TERM_PROGRAM') == 'Apple_Terminal':
             return True
         if self._apple_found is None:
-            match = self._query('\x1b[>q', _XTVERSION, timeout)
+            match = self._query(ansi.csi('>', 'q'), _XTVERSION, timeout)
             self._apple_found = bool(match) and match.group(1).startswith('Apple_Terminal')
         return self._apple_found
 
@@ -213,8 +216,8 @@ class Terminal:
             return self._modes[mode]
         if self._modes_dead or self._apple(timeout):
             return -1
-        pattern = re.compile(r'\x1b\[\?%d;([0-4])\$y' % mode)
-        match = self._query('\x1b[?%d$p' % mode, pattern, timeout)
+        pattern = re.compile(ansi.CSI_RE + r'\?%d;([0-4])\$y' % mode)
+        match = self._query(ansi.csi('?%d$' % mode, 'p'), pattern, timeout)
         if match is None:
             if self.is_a_tty and self._fd is not None and not self._modes_ok:
                 self._modes_dead = True
@@ -227,14 +230,14 @@ class Terminal:
     def dec_modes_enabled(self, *modes, timeout=QUERY_TIMEOUT):
         turned = [mode for mode in modes if self.get_dec_mode(mode, timeout) == 2]
         if turned and self.is_a_tty:
-            self._write('\x1b[?%sh' % ';'.join(str(mode) for mode in turned))
+            self._write(ansi.modes(turned, True))
             for mode in turned:
                 self._modes[mode] = 1
         try:
             yield
         finally:
             if turned and self.is_a_tty:
-                self._write('\x1b[?%sl' % ';'.join(str(mode) for mode in turned))
+                self._write(ansi.modes(turned, False))
                 for mode in turned:
                     self._modes[mode] = 2
 
@@ -260,7 +263,7 @@ class Terminal:
         return tuple(xparse_color(value, bits) for value in match.groups())
 
     def get_bgcolor(self, timeout=QUERY_TIMEOUT, bits=16):
-        return self._color('\x1b]11;?\x07', _BGCOLOR, timeout, bits)
+        return self._color(ansi.osc('11;?'), _BGCOLOR, timeout, bits)
 
     def get_fgcolor(self, timeout=QUERY_TIMEOUT, bits=16):
-        return self._color('\x1b]10;?\x07', _FGCOLOR, timeout, bits)
+        return self._color(ansi.osc('10;?'), _FGCOLOR, timeout, bits)

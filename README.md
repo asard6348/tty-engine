@@ -73,6 +73,28 @@ world.launch(main)
 session.run()
 ```
 
+## Colors and ANSI wrapping
+
+Set the `NO_COLOR` environment variable to any non-empty value to strip color
+codes from everything the engine writes; attributes such as bold are kept.
+`start(no_color=True)`, `Session(no_color=True)` and `Compositor(no_color=True)`
+do the same per instance, and any value other than `None` overrides the
+environment.
+
+Every ANSI code can be surrounded by a prefix and a suffix, both when the
+engine writes it and when it reads it from your text. Set them with the
+`TTYENGINE_ANSI_PREFIX` and `TTYENGINE_ANSI_SUFFIX` environment variables
+(backslash escapes such as `\001` are decoded) or in code:
+
+```python
+from ttyengine import ansi
+
+ansi.set_wrapper(prefix='\x01', suffix='\x02')
+```
+
+A value of `None` falls back to its environment variable, and both are empty by
+default.
+
 ## Licensing
 
 TTY Engine is licensed under the [Mozilla Public License 2.0](LICENSE).

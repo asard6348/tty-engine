@@ -1,4 +1,4 @@
-import re, inspect
+import inspect
 def _argslen(cb):
     params = inspect.signature(cb).parameters
     l = len(params) - (1 if hasattr(cb, '__self__') else 0)
@@ -15,6 +15,7 @@ def wrap_property(component_attr: str, prop: property) -> property:
         prop.fset(getattr(self, component_attr), value)
     return property(fget, fset if prop.fset else None)
 
+from . import ansi
 from . import components as _components
 from .ascii_styler import Styler
 from .compositor import Compositor
@@ -278,7 +279,7 @@ class Scene:
         self._compositor = None
         self.fgcolor = (204, 204, 204)
         self.styler = Styler(self)
-        self.recomp =re.compile(r'(\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07?|\x1b[()]?[A-Za-z0-9])')
+        self.recomp = ansi.SEQUENCE
         self._lastz = 0
         self._firstz = 0
 

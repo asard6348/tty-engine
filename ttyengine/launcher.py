@@ -1,9 +1,12 @@
 import os, sys, time, threading, traceback, contextlib, inspect, ctypes, re, socket, subprocess, tempfile, shlex
 from types import SimpleNamespace
+from . import ansi
 
 def highlight_traceback(tb_str: str) -> str:
+    if not ansi.color_enabled():
+        return tb_str
     RESET, BOLD, RED, GREEN, YELLOW, CYAN, MAGENTA = (
-        "\033[0m", "\033[1m", "\033[91m", "\033[92m", "\033[93m", "\033[96m", "\033[95m"
+        ansi.RESET, ansi.BOLD, ansi.sgr(91), ansi.sgr(92), ansi.sgr(93), ansi.sgr(96), ansi.sgr(95)
     )
     lines = []
     for line in tb_str.splitlines(True):
@@ -32,11 +35,11 @@ def highlight_traceback(tb_str: str) -> str:
 def trace(exception, lexer=None, clear=True, out=sys.stdout.write, flush=sys.stdout.flush):
     try:
         if clear:
-            if out: out("\033[H\033[2J\033[3J")
+            if out: out(ansi.wrap_all(ansi.CLEAR_ALL))
         if out:
             tb_raw = "".join(traceback.format_exc()) + '\n'
             exc = highlight_traceback(tb_raw)
-            out(exc)
+            out(ansi.wrap_all(exc))
             if flush: flush()
     except:
         raise exception
@@ -46,7 +49,7 @@ def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, ou
         return func()
     except Exception as e:
         if reset and fatal:
-            try: out('\033c')
+            try: out(ansi.wrap(ansi.FULL_RESET))
             except: pass
         catchexc = None
         if callable(catch):
@@ -62,7 +65,7 @@ def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, ou
             try: os._exit(0)
             except: exit()
 
-DEBUG_HOLD = '\033]777;hold\007'
+DEBUG_HOLD = ansi.osc('777;hold')
 DEBUG_RECEIVER = r"""
 import sys, socket, codecs
 if sys.platform == "win32":
@@ -73,26 +76,24 @@ if sys.platform == "win32":
         hwnd = kernel32.GetConsoleWindow()
         if hwnd: ctypes.windll.user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 19)
 out = sys.stdout
-title = __TITLE__
-if title is not None:
-    out.write("\033]0;" + title + "\007")
-out.write("\033[?1049l\033[?1049h\033[?25l\033[2J\033[H")
+out.write(__OPEN__)
 out.flush()
 sock = socket.socket()
 sock.connect(("127.0.0.1", __PORT__))
 decode = codecs.getincrementaldecoder("utf-8")("replace").decode
 hold = False
+marker = __HOLD__
 while True:
     data = sock.recv(65536)
     if not data:
         break
     text = decode(data)
-    if "\033]777;hold\007" in text:
-        text = text.replace("\033]777;hold\007", "")
+    if marker in text:
+        text = text.replace(marker, "")
         hold = True
     out.write(text)
     out.flush()
-out.write("\033[?25h")
+out.write(__CLOSE__)
 out.flush()
 if hold:
     try: input()
@@ -135,7 +136,7 @@ def format_dinfo(value):
         lines = [line for v in value for line in str(v).split('\n')]
     else:
         lines = str(value).split('\n')
-    return '\033[H' + '\033[K\n'.join(lines) + '\033[K\033[J'
+    return ansi.HOME + (ansi.ERASE_LINE + '\n').join(lines) + ansi.ERASE_LINE + ansi.ERASE_BELOW
 
 def getargs(func, args):
     if not callable(func): return {}
@@ -357,7 +358,7 @@ class Session():
     SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True,
                 'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True,
                 'termxoffset': 0, 'termyoffset': 0, 'termwidth': None, 'termheight': None,
-                'fullscreen': None, 'hidecursor': None}
+                'fullscreen': None, 'hidecursor': None, 'no_color': None}
 
     def __init__(self, watchfocus=True, trackmotion=True, ffmpeg=None, **kwargs):
         unknown = [k for k in kwargs if k not in self.APIS and k not in self.SETTINGS]
@@ -424,9 +425,13 @@ class Session():
         try:
             server.bind(('127.0.0.1', 0))
             server.listen(1)
+            opening = ((ansi.osc('0;' + title) if title is not None else '')
+                       + ansi.mode(1049, False) + ansi.mode(1049, True) + ansi.mode(25, False) + ansi.CLEAR + ansi.HOME)
             script = (DEBUG_RECEIVER
+                      .replace('__OPEN__', repr(opening))
+                      .replace('__HOLD__', repr(DEBUG_HOLD))
+                      .replace('__CLOSE__', repr(ansi.mode(25, True)))
                       .replace('__PORT__', str(server.getsockname()[1]))
-                      .replace('__TITLE__', repr(title))
                       .replace('__BACK__', repr(bool(back))))
             proc = spawn_console(script)
             if proc is None:
@@ -483,7 +488,7 @@ class Session():
         if d is None:
             return
         d['hold'] = True
-        self._debug_send('\033[H\033[2J\033[3J' + highlight_traceback(traceback.format_exc()) + DEBUG_HOLD)
+        self._debug_send(ansi.CLEAR_ALL + highlight_traceback(traceback.format_exc()) + DEBUG_HOLD)
 
     def _listener(self):
         if not self.worlds:
@@ -663,14 +668,15 @@ class Session():
                         region = self._footprint(self._resolve_region())
                         bounds = (self.term.width, self.term.height)
                         active = [] if self.pauserendering else [w for w in itworlds if not w.pauserendering]
+                        self._compositor.no_color = self.no_color
                         frame = self._compositor.compose(
                             self.worlds, active, region, bounds,
                             self.bgcolor if self.outerbg else None,
                             self.autobg,
                         )
                         if frame:
-                            if not (hc and fs): frame = '\0337' + frame + '\0338'
-                            if self.vsync: frame = '\033[?2026h' + frame + '\033[?2026l'
+                            if not (hc and fs): frame = ansi.wrap(ansi.SAVE_CURSOR) + frame + ansi.wrap(ansi.RESTORE_CURSOR)
+                            if self.vsync: frame = ansi.wrap(ansi.SYNC_BEGIN) + frame + ansi.wrap(ansi.SYNC_END)
                             sys.stdout.write(frame)
                             sys.stdout.flush()
 
@@ -696,10 +702,10 @@ class Session():
                 if self.sound: self.sound.close()
                 if self.clearonstop:
                     if self._partial():
-                        sys.stdout.write(Compositor.vacate(self._compositor.region, (-1, -1, 0, 0), (self.term.width, self.term.height)) + '\033[0m'
+                        sys.stdout.write(Compositor.vacate(self._compositor.region, (-1, -1, 0, 0), (self.term.width, self.term.height)) + ansi.wrap(ansi.RESET)
                                          if self._compositor.region else '')
                     else:
-                        sys.stdout.write("\033[H\033[2J\033[3J")
+                        sys.stdout.write(ansi.wrap_all(ansi.CLEAR_ALL))
                     sys.stdout.flush()
                 self.undebug()
 

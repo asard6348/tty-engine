@@ -1,6 +1,7 @@
 import re, shutil, colorsys
 from typing import Optional, Union
 from functools import lru_cache
+from . import ansi
 from .figlet import Figlet, available
 from .image_reader import read as readimage
 
@@ -60,19 +61,19 @@ FONT_MAP = {
 
 DEFAULT_BG = (0,0,0)
 DEFAULT_FG = RGB_MAP["default"]
-bgrecomp = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
-fgrecomp = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
-recomp = re.compile(r'\x1b\[[0-9;]*m')
+bgrecomp = ansi.Pattern(re.escape(ansi.CSI) + r'48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
+fgrecomp = ansi.Pattern(re.escape(ansi.CSI) + r'38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
+recomp = ansi.SGR
 ALPHA_FG = 1000
 ALPHA_FGBACK = 1300
 ALPHA_BG = 1600
-alphamark = re.compile(r'\033\[(1[0-8]\d\d)m')
+alphamark = ansi.Pattern(re.escape(ansi.CSI) + r'(1[0-8]\d\d)m')
 _figlet_cache = {}
 DEFAULT_SHADES = "█"#" .:-=+*#%@"
 
 
 def alphacode(base, alpha):
-    return '\033[%dm' % (base + int(round(max(0.0, min(1.0, alpha)) * 255)))
+    return ansi.sgr(base + int(round(max(0.0, min(1.0, alpha)) * 255)))
 
 
 def alphaparse(text):
@@ -162,7 +163,7 @@ class Styler:
     @staticmethod
     def getcolor(text:str, back=False, default=None):
         fallback = default if default is not None else (DEFAULT_BG if back else DEFAULT_FG)
-        target = "\033[48;2;" if back else "\033[38;2;"
+        target = ansi.CSI + ("48;2;" if back else "38;2;")
         if target not in text:
             return fallback, ""
         matches = list(bgrecomp.finditer(text) if back else fgrecomp.finditer(text))
@@ -203,7 +204,7 @@ class Styler:
                 rb = int(bg_rgb[0] * (1 - _bgalpha) + bgcolor_rgb[0] * _bgalpha)
                 gb = int(bg_rgb[1] * (1 - _bgalpha) + bgcolor_rgb[1] * _bgalpha)
                 bb = int(bg_rgb[2] * (1 - _bgalpha) + bgcolor_rgb[2] * _bgalpha)
-                ansi_bgcolor = f"\033[48;2;{rb};{gb};{bb}m"
+                ansi_bgcolor = ansi.bg(rb, gb, bb)
         else:
             bgcolor_rgb, match_bgcolor = getcolor(text, True, bg_rgb)
             ansi_bgcolor = ""
@@ -225,15 +226,15 @@ class Styler:
             r = int(activebg_rgb[0] * (1 - _alpha) + color_rgb[0] * _alpha)
             g = int(activebg_rgb[1] * (1 - _alpha) + color_rgb[1] * _alpha)
             b = int(activebg_rgb[2] * (1 - _alpha) + color_rgb[2] * _alpha)
-            ansi_color = f"\033[38;2;{r};{g};{b}m"
+            ansi_color = ansi.fg(r, g, b)
         else:
             ansi_color = ""
             if old_fa is not None:
                 fg_mark = alphacode(ALPHA_FGBACK if old_back else ALPHA_FG, old_fa)
         if clean:
-            bold      = bold      or '\033[1m' in text
-            italic    = italic    or '\033[3m' in text
-            underline = underline or '\033[4m' in text
+            bold      = bold      or ansi.BOLD in text
+            italic    = italic    or ansi.ITALIC in text
+            underline = underline or ansi.UNDERLINE in text
             ascii_art = recomp.sub('', text)
             if not ansi_bgcolor:
                 ansi_bgcolor = match_bgcolor
@@ -246,9 +247,9 @@ class Styler:
         if font is not None and (not isinstance(font, int) or font >= 1):
             name = FONT_MAP[max(1, min(5, font))] if isinstance(font, int) else font
             ascii_art = self.getfiglet(font=name, width=width).renderText(ascii_art)
-        ansi_attrs = ('\033[1m' if bold else '') + ('\033[3m' if italic else '') + ('\033[4m' if underline else '')
+        ansi_attrs = (ansi.BOLD if bold else '') + (ansi.ITALIC if italic else '') + (ansi.UNDERLINE if underline else '')
         prefix = ansi_bgcolor + ansi_color + ansi_attrs + bg_mark + fg_mark
-        suffix = "\033[0m" if reset else ""
+        suffix = ansi.RESET if reset else ""
         trailing = '\n' if ascii_art.endswith('\n') else ''
 
         lines = ascii_art.split('\n')
@@ -279,15 +280,15 @@ class Styler:
             return ""
         draw_width = x_end - x_start
         if color is None:
-            row_str = "\033[0m" + " " * draw_width
+            row_str = ansi.RESET + " " * draw_width
             return "".join(
-                f"\033[{row + 1};{x_start + 1}H{row_str}"
+                ansi.move(row + 1, x_start + 1) + row_str
                 for row in range(y_start, y_end)
             )
         r, g, b = int(color[0]), int(color[1]), int(color[2])
-        row_str = f"\033[48;2;{r};{g};{b}m" + " " * draw_width + "\033[0m"
+        row_str = ansi.bg(r, g, b) + " " * draw_width + ansi.RESET
         return "".join(
-            f"\033[{row + 1};{x_start + 1}H{row_str}"
+            ansi.move(row + 1, x_start + 1) + row_str
             for row in range(y_start, y_end)
         )
 
@@ -344,11 +345,11 @@ class Styler:
                     elif char != ' ':
                         rgb = (round(red), round(green), round(blue))
                         if rgb != current:
-                            row.append("\033[38;2;%d;%d;%dm" % rgb)
+                            row.append(ansi.fg(*rgb))
                             current = rgb
                 row.append(char)
             line = ''.join(row).rstrip(' ')
-            lines.append(line + "\033[0m" if current else line)
+            lines.append(line + ansi.RESET if current else line)
         return '\n'.join(lines)
 
 class Shapes:

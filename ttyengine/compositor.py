@@ -2,6 +2,7 @@ import re
 import math
 from itertools import groupby
 from operator import itemgetter
+from . import ansi
 from .ascii_styler import alphamark, alphaparse, bgrecomp, fgrecomp
 
 COVER = {' ': 0.0, '█': 1.0, '▓': 0.75, '▒': 0.5, '░': 0.25, '▀': 0.5, '▄': 0.5, '▌': 0.5, '▐': 0.5}
@@ -33,9 +34,10 @@ def clamp(color):
 
 class Compositor:
     runs = re.compile(b'\x01(?:\x00{0,3}\x01)*')
-    sgr = re.compile(r'\033\[([0-9;]*)m')
+    sgr = ansi.SGR
 
-    def __init__(self):
+    def __init__(self, no_color=None):
+        self.no_color = no_color
         self.front = None
         self.width = 0
         self.height = 0
@@ -45,8 +47,10 @@ class Compositor:
         self.bgfound = {}
         self.palettes = {}
         self.glasses = {}
+        self.emitted = {}
         self.region = None
         self.rotated = {}
+        self._monochrome = None
 
     def invalidate(self):
         self.front = None
@@ -56,7 +60,7 @@ class Compositor:
         ox, oy, ow, oh = old
         nx, ny, nw, nh = new
         tw, th = bounds
-        out = ['\033[0m']
+        out = [ansi.wrap(ansi.RESET)]
         for y in range(max(0, oy), min(oy + oh, th)):
             a, b = max(0, ox), min(ox + ow, tw)
             if ny <= y < ny + nh:
@@ -65,7 +69,7 @@ class Compositor:
                 segs = ((a, b),)
             for s, e in segs:
                 if s < e:
-                    out.append(f'\033[{y + 1};{s + 1}H' + ' ' * (e - s))
+                    out.append(ansi.wrap(ansi.move(y + 1, s + 1)) + ' ' * (e - s))
         return ''.join(out) if len(out) > 1 else ''
 
     def stale(self, width, height):
@@ -73,7 +77,7 @@ class Compositor:
 
     @staticmethod
     def bgstyle(color):
-        return f'\033[48;2;{int(color[0])};{int(color[1])};{int(color[2])}m'
+        return ansi.bg(int(color[0]), int(color[1]), int(color[2]))
 
     @staticmethod
     def parse(scene, text, spaces):
@@ -86,9 +90,9 @@ class Compositor:
                 if not part:
                     continue
                 if scene.recomp.match(part):
-                    if part in ('\033[0m', '\033[m'):
+                    if part in ansi.RESETS:
                         active = ''
-                    elif part.startswith('\033[') and part.endswith('m'):
+                    elif part.startswith(ansi.CSI) and part.endswith('m'):
                         active += part
                     continue
                 shape = kind(active)
@@ -159,7 +163,7 @@ class Compositor:
                     share = (1 - fa) * (1 - reach)
                     if share <= 0:
                         share = None
-            style += '\033[38;2;%d;%d;%dm' % clamp(paint)
+            style += ansi.fg(*clamp(paint))
         return (char, style), share
 
     def glass(self, scene, under, char, active):
@@ -179,7 +183,7 @@ class Compositor:
 
         def shift(found):
             old = [int(v) for v in found.groups()]
-            return '\033[38;2;%d;%d;%dm' % clamp(old[k] + (goal[k] - base[k]) * share for k in range(3))
+            return ansi.fg(*clamp(old[k] + (goal[k] - base[k]) * share for k in range(3)))
         return fgrecomp.sub(shift, rest)
 
     @staticmethod
@@ -510,8 +514,21 @@ class Compositor:
                 if cell is not clear:
                     line[x] = cell
 
+    def emit(self, style, plain):
+        key = (style, plain)
+        found = self.emitted.get(key)
+        if found is None:
+            if len(self.emitted) > 50000:
+                self.emitted.clear()
+            found = self.emitted[key] = ansi.wrap(ansi.RESET) + ansi.wrap_all(ansi.strip_color(style) if plain else style)
+        return found
+
     def compose(self, items, active, region, bounds, outer, autobg):
         regx, regy, width, height = region
+        plain = ansi.monochrome(self.no_color)
+        if plain != self._monochrome:
+            self._monochrome = plain
+            self.invalidate()
         rects = self.sync(items, active, width, height)
         prefix = ''
         moved = self.region is not None and self.region != region
@@ -579,6 +596,7 @@ class Compositor:
                 self.paint(back, spans, view, bg, sprites, sc, lit, base[1], top, bottom, right)
         out = []
         style = None
+        wrap = ansi.wrap
         for y in sorted(spans):
             lo, hi = spans[y]
             new = back[y][lo:hi]
@@ -588,14 +606,14 @@ class Compositor:
             mask = bytes([a != b for a, b in zip(new, old)])
             for run in self.runs.finditer(mask):
                 start, end = run.span()
-                out.append(f'\033[{regy + y + 1};{regx + lo + start + 1}H')
+                out.append(wrap(ansi.move(regy + y + 1, regx + lo + start + 1)))
                 for cellstyle, group in groupby(new[start:end], key=itemgetter(1)):
                     if cellstyle != style:
                         style = cellstyle
-                        out.append('\033[0m' + style)
+                        out.append(self.emit(style, plain))
                     out.append(''.join([cell[0] for cell in group]))
                 self.front[y][lo + start:lo + end] = new[start:end]
         if not out:
             return prefix
-        out.append('\033[0m')
+        out.append(wrap(ansi.RESET))
         return prefix + ''.join(out)

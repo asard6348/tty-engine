@@ -5,7 +5,8 @@
 
 #MODULES
 import math, re, statistics, inspect, collections.abc, functools
-from .ascii_styler import alphaparse, alphamark
+from . import ansi
+from .ascii_styler import alphaparse, alphamark, bgrecomp, fgrecomp
 
 #GLOBAL
 _NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
@@ -129,7 +130,7 @@ def _mtv_cells(mine, other_pixels, aspect):
                 break
     return best
 
-_SGR = re.compile(r'\x1b\[([0-9;]*)m')
+_SGR = ansi.SGR
 _ALPHAS = functools.lru_cache(maxsize=4096)(alphaparse)
 _HOLD = object()
 
@@ -140,8 +141,8 @@ def _unbake(baked, ref, alpha):
 
 def _rebake(ref, source, alpha):
     return tuple(max(0, min(255, int(round(ref[k] * (1 - alpha) + source[k] * alpha)))) for k in range(3))
-_FGCODE = re.compile(r'\033\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
-_BGCODE = re.compile(r'\033\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m')
+_FGCODE = fgrecomp
+_BGCODE = bgrecomp
 
 def _argslen(cb):
     params = inspect.signature(cb).parameters
@@ -646,7 +647,7 @@ class transform(_change_callback, _lerpable):
                 if not part:
                     continue
                 if self.scene.recomp.match(part):
-                    if part == '\033[0m':
+                    if part == ansi.RESET:
                         current_style = ''
                     else:
                         current_style += part
@@ -667,16 +668,16 @@ class transform(_change_callback, _lerpable):
                 if (ci, ri) in pixels:
                     char, style = pixels[(ci, ri)]
                     if style != prev_style:
-                        row += ('\033[0m' if prev_style else '') + style
+                        row += (ansi.RESET if prev_style else '') + style
                         prev_style = style
                     row += char
                 else:
                     if prev_style:
-                        row += '\033[0m'
+                        row += ansi.RESET
                         prev_style = ''
                     row += ' '
             if prev_style:
-                row += '\033[0m'
+                row += ansi.RESET
             out_rows.append(row)
         return '\n'.join(out_rows)
 
@@ -1628,7 +1629,7 @@ class transform(_change_callback, _lerpable):
                     if not part:
                         continue
                     if recomp.match(part):
-                        active = '' if part in ('\033[0m', '\033[m') else active + part
+                        active = '' if part in ansi.RESETS else active + part
                         continue
                     fa, _, ba = _ALPHAS(active)
                     if fa is not None or ba is not None:
@@ -4697,14 +4698,14 @@ class light(_lerpable):
                     bgnew = _rebake(bgdef, blend(_unbake(bgold, bgdef, ba)), ba)
                 else:
                     bgnew = blend(bgold)
-                newstyle += '\033[48;2;%d;%d;%dm' % bgnew
+                newstyle += ansi.bg(*bgnew)
             if char != ' ':
                 if fa is not None:
                     refold, refnew = (bgdef, bgdef) if back or not bgm else (bgold, bgnew)
                     fgnew = _rebake(refnew, blend(_unbake(fg, refold, fa)), fa)
                 else:
                     fgnew = blend(fg)
-                newstyle += '\033[38;2;%d;%d;%dm' % fgnew
+                newstyle += ansi.fg(*fgnew)
             elif fgm:
                 newstyle += fgm.group(0)
             shaded[(ci, ri)] = (char, newstyle)
