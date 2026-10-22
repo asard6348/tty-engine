@@ -160,7 +160,7 @@ def latency(samples=1000):
 #MODULES
 from . import scene
 from .compositor import Compositor
-from .terminal import Terminal
+from .terminal import Terminal, MODE_SYNC
 from .input_handler import inp
 from .ascii_styler import Styler
 from .sound import Mixer
@@ -376,6 +376,7 @@ class Session():
         self._pause = False
         self._dinfo = None
         self._debug = None
+        self._sync_available = None
         self._latency = max(latency())
         self._idle_scene = scene.Scene() if self.apis['style'] else None
         bg = self.term.get_bgcolor(bits=8)
@@ -562,6 +563,11 @@ class Session():
             bottom = max(bottom, view[3])
         return (x, y, right, bottom)
 
+    def _vsync_available(self):
+        if self._sync_available is None:
+            self._sync_available = self.term.get_dec_mode(MODE_SYNC) in (1, 2)
+        return self._sync_available
+
     def _partial(self):
         if self.region != (0, 0, None, None):
             return True
@@ -676,7 +682,7 @@ class Session():
                         )
                         if frame:
                             if not (hc and fs): frame = ansi.wrap(ansi.SAVE_CURSOR) + frame + ansi.wrap(ansi.RESTORE_CURSOR)
-                            if self.vsync: frame = ansi.wrap(ansi.SYNC_BEGIN) + frame + ansi.wrap(ansi.SYNC_END)
+                            if self.vsync and self._vsync_available(): frame = ansi.wrap(ansi.SYNC_BEGIN) + frame + ansi.wrap(ansi.SYNC_END)
                             sys.stdout.write(frame)
                             sys.stdout.flush()
 
