@@ -54,6 +54,20 @@ def _accepts_arg(cb):
     return len(positional) >= 1
 
 
+def _positional_count(cb):
+    try:
+        sig = inspect.signature(cb)
+    except (TypeError, ValueError):
+        return None
+    count = 0
+    for p in sig.parameters.values():
+        if p.kind == p.VAR_POSITIONAL:
+            return None
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            count += 1
+    return count
+
+
 class _FakeKeyEvent:
     __slots__ = ('event_type', 'name', 'ident')
     def __init__(self, event_type, name, ident=None):
@@ -131,6 +145,7 @@ class inp():
         self._release_at    = {}
         self._last_press    = {}   # name -> monotonic time of last terminal press (legacy tier)
         self._delayed_rel   = {}   # (name, id(entry)) -> (name, entry, due) for onrelease(delay=...)
+        self._key_cbs       = []
         self._kitty_state   = None
         self._kitty_t       = 0.0
         self._kb_is_fallback = False
@@ -513,15 +528,18 @@ class inp():
 
     def _fire_mouse(self, event, x, y, data):
         for handle in list(self._mouse_cbs):
-            etype, cb, once = handle
+            etype, cb, once, nargs = handle
             if etype in (event, 'any'):
                 if once:
                     # skip if already removed (e.g. by stopmouse from another callback)
                     if not any(h is handle for h in self._mouse_cbs):
                         continue
                     self._mouse_cbs = [h for h in self._mouse_cbs if h is not handle]
+                args = (x, y, data, event)
+                if nargs is not None:
+                    args = args[:nargs]
                 try:
-                    cb(x, y, data)
+                    cb(*args)
                 except Exception:
                     sys.stderr.write("input_handler: onmouse callback for %r raised:\n" % event)
                     traceback.print_exc()
@@ -553,6 +571,7 @@ class inp():
             legacy = self._legacy_mode()
             for ident, event in events:
                 down = event.event_type == 'down'
+                self._fire_key(event.name, 'press' if down else 'release')
                 table = self._press_cbs if down else self._release_cbs
                 for entry in list(table.get(event.name, ())):
                     if not down and legacy and entry[3] is not None:
@@ -572,6 +591,30 @@ class inp():
             sys.stderr.write("input_handler: %s callback for %r raised:\n"
                              % ('onpress' if down else 'onrelease', event.name))
             traceback.print_exc()
+
+    def _fire_key(self, name, event):
+        for handle in list(self._key_cbs):
+            key, etype, cb, once, nargs, caps = handle
+            if etype not in (event, 'any'):
+                continue
+            if key is not None and key != 'any':
+                if caps:
+                    if str(key).lower() != str(name).lower():
+                        continue
+                elif key != name:
+                    continue
+            if once:
+                if not any(h is handle for h in self._key_cbs):
+                    continue
+                self._key_cbs = [h for h in self._key_cbs if h is not handle]
+            args = (name, event)
+            if nargs is not None:
+                args = args[:nargs]
+            try:
+                cb(*args)
+            except Exception:
+                sys.stderr.write("input_handler: onkey callback for %r raised:\n" % name)
+                traceback.print_exc()
 
     def _fire_delayed_releases(self, now):
         if not self._delayed_rel:
@@ -650,6 +693,23 @@ class inp():
         self._release_cbs[key].append((callback, accepts, token, delay))
         return (key, callback, 'release')
 
+    def onkey(self, key, callback, event='any', once=False, caps=False):
+        # key: key name, or None / 'any' for every key
+        # event: 'press' | 'release' | 'any'
+        # callback: cb(key, event) — receives as many of these as its signature accepts
+        # once: if True, the callback is removed after it fires the first time
+        handle = (key, event, callback, once, _positional_count(callback), caps)
+        self._key_cbs.append(handle)
+        return handle
+
+    def stopkey(self, handle):
+        before = len(self._key_cbs)
+        self._key_cbs = [h for h in self._key_cbs if h is not handle]
+        return len(self._key_cbs) != before
+
+    def offkey(self, handle):
+        return self.stopkey(handle)
+
     @staticmethod
     def _clear_key(table, key, caps):
         keys = {key.lower(), key.upper()} if caps else {key}
@@ -676,6 +736,7 @@ class inp():
     def stop_all(self):
         self._press_cbs.clear()
         self._release_cbs.clear()
+        self._key_cbs.clear()
         self._mouse_cbs.clear()
         self.keyboard.unhook_all()
 
@@ -695,9 +756,10 @@ class inp():
 
     def onmouse(self, event, callback, once=False): # register a mouse event callback
         # event: 'click' | 'release' | 'move' | 'wheel' | 'any'
-        # callback: cb(x, y, data)  — data is button index or scroll delta
+        # callback: cb(x, y, data, event) — receives as many of these as its signature accepts
+        # data is button index or scroll delta; event is the event name that fired
         # once: if True, the callback is removed after it fires the first time
-        handle = (event, callback, once)
+        handle = (event, callback, once, _positional_count(callback))
         self._mouse_cbs.append(handle)
         return handle
 
