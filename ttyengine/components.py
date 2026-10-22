@@ -1426,17 +1426,18 @@ class transform(_change_callback, _lerpable):
     def yc(self, text=None):
         return self.ylen(text) / 2
 
-    def extent(self):
+    def extent(self, local=False):
         rows = self._text.splitlines()
         cols = [i for row in rows for i, char in enumerate(row) if char != ' ']
+        px, py = (0, 0) if local else (self._x + self.vx, self._y + self.vy)
         if not cols:
-            return self._x + self.vx, self._y + self.vy, 0, 0
+            return px, py, 0, 0
         lo, hi = min(cols), max(cols) + 1
-        return (self._x + self.vx + (lo + hi) / 2, self._y + self.vy - len(rows) / 2,
+        return (px + (lo + hi) / 2, py - len(rows) / 2,
                 (hi - lo) / 2, len(rows) / 2)
 
-    def center(self):
-        return self.extent()[:2]
+    def center(self, local=False):
+        return self.extent(local)[:2]
 
     def forward(self, move=1, offset=0, angle=None):
         angle = math.radians((self._rotation if angle is None else angle) + offset)

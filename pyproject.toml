@@ -7,7 +7,7 @@ name = "ttyengine"
 version = "0.1.0"
 description = "A terminal rendering, physics and sound engine"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 dependencies = []
 keywords = ["terminal", "tty", "cli", "ascii", "engine", "simulation", "game", "physics"]
 classifiers = [

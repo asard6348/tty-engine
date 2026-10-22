@@ -224,6 +224,8 @@ class World():
         self.autofps = True
         for setting, val in kwargs.items():
             if val is not None: setattr(self, setting, val)
+        if self.session is not None:
+            self.session._fit(self.scene, self)
         if autoreg: attempt(lambda: self.register(front))
 
     @property
@@ -387,6 +389,18 @@ class Session():
         self._resume = threading.Condition()
         for name, default in self.SETTINGS.items():
             setattr(self, name, kwargs.get(name, default))
+        if self._idle_scene is not None:
+            self._fit(self._idle_scene)
+
+    def _fit(self, sc, world=None, region=None):
+        if region is None:
+            region = self._resolve_region()
+        if self.autoterm and (world is None or world.autoterm):
+            sc.termx = region[2]
+            sc.termy = region[3]
+        if self.autodim and (world is None or world.autodim):
+            sc.dimx = sc.termx
+            sc.dimy = sc.termy
 
     @property
     def bgcolor(self):
@@ -584,6 +598,10 @@ class Session():
             self.running = True
             for setting, val in kwargs.items():
                 if val is not None: setattr(self, setting, val)
+            if self._idle_scene is not None:
+                self._fit(self._idle_scene)
+            for world in self.worlds:
+                self._fit(world.scene, world)
             with contextlib.ExitStack() as main_stack:
                 opt_stack = main_stack.enter_context(contextlib.ExitStack())
                 is_optimized = False
@@ -642,13 +660,7 @@ class Session():
 
                         region = self._resolve_region()
                         for idx, world in enumerate(itworlds):
-                            termx, termy = region[2], region[3]
-                            if self.autoterm and world.autoterm:
-                                world.scene.termx = termx
-                                world.scene.termy = termy
-                            if self.autodim and world.autodim:
-                                world.scene.dimx = world.scene.termx
-                                world.scene.dimy = world.scene.termy
+                            self._fit(world.scene, world, region)
 
                             for handle in world.ordered_handles():
                                 if handle.pause: continue

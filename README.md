@@ -8,17 +8,11 @@
 
 Build animated, interactive scenes out of text, with collisions, joints, lighting, FIGlet fonts, images and audio, using nothing but the standard library.
 
-[![Python](https://img.shields.io/badge/python-3.7%2B-3776AB?logo=python&logoColor=white)](#requirements)
+[![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#requirements)
 [![License](https://img.shields.io/github/license/asard6348/tty-engine?color=blue)](LICENSE)
-[![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](#requirements)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#requirements)
-<br>
-[![Stars](https://img.shields.io/github/stars/asard6348/tty-engine?style=flat&logo=github)](https://github.com/asard6348/tty-engine/stargazers)
-[![Last commit](https://img.shields.io/github/last-commit/asard6348/tty-engine)](https://github.com/asard6348/tty-engine/commits)
 [![Commits](https://img.shields.io/github/commit-activity/t/asard6348/tty-engine?label=commits)](https://github.com/asard6348/tty-engine/commits)
-[![Issues](https://img.shields.io/github/issues/asard6348/tty-engine)](https://github.com/asard6348/tty-engine/issues)
-[![Repo size](https://img.shields.io/github/repo-size/asard6348/tty-engine)](https://github.com/asard6348/tty-engine)
 <!-- Enable this badge once the package is published on PyPI:
 [![PyPI](https://img.shields.io/pypi/v/ttyengine?logo=pypi&logoColor=white)](https://pypi.org/project/ttyengine/)
 -->
@@ -280,6 +274,8 @@ A handle may define any of `start`, `update` and `final`. Each one receives only
 | `handle` | The handle itself, which can be paused or cancelled. |
 | `sound` | Shortcut for `session.sound`. |
 | `simulation` | The `Simulation`, for creating more sessions and worlds. |
+
+A world's `scene.termx`, `scene.termy`, `scene.dimx` and `scene.dimy` are filled in as soon as the world is created, using the terminal size and the session's region settings, so `start` and any code that runs before `session.run()` already sees the real values. They keep following the terminal while the session runs, unless `autoterm` or `autodim` is turned off.
 
 ```python
 class main:
@@ -573,7 +569,7 @@ start(main)
 
 &nbsp;
 
-The handler moves the object by the distance between its center and the mouse. Assigning an absolute position would not work here, because `center()` already includes the object's current position.
+The handler moves the object by the distance between its center and the mouse. Assigning an absolute position would not work here, because `center()` already includes the object's current position. Pass `local=True` to `center()` or `extent()` to get the values relative to the object's own position instead.
 
 ```python
 from ttyengine import start
@@ -688,8 +684,8 @@ Settings are passed to `start()`, `Session()` or `run()`, and are stored as attr
 | `pauserendering` | `False` | Stop drawing for every world. |
 | `termxoffset`, `termyoffset` | `0` | Top-left corner of the part of the terminal the engine draws in. |
 | `termwidth`, `termheight` | `None` | Size of that region. `None` uses the rest of the terminal. |
-| `autoterm` | `True` | Keep each scene's terminal size in sync with the region. |
-| `autodim` | `True` | Keep each scene's dimensions in sync with its terminal size. |
+| `autoterm` | `True` | Keep each scene's terminal size in sync with the region. The size is applied when a world is created and again every frame. |
+| `autodim` | `True` | Keep each scene's dimensions in sync with its terminal size. They are applied when a world is created and again every frame. |
 | `autobg` | `True` | Fill the background automatically. |
 | `outerbg` | `True` | Fill the area outside the region with the background color. |
 | `autofps` | `True` | Tie each scene's maximum frame rate to the measured terminal latency. |
@@ -748,7 +744,7 @@ A value of `None` falls back to its environment variable, and both are empty by 
 
 ## Requirements
 
-- **Python 3.7 or newer.**
+- **Python 3.8 or newer.**
 - **Windows, macOS or Linux**, in a terminal that supports ANSI escape sequences. Truecolor and the kitty keyboard protocol are used when the terminal offers them.
 - **No required packages.** The optional [`keyboard` and `ffmpeg` extras](#installation) add accurate key tracking and compressed-audio decoding.
 - The project is in **alpha**, so APIs may still change.
