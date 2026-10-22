@@ -8,7 +8,7 @@
 
 Build animated, interactive scenes out of text, with collisions, joints, lighting, FIGlet fonts, images and audio, using nothing but the standard library.
 
-[![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](#requirements)
+[![Python](https://img.shields.io/badge/python-3.7%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#requirements)
 [![License](https://img.shields.io/github/license/asard6348/tty-engine?color=blue)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](#requirements)
@@ -748,7 +748,7 @@ A value of `None` falls back to its environment variable, and both are empty by 
 
 ## Requirements
 
-- **Python 3.8 or newer.**
+- **Python 3.7 or newer.**
 - **Windows, macOS or Linux**, in a terminal that supports ANSI escape sequences. Truecolor and the kitty keyboard protocol are used when the terminal offers them.
 - **No required packages.** The optional [`keyboard` and `ffmpeg` extras](#installation) add accurate key tracking and compressed-audio decoding.
 - The project is in **alpha**, so APIs may still change.
