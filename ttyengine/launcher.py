@@ -1,72 +1,7 @@
-import os, sys, time, threading, traceback, contextlib, inspect, ctypes, re, socket, subprocess, tempfile, shlex
+import os, sys, time, threading, traceback, contextlib, inspect, ctypes, socket, subprocess, tempfile, shlex
 from types import SimpleNamespace
 from . import ansi
-
-def highlight_traceback(tb_str: str) -> str:
-    if not ansi.color_enabled():
-        return tb_str
-    RESET, BOLD, RED, GREEN, YELLOW, CYAN, MAGENTA = (
-        ansi.RESET, ansi.BOLD, ansi.sgr(91), ansi.sgr(92), ansi.sgr(93), ansi.sgr(96), ansi.sgr(95)
-    )
-    lines = []
-    for line in tb_str.splitlines(True):
-        if line.startswith("Traceback"):
-            lines.append(f"{BOLD}{RED}{line}{RESET}")
-        elif line.strip().startswith("File "):
-            m = re.match(r'^(\s*File )("[^"]+")(, line )(\d+)(, in )(.*)$', line)
-            if m:
-                lines.append(
-                    f"{m.group(1)}{GREEN}{m.group(2)}{RESET}"
-                    f"{m.group(3)}{YELLOW}{m.group(4)}{RESET}"
-                    f"{m.group(5)}{CYAN}{m.group(6)}{RESET}\n"
-                )
-            else:
-                lines.append(line)
-        elif ":" in line and not line.startswith(" "):
-            parts = line.split(":", 1)
-            lines.append(f"{BOLD}{RED}{parts[0]}:{RESET}{BOLD}{parts[1]}{RESET}")
-        else:
-            line_hl = re.sub(r'("[^"]*"|\'[^\']*\')', rf'{GREEN}\1{RESET}', line)
-            kw = r'\b(def|class|return|if|elif|else|while|for|in|import|from|as|try|except|finally|raise|with|pass|break|continue|and|or|not|is|None|True|False)\b'
-            line_hl = re.sub(kw, rf'{MAGENTA}\1{RESET}', line_hl)
-            lines.append(line_hl)
-    return "".join(lines)
-
-def trace(exception, lexer=None, clear=True, out=None, flush=None):
-    if out is None:
-        out, flush = sys.stdout.write, sys.stdout.flush
-    try:
-        if clear:
-            if out: out(ansi.wrap_all(ansi.CLEAR_ALL))
-        if out:
-            tb_raw = "".join(traceback.format_exc()) + '\n'
-            exc = highlight_traceback(tb_raw)
-            out(ansi.wrap_all(exc))
-            if flush: flush()
-    except Exception:
-        raise exception
-
-def attempt(func, catch=None, lexer=None, fatal=True, clear=True, reset=True, out=None, flush=None):
-    if out is None:
-        out, flush = sys.stdout.write, sys.stdout.flush
-    try:
-        return func()
-    except Exception as e:
-        if reset and fatal:
-            try: out(ansi.wrap(ansi.FULL_RESET))
-            except Exception: pass
-        catchexc = None
-        if callable(catch):
-            try:
-                catch()
-            except Exception as ce:
-                catchexc = ce
-        trace(e, lexer, clear, out, flush)
-        if catchexc: trace(catchexc, lexer, False, out, flush)
-        if fatal:
-            try: input()
-            except (Exception, KeyboardInterrupt): pass
-            os._exit(1)
+from .errors import attempt, highlight_traceback
 
 DEBUG_HOLD = ansi.osc('777;hold')
 DEBUG_RECEIVER = r"""
@@ -158,6 +93,10 @@ def latency(samples=1000):
         end = time.perf_counter()
         latencies.append(end - start)
     return latencies
+
+def measure_latency(samples=200, percentile=0.95):
+    values = sorted(latency(samples))
+    return values[min(len(values) - 1, int(len(values) * percentile))]
 
 
 #MODULES
@@ -311,7 +250,7 @@ class World():
                 if front: self.front()
                 else: self.back()
                 self.sort()
-                self.session.latency = max(latency())
+                self.session.latency = self.session.latency
                 with self.session._resume:
                     self.session._resume.notify_all()
 
@@ -381,7 +320,7 @@ class Session():
         self._dinfo = None
         self._debug = None
         self._sync_available = None
-        self._latency = max(latency())
+        self._latency = measure_latency()
         self._idle_scene = scene.Scene() if self.apis['style'] else None
         bg = self.term.get_bgcolor(bits=8)
         self._bgcolor = bg if bg != (-1, -1, -1) else (0, 0, 0)
@@ -537,7 +476,7 @@ class Session():
         self._latency = value
         if self.autofps:
             for w in self.worlds:
-                if w.autofps: w.scene.maxframerate = 1/value
+                if w.autofps: w.scene.maxframerate = 1 / max(value, 1e-6)
 
     @property
     def region(self):

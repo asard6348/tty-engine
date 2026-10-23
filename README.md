@@ -17,7 +17,6 @@ Build animated, interactive scenes out of text, with collisions, joints, lightin
 [![PyPI](https://img.shields.io/pypi/v/ttyengine?logo=pypi&logoColor=white)](https://pypi.org/project/ttyengine/)
 -->
 
-[Previews](#previews) ·
 [Installation](#installation) ·
 [Quick start](#quick-start) ·
 [How it works](#how-it-works) ·
@@ -39,13 +38,14 @@ TTY Engine draws everything as styled text and updates the terminal once per fra
 - **Input and sound included.** Keyboard and mouse input with press, release and held states, plus a built-in mixer with a small synthesizer.
 - **Simple structure.** Write a class (or just a function) with `start`, `update` and `final` methods, and hand it to `start()`.
 
-## Previews
-
 <!--
-  Replace the placeholders below with your own recordings.
-  Suggested layout: put the files in docs/previews/ and keep each one around 600-800 px wide.
-  If a preview needs a longer caption, add it in the cell under the image.
--->
+Previews section is disabled until the recordings are ready.
+To enable it, remove this comment's opening and closing markers and restore the '[Previews](#previews) ·' link in the navigation above.
+Replace the placeholders below with your own recordings.
+Suggested layout: put the files in docs/previews/ and keep each one around 600-800 px wide.
+If a preview needs a longer caption, add it in the cell under the image.
+
+## Previews
 
 <table>
   <tr>
@@ -71,6 +71,7 @@ TTY Engine draws everything as styled text and updates the terminal once per fra
 </table>
 
 <sub>[↑ Back to top](#top)</sub>
+-->
 
 ## Installation
 
@@ -718,6 +719,29 @@ world = session.World()
 world.launch(main)
 session.run()
 ```
+
+</details>
+
+<details>
+<summary><b>Error reporting</b></summary>
+
+&nbsp;
+
+An uncaught error inside the engine (a handle, a callback or the main loop) restores the terminal, prints the traceback to `stderr` and exits with code 1. Colors and screen clearing are used only when `stderr` is a terminal, so redirected output stays plain.
+
+On Windows, a console opened by double-clicking a script closes as soon as the script exits, which hides the traceback. The engine then waits for Enter before exiting. This is detected automatically, and you can override it with the `TTYENGINE_HOLD` environment variable (`auto`, `always` or `never`).
+
+The same reporting is available for code outside the engine:
+
+```python
+from ttyengine import errors
+
+errors.install()
+
+errors.attempt(risky, fatal=False)
+```
+
+`errors.install()` replaces `sys.excepthook` so any uncaught exception is printed and, where needed, held open. `errors.attempt(func, fatal=False)` reports an exception and returns `None` instead of exiting. Both accept `hold=True`, `hold=False` or `hold='auto'`, and `attempt` also accepts a `code` for the exit status.
 
 </details>
 
