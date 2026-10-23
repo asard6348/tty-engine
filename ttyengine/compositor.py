@@ -146,6 +146,15 @@ class Compositor:
         seen = tuple(ubg[k] + (ufg[k] - ubg[k]) * cover for k in range(3))
         reach = COVER.get(under[0], 0.5)
         glyph = tuple(ubg[k] + (ufg[k] - ubg[k]) * reach for k in range(3))
+        if fa is not None and not own and under[0] != ' ' and under[0] not in COVER:
+            if char == under[0]:
+                glyph = ufg
+            elif fa < 0.5:
+                tone = tuple(ubg[k] + (ufg[k] - ubg[k]) * (1 - fa) for k in range(3))
+                kept = fgrecomp.sub('', bgrecomp.sub('', under[1]))
+                return (under[0], self.bgstyle(ubg) + kept + ansi.fg(*clamp(tone))), None
+            else:
+                glyph = ubg
         if own:
             baked = tuple(int(v) for v in backs[-1])
             ground = baked if ba is None else tuple(baked[k] + (seen[k] - base[k]) * (1 - ba) for k in range(3))
