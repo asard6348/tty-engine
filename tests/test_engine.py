@@ -589,6 +589,12 @@ class RegressionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ascii_styler.image(path, height=2, aspect=0)
 
+    def test_default_precision_is_half_a_cell(self):
+        _, sc = make_scene()
+        ball = sc.obj().create("O", 0, 0, dynamic=True)
+        self.assertEqual(sc.precision, 0.5)
+        self.assertEqual(ball.physics.precision, 0.5)
+
     def test_manual_mass_off_still_gets_a_mass(self):
         _, sc = make_scene()
         sc.gravity = (0, -1)

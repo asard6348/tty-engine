@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The default physics `precision` is now `0.5` instead of `0.1`, which makes fast objects several times cheaper to simulate. Set `scene.precision` (or an object's `precision`) to go back.
 - New `ttyengine.region` module and `Session(region=...)` setting. A region can be a preset (`line`, `column`, `top`, `bottom`, `left`, `right`, `box`, `centered`, `inline`), a tuple, a dict of insets, or use percentages and `start`/`center`/`end` alignment, so the engine can draw a single line, a column or a panel for command-line and text-UI programs.
 - `region.inline(rows)` draws below the cursor on the normal screen and scrolls the terminal when needed.
 - `session.World(region=...)` gives every world its own part of the session's region.

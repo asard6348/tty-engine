@@ -267,7 +267,7 @@ class Scene:
         self.solids = []
         self.gravity = (0, 0)
         self.drag = 1
-        self.precision = 0.1
+        self.precision = 0.5
         self.aspect = 0.5
         self.lights = []
         self.ambient = 1.0
