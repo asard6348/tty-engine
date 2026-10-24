@@ -102,7 +102,7 @@ def measure_latency(samples=200, percentile=0.95):
 #MODULES
 from . import scene
 from .compositor import Compositor
-from .terminal import Terminal
+from .terminal import Terminal, MODE_SYNC
 from .input_handler import inp
 from .sound import Mixer, set_ffmpeg
 
@@ -321,6 +321,7 @@ class Session():
         self._pause = False
         self._dinfo = None
         self._debug = None
+        self._sync_available = None
         self._latency = measure_latency()
         self._idle_scene = scene.Scene() if self.apis['style'] else None
         bg = self.term.get_bgcolor(bits=8)
@@ -519,6 +520,11 @@ class Session():
             bottom = max(bottom, view[3])
         return (x, y, right, bottom)
 
+    def _vsync_available(self):
+        if self._sync_available is None:
+            self._sync_available = self.term.get_dec_mode(MODE_SYNC) in (1, 2)
+        return self._sync_available
+
     def _partial(self):
         if self.region != (0, 0, None, None):
             return True
@@ -556,6 +562,7 @@ class Session():
                         opt_stack.enter_context(self.term.cbreak())
                         if hc: opt_stack.enter_context(self.term.hidden_cursor())
                         opt_stack.enter_context(self.term.no_line_wrap())
+                        opt_stack.enter_context(self.term.synchronized_output())
                         is_optimized = True
                         changed_optimized = True
                         if is_mouse:
@@ -631,6 +638,7 @@ class Session():
                         )
                         if frame:
                             if not (hc and fs): frame = ansi.wrap(ansi.SAVE_CURSOR) + frame + ansi.wrap(ansi.RESTORE_CURSOR)
+                            if self.vsync and self._vsync_available(): frame = ansi.wrap(ansi.SYNC_BEGIN) + frame + ansi.wrap(ansi.SYNC_END)
                             self._compositor.vblank()
                             sys.stdout.write(frame)
                             sys.stdout.flush()

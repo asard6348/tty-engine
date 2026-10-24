@@ -269,11 +269,11 @@ class StylerImageTests(unittest.TestCase):
 
 
 class VsyncTests(unittest.TestCase):
-    def test_synchronized_output_code_is_gone(self):
-        self.assertFalse(hasattr(ansi, "SYNC_BEGIN"))
-        self.assertFalse(hasattr(ansi, "SYNC_END"))
-        self.assertFalse(hasattr(terminal, "MODE_SYNC"))
-        self.assertFalse(hasattr(terminal.Terminal, "synchronized_output"))
+    def test_synchronized_output_sequences_are_kept(self):
+        self.assertEqual(ansi.SYNC_BEGIN, ansi.mode(2026, True))
+        self.assertEqual(ansi.SYNC_END, ansi.mode(2026, False))
+        self.assertEqual(terminal.MODE_SYNC, 2026)
+        self.assertTrue(callable(terminal.Terminal.synchronized_output))
 
     def test_vblank_is_a_noop_when_disabled(self):
         comp = compositor.Compositor(vsync=False, refresh=30)

@@ -200,7 +200,7 @@ Every frame, each active world goes through the same steps:
 1. **`update`** is called on every handle, highest `priority` first.
 2. **`scene.tick()`** advances the simulation: physics, fades, joints and lights.
 3. **`final`** is called on every handle, after the physics has settled.
-4. The scene's pending changes are flushed and the **compositor** builds the frame, which is written to the terminal in a single write.
+4. The scene's pending changes are flushed and the **compositor** builds the frame, which is written to the terminal in a single synchronized update.
 
 Use `update` for input and decisions, and `final` for anything that should react to where physics left things, such as a camera that follows an object.
 
@@ -678,12 +678,12 @@ Settings are passed to `start()`, `Session()` or `run()`, and are stored as attr
 | Setting | Default | Meaning |
 |---|---|---|
 | `mouse` | `True` | Report mouse clicks, drags and motion. |
-| `vsync` | `True` | Present each frame in step with the display's refresh. On Windows the compositor waits for the desktop compositor's vertical blank; on other systems it locks presentation to the detected refresh rate with a fixed-phase clock, since a terminal has no direct access to the display. |
+| `vsync` | `True` | Present each frame as one synchronized update (terminals such as kitty then paint it all at once instead of progressively) and in step with the display's refresh. On Windows the compositor waits for the desktop compositor's vertical blank; on other systems it locks presentation to the detected refresh rate with a fixed-phase clock, since a terminal has no direct access to the display. |
 | `refresh` | `None` | Display refresh rate in Hz (24 to 1000) used by `vsync`. `None` detects it, falling back to 60. The `TTYENGINE_REFRESH` environment variable overrides detection. Setting it also makes Windows use the timer instead of the desktop compositor. |
 | `fullscreen` | auto | Use the alternate screen. By default this is chosen from whether the engine draws in the whole terminal or only a region. |
 | `hidecursor` | auto | Hide the text cursor while running. |
 | `no_color` | `None` | `True` strips color codes from all output. Any value other than `None` overrides the `NO_COLOR` environment variable. |
-| `optimize` | `True` | Switch the terminal into the modes the engine needs (raw input, hidden cursor, no line wrapping). |
+| `optimize` | `True` | Switch the terminal into the modes the engine needs (raw input, hidden cursor, no line wrapping, synchronized output). |
 | `pausephysics` | `False` | Stop physics for every world. |
 | `pauserendering` | `False` | Stop drawing for every world. |
 | `termxoffset`, `termyoffset` | `0` | Top-left corner of the part of the terminal the engine draws in. |

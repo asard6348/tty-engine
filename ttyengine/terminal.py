@@ -9,6 +9,7 @@ else:
 
 QUERY_TIMEOUT = 5.0
 
+MODE_SYNC = 2026
 MODE_MOUSE_CLICK = 1000
 MODE_MOUSE_DRAG = 1002
 MODE_MOUSE_MOTION = 1003
@@ -249,6 +250,9 @@ class Terminal:
         elif clicks:
             modes.append(MODE_MOUSE_CLICK)
         return self.dec_modes_enabled(*modes, timeout=timeout)
+
+    def synchronized_output(self, timeout=QUERY_TIMEOUT):
+        return self.dec_modes_enabled(MODE_SYNC, timeout=timeout)
 
     def _color(self, query, pattern, timeout, bits):
         if bits not in (8, 16):
