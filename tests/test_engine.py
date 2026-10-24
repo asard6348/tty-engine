@@ -268,7 +268,33 @@ class StylerImageTests(unittest.TestCase):
         self.assertEqual((len(lines[0]), len(lines)), (8, 2))
 
 
+class FakeClock:
+    def __init__(self, overshoot=0.0):
+        self.now = 1000.0
+        self.overshoot = overshoot
+
+    def perf_counter(self):
+        self.now += 0.00005
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds + self.overshoot
+
+
 class VsyncTests(unittest.TestCase):
+    @staticmethod
+    def vblank_stamps(clock, count):
+        comp = compositor.Compositor(vsync=True, refresh=50)
+        stamps = []
+        with mock.patch.object(compositor, "time", clock):
+            comp.vblank()
+            start = clock.now
+            for _ in range(count):
+                clock.sleep(0.003)
+                comp.vblank()
+                stamps.append(clock.now)
+        return start, stamps
+
     def test_synchronized_output_sequences_are_kept(self):
         self.assertEqual(ansi.SYNC_BEGIN, ansi.mode(2026, True))
         self.assertEqual(ansi.SYNC_END, ansi.mode(2026, False))
@@ -283,16 +309,15 @@ class VsyncTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - start, 0.05)
 
     def test_vblank_locks_presentation_to_refresh_rate(self):
-        comp = compositor.Compositor(vsync=True, refresh=50)
-        comp.vblank()
-        stamps = []
-        for _ in range(6):
-            time.sleep(0.003)
-            comp.vblank()
-            stamps.append(time.perf_counter())
-        gaps = [b - a for a, b in zip(stamps, stamps[1:])]
-        for gap in gaps:
-            self.assertAlmostEqual(gap, 0.02, delta=0.006)
+        _, stamps = self.vblank_stamps(FakeClock(), 6)
+        for a, b in zip(stamps, stamps[1:]):
+            self.assertAlmostEqual(b - a, 0.02, delta=0.001)
+
+    def test_vblank_compensates_for_late_sleeps(self):
+        start, stamps = self.vblank_stamps(FakeClock(overshoot=0.008), 16)
+        for stamp in stamps[4:]:
+            offset = (stamp - start) % 0.02
+            self.assertLess(min(offset, 0.02 - offset), 0.001)
 
     def test_refresh_is_validated(self):
         comp = compositor.Compositor(vsync=True)

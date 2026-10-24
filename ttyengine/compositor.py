@@ -41,6 +41,7 @@ MIN_REFRESH = 24.0
 MAX_REFRESH = 1000.0
 FALLBACK_REFRESH = 60.0
 SPIN = 0.016 if sys.platform == 'win32' and sys.version_info < (3, 11) else 0.002
+MAX_SPIN = 0.02
 _detected = []
 
 
@@ -136,6 +137,7 @@ class Compositor:
         self._refresh = None
         self.refresh = refresh
         self._phase = None
+        self._spin = SPIN
         self._flush = None
         self.front = None
         self.width = 0
@@ -196,8 +198,11 @@ class Compositor:
         wait = self._phase + (math.floor((now - self._phase) / period) + 1) * period - now
         if wait > 0:
             deadline = now + wait
-            if wait > SPIN:
-                time.sleep(wait - SPIN)
+            if wait > self._spin:
+                asked = wait - self._spin
+                time.sleep(asked)
+                late = time.perf_counter() - now - asked
+                self._spin = max(SPIN, min(MAX_SPIN, max(late * 1.5, self._spin * 0.95)))
             while time.perf_counter() < deadline:
                 pass
         return True
