@@ -16,6 +16,7 @@ def wrap_property(component_attr: str, prop: property) -> property:
     return property(fget, fset if prop.fset else None)
 
 from . import ansi
+from . import region as _regions
 from . import components as _components
 from .ascii_styler import Styler
 from .compositor import Compositor
@@ -322,6 +323,24 @@ class Scene:
         self._dimyoffset = self.iround(value)
         if self._dimyoffset != old:
             self._fire(self._ondimoffsetcb, 'y', old)
+
+    @property
+    def canvas(self):
+        return (self.termx, self.termy)
+    @canvas.setter
+    def canvas(self, value):
+        self.termx, self.termy = (max(0, self.iround(v)) for v in value)
+
+    @property
+    def view(self):
+        return _regions.Region(self._dimxoffset, -self._dimyoffset, self._dimx, self._dimy)
+    @view.setter
+    def view(self, value):
+        x, y, w, h = _regions.resolve(value, self.termx, self.termy)
+        self.dimxoffset = x
+        self.dimyoffset = -y
+        self.dimx = w
+        self.dimy = h
 
     @property
     def framerate(self):

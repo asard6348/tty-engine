@@ -1,6 +1,7 @@
 import re, shutil, colorsys
 from functools import lru_cache
 from . import ansi
+from . import region as _regions
 from .figlet import Figlet, available
 from .image_reader import read as readimage
 
@@ -285,9 +286,11 @@ class Styler:
         return self._style(*args, **kwargs)
 
     @staticmethod
-    def fill(color=None, width=None, height=None, xoffset=0, yoffset=0, termx=None, termy=None):
+    def fill(color=None, width=None, height=None, xoffset=0, yoffset=0, termx=None, termy=None, region=None):
         if termx is None or termy is None:
             termx, termy = shutil.get_terminal_size()
+        if region is not None:
+            xoffset, yoffset, width, height = _regions.resolve(region, termx, termy)
         width  = termx if width is None else int(width)
         height = termy if height is None else int(height)
         xoffset = int(xoffset)

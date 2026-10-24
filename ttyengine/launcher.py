@@ -101,6 +101,7 @@ def measure_latency(samples=200, percentile=0.95):
 
 #MODULES
 from . import scene
+from . import region as regions
 from .compositor import Compositor
 from .terminal import Terminal, MODE_SYNC
 from .input_handler import inp
@@ -163,11 +164,22 @@ class World():
         self.autodim = True
         self.autobg = True
         self.autofps = True
+        self._region = None
+        self._placed = False
         for setting, val in kwargs.items():
             if val is not None: setattr(self, setting, val)
         if self.session is not None:
             self.session._fit(self.scene, self)
         if autoreg: attempt(lambda: self.register(front))
+
+    @property
+    def region(self):
+        return self._region
+    @region.setter
+    def region(self, value):
+        self._region = None if value is None else regions.parse(value)
+        if value is not None:
+            self._placed = True
 
     @property
     def layer(self):
@@ -298,13 +310,14 @@ class World():
 #SESSION CLASS
 class Session():
     APIS = {'inp': True, 'style': True, 'sound': True}
+    LEGACY = ('termxoffset', 'termyoffset', 'termwidth', 'termheight')
     SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True, 'refresh': None,
                 'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True,
-                'termxoffset': 0, 'termyoffset': 0, 'termwidth': None, 'termheight': None,
+                'region': None,
                 'fullscreen': None, 'hidecursor': None, 'no_color': None}
 
     def __init__(self, watchfocus=True, trackmotion=True, ffmpeg=None, **kwargs):
-        unknown = [k for k in kwargs if k not in self.APIS and k not in self.SETTINGS]
+        unknown = [k for k in kwargs if k not in self.APIS and k not in self.SETTINGS and k not in self.LEGACY]
         if unknown:
             raise TypeError(f"Session() got unexpected keyword argument(s): {', '.join(unknown)}")
         self.worlds = []
@@ -330,20 +343,36 @@ class Session():
         self._fgcolor = fg if fg != (-1, -1, -1) else (204, 204, 204)
         self._sync_colors()
         self._resume = threading.Condition()
+        self._region = regions.Region(0, 0, None, None)
+        self._anchor_row = None
         for name, default in self.SETTINGS.items():
             setattr(self, name, kwargs.get(name, default))
+        for name in self.LEGACY:
+            if name in kwargs:
+                setattr(self, name, kwargs[name])
         if self._idle_scene is not None:
             self._fit(self._idle_scene)
+
+    def _layout(self, sc, world, w, h):
+        termx, termy = (w, h) if self.autoterm and (world is None or world.autoterm) else (sc.termx, sc.termy)
+        dimx, dimy, dimxoffset, dimyoffset = sc.dimx, sc.dimy, sc.dimxoffset, sc.dimyoffset
+        if self.autodim and (world is None or world.autodim):
+            spec = None if world is None else world.region
+            if spec is None:
+                dimx, dimy = termx, termy
+                if world is not None and world._placed:
+                    dimxoffset = dimyoffset = 0
+            else:
+                x, y, dimx, dimy = regions.resolve(spec, termx, termy)
+                dimxoffset, dimyoffset = x, -y
+        return termx, termy, dimx, dimy, dimxoffset, dimyoffset
 
     def _fit(self, sc, world=None, region=None):
         if region is None:
             region = self._resolve_region()
-        if self.autoterm and (world is None or world.autoterm):
-            sc.termx = region[2]
-            sc.termy = region[3]
-        if self.autodim and (world is None or world.autodim):
-            sc.dimx = sc.termx
-            sc.dimy = sc.termy
+        sc.termx, sc.termy, sc.dimx, sc.dimy, sc.dimxoffset, sc.dimyoffset = self._layout(sc, world, region[2], region[3])
+        if world is not None and world.region is None:
+            world._placed = False
 
     @property
     def bgcolor(self):
@@ -482,26 +511,62 @@ class Session():
 
     @property
     def region(self):
-        return (self.termxoffset, self.termyoffset, self.termwidth, self.termheight)
+        return self._region
     @region.setter
     def region(self, value):
-        x, y, w, h = (0, 0, None, None) if value is None else value
-        self.termxoffset, self.termyoffset, self.termwidth, self.termheight = x, y, w, h
+        self._region = regions.parse(value)
+        if not self.running:
+            self._anchor_row = None
+
+    def _legacy_region(index):
+        def get(self):
+            return self._region[index]
+        def set(self, value):
+            parts = list(self._region)
+            parts[index] = value
+            self.region = parts
+        return property(get, set)
+
+    termxoffset = _legacy_region(0)
+    termyoffset = _legacy_region(1)
+    termwidth = _legacy_region(2)
+    termheight = _legacy_region(3)
+    del _legacy_region
 
     @property
     def resolved_region(self):
         return self._resolve_region()
 
     def _resolve_region(self):
+        return regions.resolve(self._region, self.term.width, self.term.height, self._anchor_row or 0)
+
+    def _anchor(self):
+        self._anchor_row = None
+        if not regions.uses_cursor(self._region):
+            return
         tw, th = self.term.width, self.term.height
-        x, y = self.termxoffset or 0, self.termyoffset or 0
-        if x < 0: x += tw
-        if y < 0: y += th
-        x = min(max(x, 0), tw)
-        y = min(max(y, 0), th)
-        w = tw - x if self.termwidth is None else max(0, min(self.termwidth, tw - x))
-        h = th - y if self.termheight is None else max(0, min(self.termheight, th - y))
-        return (x, y, w, h)
+        want = 1 if self._region.height is None else max(1, regions.resolve(self._region._replace(y=0), tw, th).height)
+        want = min(want, th)
+        here = self.term.get_cursor()
+        if here is not None and here[1] > 0:
+            sys.stdout.write('\r\n')
+        sys.stdout.write('\n' * want)
+        sys.stdout.flush()
+        here = self.term.get_cursor()
+        self._anchor_row = max(0, th - want if here is None else here[0] - want)
+
+    def _release(self):
+        row = self._anchor_row
+        if row is None:
+            return
+        x, y, w, h = self._resolve_region()
+        last = max(row, min(self.term.height - 1, y + max(h, 1) - 1))
+        if self.clearonstop:
+            sys.stdout.write(ansi.move(row + 1, 1))
+        else:
+            sys.stdout.write(ansi.move(last + 1, 1) + '\r\n')
+        sys.stdout.flush()
+        self._anchor_row = None
 
     def _footprint(self, region):
         x, y, w, h = region
@@ -510,11 +575,10 @@ class Session():
         right = bottom = 0
         for world in self.worlds:
             sc = world.scene
-            termx, termy = (w, h) if self.autoterm and world.autoterm else (sc.termx, sc.termy)
-            dimx, dimy = (termx, termy) if self.autodim and world.autodim else (sc.dimx, sc.dimy)
+            termx, termy, dimx, dimy, dimxoffset, dimyoffset = self._layout(sc, world, w, h)
             view = Compositor.view(SimpleNamespace(
                 termx=termx, termy=termy, dimx=dimx, dimy=dimy,
-                dimxoffset=sc.dimxoffset, dimyoffset=sc.dimyoffset,
+                dimxoffset=dimxoffset, dimyoffset=dimyoffset,
             ), w, h)
             right = max(right, view[2])
             bottom = max(bottom, view[3])
@@ -526,7 +590,7 @@ class Session():
         return self._sync_available
 
     def _partial(self):
-        if self.region != (0, 0, None, None):
+        if not regions.is_default(self._region):
             return True
         full = self._resolve_region()
         return self._footprint(full) != full
@@ -541,6 +605,7 @@ class Session():
             self.running = True
             for setting, val in kwargs.items():
                 if val is not None: setattr(self, setting, val)
+            self._anchor()
             if self._idle_scene is not None:
                 self._fit(self._idle_scene)
             for world in self.worlds:
@@ -665,11 +730,12 @@ class Session():
                 if self.sound: self.sound.close()
                 if self.clearonstop:
                     if self._partial():
-                        sys.stdout.write(Compositor.vacate(self._compositor.region, (-1, -1, 0, 0), (self.term.width, self.term.height)) + ansi.wrap(ansi.RESET)
+                        sys.stdout.write(ansi.wrap(ansi.SAVE_CURSOR) + Compositor.vacate(self._compositor.region, (-1, -1, 0, 0), (self.term.width, self.term.height)) + ansi.wrap(ansi.RESET) + ansi.wrap(ansi.RESTORE_CURSOR)
                                          if self._compositor.region else '')
                     else:
                         sys.stdout.write(ansi.wrap_all(ansi.CLEAR_ALL))
                     sys.stdout.flush()
+                self._release()
                 self.undebug()
 
     def run(self, **kwargs):

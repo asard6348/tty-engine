@@ -17,6 +17,7 @@ MODE_MOUSE_SGR = 1006
 
 _RGB = r'rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)(?:' + ansi.BEL_RE + '|' + ansi.ST_RE + ')'
 _CPR = re.compile(ansi.CSI_RE + r'[0-9]+;[0-9]+R')
+_CPR_GROUPS = re.compile(ansi.CSI_RE + r'([0-9]+);([0-9]+)R')
 _XTVERSION = re.compile(ansi.DCS_RE + r'>\|([^' + ansi.ESC_RE + r']*)' + ansi.ST_RE)
 _BGCOLOR = re.compile(ansi.OSC_RE + '11;' + _RGB)
 _FGCOLOR = re.compile(ansi.OSC_RE + '10;' + _RGB)
@@ -210,6 +211,19 @@ class Terminal:
             match = self._query(ansi.csi('>', 'q'), _XTVERSION, timeout)
             self._apple_found = bool(match) and match.group(1).startswith('Apple_Terminal')
         return self._apple_found
+
+    def get_cursor(self, timeout=QUERY_TIMEOUT):
+        if not self.is_a_tty or self._fd is None:
+            return None
+        with self._rare():
+            self._write(ansi.csi('6', 'n'))
+            found, data = self._read_until(_CPR_GROUPS, timeout)
+            if found is not None:
+                data = data[:found.start()] + data[found.end():]
+        self.ungetch(data)
+        if found is None:
+            return None
+        return int(found.group(1)) - 1, int(found.group(2)) - 1
 
     def get_dec_mode(self, mode, timeout=QUERY_TIMEOUT):
         if mode in self._modes:

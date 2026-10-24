@@ -278,7 +278,7 @@ A handle may define any of `start`, `update` and `final`. Each one receives only
 | `sound` | Shortcut for `session.sound`. |
 | `simulation` | The `Simulation`, for creating more sessions and worlds. |
 
-A world's `scene.termx`, `scene.termy`, `scene.dimx` and `scene.dimy` are filled in as soon as the world is created, using the terminal size and the session's region settings, so `start` and any code that runs before `session.run()` already sees the real values. They keep following the terminal while the session runs, unless `autoterm` or `autodim` is turned off.
+A world's `scene.canvas` and `scene.view` (also available as `scene.termx`, `scene.termy`, `scene.dimx`, `scene.dimy`, `scene.dimxoffset` and `scene.dimyoffset`) are filled in as soon as the world is created, using the terminal size, the session's `region` and the world's own `region`, so `start` and any code that runs before `session.run()` already sees the real values. They keep following the terminal while the session runs, unless `autoterm` or `autodim` is turned off. See [Regions](#regions).
 
 ```python
 class main:
@@ -499,6 +499,8 @@ voice.stop(fade=1.0)
 
 Each world has its own scene and handles, and the session composites its worlds into one frame. This is useful for a HUD layered over a game, or a menu with its own camera.
 
+Give a world its own `region` to confine it to one part of the screen, for example a status bar or a sidebar (see [Regions](#regions)).
+
 ```python
 from ttyengine import Session
 
@@ -513,6 +515,89 @@ session.run()
 ```
 
 The `Simulation` returned by `start()` exposes `sessions`, `worlds`, `handles` and `scenes`, and handles can reach it through their `simulation` parameter.
+
+</details>
+
+<details>
+<summary><b id="regions">Regions: one line, one column, a panel or inline output</b></summary>
+
+&nbsp;
+
+The engine does not have to own the whole terminal. A session draws inside a **region** of the screen, and every world can draw inside a **region** of that. This is how you use TTY Engine for a status line, a progress bar, a sidebar or a full text UI, not only for games.
+
+| Level | Setting | Meaning |
+|---|---|---|
+| Session | `Session(region=...)` or `session.region` | The part of the terminal the engine draws in. Anything outside it is left untouched. |
+| World | `session.World(region=...)` or `world.region` | The part of the session's region this world draws in. `None` means all of it. |
+| Scene | `scene.canvas`, `scene.view` | What the world ended up with: the size of the area it may draw in, and the visible window inside it. |
+
+A region can be written in any of these forms:
+
+```python
+from ttyengine import region
+
+region.line(-1)                          # one row: the last line of the terminal
+region.column(0)                         # one column: the first one
+region.top(3)  region.bottom(2)          # bars across the full width
+region.left(20)  region.right(20)        # panels across the full height
+region.box(5, 2, 40, 10)                 # x, y, width, height
+region.centered(60, 20)                  # a fixed size in the middle
+region.inline(4)                         # 4 rows below the cursor (see below)
+
+(5, 2, 40, 10)                           # a plain tuple: x, y, width, height
+{"top": 1, "bottom": 1}                  # insets: everything but the first and last row
+{"left": 2, "right": 2, "top": 1}        # keys: x/left, y/top, width, height, right, bottom
+(0, 0, "50%", "100%")                    # percentages of the available space
+("end", "end", 20, 3)                    # "start", "center" or "end" for x and y
+None                                     # everything
+```
+
+Rules for the values:
+
+| Value | x, y | width, height |
+|---|---|---|
+| A number | Cells from the top left | Size in cells |
+| A negative number | Cells from the far edge (`-1` is the last row or column) | Leave that many cells unused at the far end |
+| `None` | `0` | The rest of the available space |
+| `"40%"` | That share of the available space | That share of the available space |
+| `"start"`, `"center"`, `"end"` | Align inside the available space | n/a |
+
+Regions are always clamped to the space they are resolved in, so they never fail on a small terminal. Invalid values raise `ValueError`. `region.resolve(spec, width, height)` returns the resulting `Region(x, y, width, height)` for any spec, and the session's `resolved_region` shows what it currently covers.
+
+```python
+from ttyengine import Session, region
+
+session = Session(region=region.line(-1), clearonstop=False)   # a status line
+```
+
+Several worlds can share one session, each with its own region:
+
+```python
+session = Session()
+header  = session.World(region=region.top(1))
+sidebar = session.World(region={"top": 1, "bottom": 1, "width": 24})
+body    = session.World(region={"top": 1, "bottom": 1, "left": 24})
+footer  = session.World(region=region.bottom(1))
+```
+
+Each scene sees only its own area: `scene.view` is `(x, y, width, height)` of the visible window and `scene.canvas` is the size of the space it sits in. The camera, `follow()` and `focus()` use the view's size, and everything outside the view is clipped. You can also set it by hand with any region (set `autodim=False` on the world so it is not reset every frame):
+
+```python
+scene.view = region.bottom(2)
+scene.view = {"left": 1, "right": 1}
+```
+
+**Inline output.** `region.inline(rows)` reserves rows at the current cursor position instead of at a fixed place on the screen, for spinners, progress bars and live tables inside an ordinary command-line program. The engine scrolls the terminal if there is not enough room below the cursor, keeps the normal screen (no alternate screen) and leaves the scrollback alone. When the session stops, the rows are cleared and the cursor goes back to where the region started, or with `clearonstop=False` the last frame stays and the cursor moves below it.
+
+```python
+from ttyengine import start, region
+
+start(progress, region=region.inline(2), clearonstop=False)
+```
+
+Outside the whole-terminal case the engine does not use the alternate screen, and when the session stops the cursor returns to where it was before.
+
+The older names keep working: `termxoffset`, `termyoffset`, `termwidth` and `termheight` read and write the parts of `session.region`, and `scene.termx`, `scene.termy`, `scene.dimx`, `scene.dimy`, `scene.dimxoffset` and `scene.dimyoffset` are the numbers behind `scene.canvas` and `scene.view` (`dimyoffset` is the negative of the view's `y`).
 
 </details>
 
@@ -686,14 +771,13 @@ Settings are passed to `start()`, `Session()` or `run()`, and are stored as attr
 | `optimize` | `True` | Switch the terminal into the modes the engine needs (raw input, hidden cursor, no line wrapping, synchronized output). |
 | `pausephysics` | `False` | Stop physics for every world. |
 | `pauserendering` | `False` | Stop drawing for every world. |
-| `termxoffset`, `termyoffset` | `0` | Top-left corner of the part of the terminal the engine draws in. |
-| `termwidth`, `termheight` | `None` | Size of that region. `None` uses the rest of the terminal. |
-| `autoterm` | `True` | Keep each scene's terminal size in sync with the region. The size is applied when a world is created and again every frame. |
-| `autodim` | `True` | Keep each scene's dimensions in sync with its terminal size. They are applied when a world is created and again every frame. |
+| `region` | `None` | The part of the terminal the engine draws in: a `ttyengine.region` preset, `(x, y, width, height)`, a dict such as `{"top": 1, "bottom": 1}`, or `None` for the whole terminal. See [Regions](#regions). `termxoffset`, `termyoffset`, `termwidth` and `termheight` are older names for its four parts. |
+| `autoterm` | `True` | Keep each scene's canvas size in sync with the region. The size is applied when a world is created and again every frame. |
+| `autodim` | `True` | Keep each scene's view in sync with its canvas, or with the world's own `region` when it has one. It is applied when a world is created and again every frame. |
 | `autobg` | `True` | Fill the background automatically. |
 | `outerbg` | `True` | Fill the area outside the region with the background color. |
 | `autofps` | `True` | Tie each scene's maximum frame rate to the measured terminal latency. |
-| `clearonstop` | `True` | Clear the screen when the session stops. |
+| `clearonstop` | `True` | Clear the screen, or just the region when the engine draws in part of it, when the session stops. |
 
 Constructor-only options on `Session()`:
 

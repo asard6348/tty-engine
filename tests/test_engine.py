@@ -13,7 +13,7 @@ from unittest import mock
 os.environ.setdefault("COLUMNS", "100")
 os.environ.setdefault("LINES", "40")
 
-from ttyengine import ansi, ascii_styler, compositor, errors, figlet, image_reader, launcher, terminal
+from ttyengine import ansi, ascii_styler, compositor, errors, figlet, image_reader, launcher, region, terminal
 from ttyengine.launcher import Session
 from ttyengine.sound import Sound, find_ffmpeg
 
@@ -483,6 +483,71 @@ class ErrorTests(unittest.TestCase):
             self.assertIn("ValueError: boom", stream.getvalue())
         finally:
             sys.excepthook = original
+
+
+class RegionTests(unittest.TestCase):
+    def test_presets_resolve_against_a_size(self):
+        r = region.resolve
+        self.assertEqual(r(None, 100, 40), (0, 0, 100, 40))
+        self.assertEqual(r(region.line(-1), 100, 40), (0, 39, 100, 1))
+        self.assertEqual(r(region.line(5), 100, 40), (0, 5, 100, 1))
+        self.assertEqual(r(region.column(-1), 100, 40), (99, 0, 1, 40))
+        self.assertEqual(r(region.top(3), 100, 40), (0, 0, 100, 3))
+        self.assertEqual(r(region.bottom(3), 100, 40), (0, 37, 100, 3))
+        self.assertEqual(r(region.left(10), 100, 40), (0, 0, 10, 40))
+        self.assertEqual(r(region.right(10), 100, 40), (90, 0, 10, 40))
+        self.assertEqual(r(region.box(5, 6, 7, 8), 100, 40), (5, 6, 7, 8))
+
+    def test_regions_are_clamped_to_the_available_space(self):
+        r = region.resolve
+        self.assertEqual(r(region.line(99), 100, 40), (0, 40, 100, 0))
+        self.assertEqual(r((90, 0, 50, 5), 100, 40), (90, 0, 10, 5))
+        self.assertEqual(r(region.centered(200, 100), 100, 40), (0, 0, 100, 40))
+        self.assertEqual(r((0, 0, 5, 5), 0, 0), (0, 0, 0, 0))
+
+    def test_percentages_alignment_and_negative_sizes(self):
+        r = region.resolve
+        self.assertEqual(r(region.centered(40, 10), 100, 40), (30, 15, 40, 10))
+        self.assertEqual(r(region.centered("50%", "50%"), 100, 40), (25, 10, 50, 20))
+        self.assertEqual(r(("10%", "25%", "50%", -5), 100, 40), (10, 10, 50, 25))
+        self.assertEqual(r(("end", "end", 10, 3), 100, 40), (90, 37, 10, 3))
+
+    def test_dict_form_supports_insets(self):
+        r = region.resolve
+        self.assertEqual(r({"top": 1, "bottom": 1}, 100, 40), (0, 1, 100, 38))
+        self.assertEqual(r({"left": 2, "right": 2, "top": 1, "bottom": 1}, 100, 40), (2, 1, 96, 38))
+        self.assertEqual(r({"right": 10, "width": 4}, 100, 40), (86, 0, 4, 40))
+        self.assertEqual(r({"width": 10, "height": 3}, 100, 40), (0, 0, 10, 3))
+
+    def test_inline_uses_the_cursor_row(self):
+        self.assertEqual(region.resolve(region.inline(5), 100, 40, cursor=12), (0, 12, 100, 5))
+        self.assertTrue(region.uses_cursor(region.inline(2)))
+        self.assertFalse(region.uses_cursor(region.line(2)))
+
+    def test_invalid_specs_raise_value_error(self):
+        for bad in (5, "x", (1, 2, 3), {"zz": 1}, (True, 0, 1, 1), (0, 0, "a", 1),
+                    (float("nan"), 0, 1, 1), {"right": -1}, {"width": 3, "right": 1, "x": 2}):
+            with self.assertRaises(ValueError):
+                region.resolve(bad, 100, 40)
+
+    def test_fill_accepts_a_region(self):
+        styler = ascii_styler.Styler
+        self.assertEqual(
+            styler.fill((1, 2, 3), termx=6, termy=3, region={"top": 1, "bottom": 1, "left": 2, "right": 2}),
+            styler.fill((1, 2, 3), width=2, height=1, xoffset=2, yoffset=1, termx=6, termy=3),
+        )
+
+    def test_scene_view_and_canvas(self):
+        _, sc = make_scene()
+        sc.canvas = (60, 20)
+        sc.view = region.bottom(2)
+        self.assertEqual(sc.view, (0, 18, 60, 2))
+        self.assertEqual((sc.dimx, sc.dimy, sc.dimxoffset, sc.dimyoffset), (60, 2, 0, -18))
+        sc.view = {"left": 1, "right": 1}
+        self.assertEqual(sc.view, (1, 0, 58, 20))
+        sc.view = None
+        self.assertEqual(sc.view, (0, 0, 60, 20))
+        self.assertEqual(sc.canvas, (60, 20))
 
 
 class RegressionTests(unittest.TestCase):
