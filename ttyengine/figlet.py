@@ -14,7 +14,7 @@ class FigletError(Exception):
         self.error = error
 
     def __str__(self):
-        return self.error
+        return str(self.error)
 
 
 class CharNotPrinted(FigletError):

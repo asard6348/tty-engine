@@ -138,9 +138,9 @@ class Styler:
             color = tuple(color)
         try:
             hash(color)
-        except TypeError:
+            return _rgb(color)
+        except (TypeError, ValueError, OverflowError):
             return None
-        return _rgb(color)
 
     @staticmethod
     def _rgb_uncached(color):
@@ -288,8 +288,10 @@ class Styler:
     def fill(color=None, width=None, height=None, xoffset=0, yoffset=0, termx=None, termy=None):
         if termx is None or termy is None:
             termx, termy = shutil.get_terminal_size()
-        width  = width  or termx
-        height = height or termy
+        width  = termx if width is None else int(width)
+        height = termy if height is None else int(height)
+        xoffset = int(xoffset)
+        yoffset = int(yoffset)
         x_start = max(0, xoffset)
         y_start = max(0, yoffset)
         x_end   = min(termx, xoffset + width)
@@ -303,7 +305,10 @@ class Styler:
                 ansi.move(row + 1, x_start + 1) + row_str
                 for row in range(y_start, y_end)
             )
-        r, g, b = int(color[0]), int(color[1]), int(color[2])
+        rgb = Styler.rgb(color)
+        if rgb is None:
+            raise ValueError('unknown color: %r' % (color,))
+        r, g, b = rgb
         row_str = ansi.bg(r, g, b) + " " * draw_width + ansi.RESET
         return "".join(
             ansi.move(row + 1, x_start + 1) + row_str
@@ -314,6 +319,8 @@ class Styler:
     def image(path, width=None, height=None, shades=DEFAULT_SHADES, aspect=0.5, color=None):
         if not shades:
             raise ValueError("shades must not be empty")
+        if aspect <= 0:
+            raise ValueError("aspect must be positive")
         if color is None:
             color = len(shades) == 1
         iw, ih, px = readimage(path)

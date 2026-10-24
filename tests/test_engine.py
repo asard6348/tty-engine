@@ -485,5 +485,72 @@ class ErrorTests(unittest.TestCase):
             sys.excepthook = original
 
 
+class RegressionTests(unittest.TestCase):
+    def test_ansi_decode_tolerates_bad_escapes(self):
+        self.assertEqual(ansi._decode("\\"), "\\")
+        self.assertEqual(ansi._decode("\\x1"), "\\x1")
+        self.assertEqual(ansi._decode("\\x1b[0m"), "\x1b[0m")
+
+    def test_figlet_error_str_accepts_non_strings(self):
+        self.assertEqual(str(figlet.FontNotFound(2.5)), "2.5")
+
+    def test_rgb_returns_none_for_unusable_values(self):
+        styler = ascii_styler.Styler
+        self.assertIsNone(styler.rgb(float("nan")))
+        self.assertIsNone(styler.rgb(float("inf")))
+        self.assertIsNone(styler.rgb(("a", "b", "c")))
+
+    def test_fill_clamps_colors_and_accepts_names(self):
+        styler = ascii_styler.Styler()
+        out = styler.fill((-5, 300, 3), width=2, height=1, termx=10, termy=5)
+        self.assertNotIn("-5", out)
+        self.assertNotIn("300", out)
+        self.assertIn("48;2;0;255;3", out)
+        self.assertEqual(styler.fill("red", width=1, height=1, termx=3, termy=1), styler.fill(styler.rgb("red"), width=1, height=1, termx=3, termy=1))
+        with self.assertRaises(ValueError):
+            styler.fill("nocolor", termx=3, termy=1)
+
+    def test_fill_zero_size_is_empty(self):
+        styler = ascii_styler.Styler()
+        self.assertEqual(styler.fill((1, 2, 3), width=0, height=2, termx=10, termy=5), "")
+        self.assertEqual(styler.fill((1, 2, 3), width=2, height=0, termx=10, termy=5), "")
+        self.assertTrue(styler.fill((1, 2, 3), width=2.0, height=1.0, termx=10, termy=5))
+
+    def test_image_rejects_non_positive_aspect(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "a.ppm")
+            with open(path, "wb") as f:
+                f.write(b"P6\n2 2\n255\n" + bytes(12))
+            with self.assertRaises(ValueError):
+                ascii_styler.image(path, height=2, aspect=0)
+
+    def test_manual_mass_off_still_gets_a_mass(self):
+        _, sc = make_scene()
+        sc.gravity = (0, -1)
+        ball = sc.obj().create("##\n##", 5, 5, automass=False)
+        for _ in range(3):
+            sc.tick()
+        self.assertEqual(ball.physics.mass, 4)
+
+    def test_scene_bgcolor_accepts_names_and_rejects_junk(self):
+        _, sc = make_scene()
+        sc.bgcolor = "red"
+        self.assertEqual(sc.bgcolor, ascii_styler.Styler.rgb("red"))
+        sc.bgcolor = 7
+        self.assertEqual(sc.bgcolor, (7, 7, 7))
+        with self.assertRaises(ValueError):
+            sc.bgcolor = None
+
+    def test_scene_framerate_must_be_positive(self):
+        _, sc = make_scene()
+        for bad in (0, -5, float("nan")):
+            with self.assertRaises(ValueError):
+                sc.framerate = bad
+            with self.assertRaises(ValueError):
+                sc.maxframerate = bad
+        sc.framerate = 30
+        self.assertEqual(sc.framerate, 30)
+
+
 if __name__ == "__main__":
     unittest.main()

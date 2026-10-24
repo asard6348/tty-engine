@@ -40,7 +40,7 @@ def clamp(color):
 MIN_REFRESH = 24.0
 MAX_REFRESH = 1000.0
 FALLBACK_REFRESH = 60.0
-SPIN = 0.002
+SPIN = 0.016 if sys.platform == 'win32' and sys.version_info < (3, 11) else 0.002
 _detected = []
 
 

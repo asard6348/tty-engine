@@ -85,7 +85,10 @@ _ANY = re.compile(
 
 
 def _decode(text):
-    return text.encode('ascii', 'backslashreplace').decode('unicode_escape')
+    try:
+        return text.encode('ascii', 'backslashreplace').decode('unicode_escape')
+    except UnicodeDecodeError:
+        return text
 
 
 def set_wrapper(prefix=None, suffix=None):

@@ -647,7 +647,7 @@ class Session():
                     next_tick = min(
                         (min(w.last_tick for w in group) + 1.0 / fps
                          for fps, group in framerate_groups.items()),
-                        default=now
+                        default=now + (1.0 / 60 if self.worlds else 0)
                     )
                     sleep = next_tick - now
                     if sleep > self._latency and not self._pause:

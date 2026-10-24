@@ -328,6 +328,8 @@ class Scene:
         return self._framerate
     @framerate.setter
     def framerate(self, value):
+        if not value > 0:
+            raise ValueError('framerate must be positive')
         self._framerate = min(self._maxframerate, value)
 
     @property
@@ -335,6 +337,8 @@ class Scene:
         return self._maxframerate
     @maxframerate.setter
     def maxframerate(self, value):
+        if not value > 0:
+            raise ValueError('maxframerate must be positive')
         self._maxframerate = value
         self._framerate = min(value, self._framerate)
 
@@ -343,7 +347,7 @@ class Scene:
         return self._bgcolor
     @bgcolor.setter
     def bgcolor(self, value):
-        self._bgcolor = (int(value),int(value),int(value)) if isinstance(value, (int,float)) else value
+        self._bgcolor = self._color(value)
         self._getlast(True)
 
     @property

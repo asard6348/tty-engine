@@ -1776,7 +1776,7 @@ class physics(_change_callback, _lerpable):
             if self.automass and prop.endswith('text'):
                 self.mass = sum(1 for c in self.t._htext if c not in (' ', '\n'))
         if self.mass is None:
-            masscal()
+            self.mass = sum(1 for c in self.t._htext if c not in (' ', '\n'))
         self.t.onchange(masscal)
         self.solid = kwargs.get('solid', True)
         self.hitbox = kwargs.get('hitbox', False)
