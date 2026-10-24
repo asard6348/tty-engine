@@ -9,7 +9,6 @@ else:
 
 QUERY_TIMEOUT = 5.0
 
-MODE_SYNC = 2026
 MODE_MOUSE_CLICK = 1000
 MODE_MOUSE_DRAG = 1002
 MODE_MOUSE_MOTION = 1003
@@ -240,9 +239,6 @@ class Terminal:
                 self._write(ansi.modes(turned, False))
                 for mode in turned:
                     self._modes[mode] = 2
-
-    def synchronized_output(self, timeout=QUERY_TIMEOUT):
-        return self.dec_modes_enabled(MODE_SYNC, timeout=timeout)
 
     def mouse_enabled(self, *, clicks=True, report_drag=False, report_motion=False, timeout=QUERY_TIMEOUT):
         modes = [MODE_MOUSE_SGR]

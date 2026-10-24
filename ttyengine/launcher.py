@@ -102,9 +102,9 @@ def measure_latency(samples=200, percentile=0.95):
 #MODULES
 from . import scene
 from .compositor import Compositor
-from .terminal import Terminal, MODE_SYNC
+from .terminal import Terminal
 from .input_handler import inp
-from .sound import Mixer
+from .sound import Mixer, set_ffmpeg
 
 #WINDOWS INTIALIZATION
 def universal_init():
@@ -298,7 +298,7 @@ class World():
 #SESSION CLASS
 class Session():
     APIS = {'inp': True, 'style': True, 'sound': True}
-    SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True,
+    SETTINGS = {'pausephysics': False, 'pauserendering': False, 'optimize': True, 'mouse': True, 'vsync': True, 'refresh': None,
                 'autoterm': True, 'autodim': True, 'autobg': True, 'outerbg': True, 'clearonstop': True, 'autofps': True,
                 'termxoffset': 0, 'termyoffset': 0, 'termwidth': None, 'termheight': None,
                 'fullscreen': None, 'hidecursor': None, 'no_color': None}
@@ -313,13 +313,14 @@ class Session():
         self.term = Terminal()
         self.apis = {name: kwargs.get(name, default) for name, default in self.APIS.items()}
         self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion) if self.apis['inp'] else None
-        self.sound = Mixer(listener=self._listener, ffmpeg=ffmpeg) if self.apis['sound'] else None
+        if ffmpeg:
+            set_ffmpeg(ffmpeg)
+        self.sound = Mixer(listener=self._listener) if self.apis['sound'] else None
         self._compositor = Compositor()
         self.running = False
         self._pause = False
         self._dinfo = None
         self._debug = None
-        self._sync_available = None
         self._latency = measure_latency()
         self._idle_scene = scene.Scene() if self.apis['style'] else None
         bg = self.term.get_bgcolor(bits=8)
@@ -518,11 +519,6 @@ class Session():
             bottom = max(bottom, view[3])
         return (x, y, right, bottom)
 
-    def _vsync_available(self):
-        if self._sync_available is None:
-            self._sync_available = self.term.get_dec_mode(MODE_SYNC) in (1, 2)
-        return self._sync_available
-
     def _partial(self):
         if self.region != (0, 0, None, None):
             return True
@@ -560,7 +556,6 @@ class Session():
                         opt_stack.enter_context(self.term.cbreak())
                         if hc: opt_stack.enter_context(self.term.hidden_cursor())
                         opt_stack.enter_context(self.term.no_line_wrap())
-                        opt_stack.enter_context(self.term.synchronized_output())
                         is_optimized = True
                         changed_optimized = True
                         if is_mouse:
@@ -627,6 +622,8 @@ class Session():
                         bounds = (self.term.width, self.term.height)
                         active = [] if self.pauserendering else [w for w in itworlds if not w.pauserendering]
                         self._compositor.no_color = self.no_color
+                        self._compositor.vsync = self.vsync
+                        self._compositor.refresh = self.refresh
                         frame = self._compositor.compose(
                             self.worlds, active, region, bounds,
                             self.bgcolor if self.outerbg else None,
@@ -634,7 +631,7 @@ class Session():
                         )
                         if frame:
                             if not (hc and fs): frame = ansi.wrap(ansi.SAVE_CURSOR) + frame + ansi.wrap(ansi.RESTORE_CURSOR)
-                            if self.vsync and self._vsync_available(): frame = ansi.wrap(ansi.SYNC_BEGIN) + frame + ansi.wrap(ansi.SYNC_END)
+                            self._compositor.vblank()
                             sys.stdout.write(frame)
                             sys.stdout.flush()
 

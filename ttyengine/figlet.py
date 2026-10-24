@@ -243,7 +243,7 @@ class _Builder:
         self.currentTotalWidth = len(self.buffer[0]) + self.curCharWidth - self.maxSmush
         if self.text[self.iterator] == ord(' '):
             self.blankMarkers.append(([row for row in self.buffer], self.iterator))
-        if self.currentTotalWidth >= self.width:
+        if self.currentTotalWidth >= self.width and self.buffer[0]:
             self.handleNewLine()
         else:
             for row in range(self.font.height):
@@ -265,7 +265,7 @@ class _Builder:
             addLeft, addRight = addRight, addLeft
         for i in range(self.maxSmush):
             left, idx = self.getLeftSmushedChar(i, addLeft)
-            right = addRight[i]
+            right = addRight[i] if i < len(addRight) else ''
             smushed = self.smushChars(left=left, right=right)
             characters = list(addLeft)
             if 0 <= idx <= len(characters):

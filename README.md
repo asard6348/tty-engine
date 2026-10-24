@@ -13,9 +13,7 @@ Build animated, interactive scenes out of text, with collisions, joints, lightin
 [![License](https://img.shields.io/github/license/asard6348/tty-engine?color=blue)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#requirements)
 [![Commits](https://img.shields.io/github/commit-activity/t/asard6348/tty-engine?label=commits)](https://github.com/asard6348/tty-engine/commits)
-<!-- Enable this badge once the package is published on PyPI:
 [![PyPI](https://img.shields.io/pypi/v/ttyengine?logo=pypi&logoColor=white)](https://pypi.org/project/ttyengine/)
--->
 
 [Installation](#installation) ·
 [Quick start](#quick-start) ·
@@ -32,7 +30,7 @@ Build animated, interactive scenes out of text, with collisions, joints, lightin
 
 TTY Engine draws everything as styled text and updates the terminal once per frame. Objects are assembled from small components, which are attached automatically based on the keyword arguments you pass when creating them. A box of text becomes a physics body as soon as you give it a velocity, and a light source as soon as you give it a light.
 
-- **No dependencies.** Image decoding (PNG, JPEG, GIF, BMP, PNM), FIGlet text, the audio mixer and the terminal and input handling are all implemented in the standard library.
+- **No dependencies.** Image decoding (PNG, JPEG, GIF, BMP, PNM; many more when ffmpeg is installed), FIGlet text, the audio mixer and the terminal and input handling are all implemented in the standard library.
 - **Component-based objects.** `transform`, `rendering`, `physics`, `pen`, `force`, `joint` and `light` cover position and style, collisions, drawing, area forces, linked bodies and lighting.
 - **Rich text output.** Truecolor, transparency and fades, bundled FIGlet fonts, and image-to-text conversion.
 - **Input and sound included.** Keyboard and mouse input with press, release and held states, plus a built-in mixer with a small synthesizer.
@@ -76,11 +74,15 @@ If a preview needs a longer caption, add it in the cell under the image.
 ## Installation
 
 <details open>
-<summary><b>Install from GitHub</b></summary>
+<summary><b>Install from PyPI</b></summary>
 
 &nbsp;
 
-The package is not on PyPI yet, so install it straight from the repository:
+```sh
+pip install ttyengine
+```
+
+To get the latest unreleased changes, install straight from the repository:
 
 ```sh
 pip install git+https://github.com/asard6348/tty-engine
@@ -104,7 +106,7 @@ pip install -e .
 | Extra | Command | What it adds |
 |---|---|---|
 | `keyboard` | `pip install "ttyengine[keyboard]"` | Low-level key press and release tracking, which is what makes `inp.held()` accurate. It needs root on Linux and macOS. |
-| `ffmpeg` | `pip install "ttyengine[ffmpeg]"` | A bundled ffmpeg for decoding compressed audio formats. |
+| `ffmpeg` | `pip install "ttyengine[ffmpeg]"` | A bundled ffmpeg for decoding compressed audio formats and image formats beyond PNG, JPEG, GIF, BMP and PNM (WebP, TIFF, TGA, AVIF, ...). An ffmpeg already on your `PATH` works too. |
 
 Without the `keyboard` package the engine falls back to terminal input. See [Input](#usage-guide) in the usage guide for what that changes.
 
@@ -198,7 +200,7 @@ Every frame, each active world goes through the same steps:
 1. **`update`** is called on every handle, highest `priority` first.
 2. **`scene.tick()`** advances the simulation: physics, fades, joints and lights.
 3. **`final`** is called on every handle, after the physics has settled.
-4. The scene's pending changes are flushed and the **compositor** builds the frame, which is written to the terminal in a single synchronized update.
+4. The scene's pending changes are flushed and the **compositor** builds the frame, which is written to the terminal in a single write.
 
 Use `update` for input and decisions, and `final` for anything that should react to where physics left things, such as a camera that follows an object.
 
@@ -432,7 +434,7 @@ session.style('tint', color=(255, 80, 120), bgcolor='darkblue')
 - **Colors** can be a name (`'red'`, `'brightcyan'`, `'darkgreen'`, `'gray'`, ...) or an `(r, g, b)` tuple.
 - **FIGlet fonts** are bundled. `session.styler.fonts()` lists them, and `font=` accepts any name from that list.
 - **Shapes** are available through `session.styler.shapes`: `circle`, `ellipse`, `block`, `triangle`, `diamond` and `line`.
-- **Images** are converted to text with `session.styler.image(path, width=..., height=...)`.
+- **Images** are converted to text with `session.styler.image(path, width=..., height=...)`. PNG, JPEG, GIF, BMP and PNM are decoded by the engine itself, and other formats (WebP, TIFF, TGA, ...) are decoded through ffmpeg when it is available. If you give neither `width` nor `height`, the image is `80` columns wide (or its own pixel width, if that is smaller), so the result is the same on every terminal.
 
 ```python
 ring = session.styler.shapes.circle(5)
@@ -676,11 +678,12 @@ Settings are passed to `start()`, `Session()` or `run()`, and are stored as attr
 | Setting | Default | Meaning |
 |---|---|---|
 | `mouse` | `True` | Report mouse clicks, drags and motion. |
-| `vsync` | `True` | Send each frame as a synchronized update, which reduces tearing in terminals that support it. |
+| `vsync` | `True` | Present each frame in step with the display's refresh. On Windows the compositor waits for the desktop compositor's vertical blank; on other systems it locks presentation to the detected refresh rate with a fixed-phase clock, since a terminal has no direct access to the display. |
+| `refresh` | `None` | Display refresh rate in Hz (24 to 1000) used by `vsync`. `None` detects it, falling back to 60. The `TTYENGINE_REFRESH` environment variable overrides detection. Setting it also makes Windows use the timer instead of the desktop compositor. |
 | `fullscreen` | auto | Use the alternate screen. By default this is chosen from whether the engine draws in the whole terminal or only a region. |
 | `hidecursor` | auto | Hide the text cursor while running. |
 | `no_color` | `None` | `True` strips color codes from all output. Any value other than `None` overrides the `NO_COLOR` environment variable. |
-| `optimize` | `True` | Switch the terminal into the modes the engine needs (raw input, hidden cursor, no line wrapping, synchronized output). |
+| `optimize` | `True` | Switch the terminal into the modes the engine needs (raw input, hidden cursor, no line wrapping). |
 | `pausephysics` | `False` | Stop physics for every world. |
 | `pauserendering` | `False` | Stop drawing for every world. |
 | `termxoffset`, `termyoffset` | `0` | Top-left corner of the part of the terminal the engine draws in. |
@@ -700,7 +703,7 @@ Constructor-only options on `Session()`:
 | `sound=False` | Disable audio (`session.sound` becomes `None`). |
 | `style=False` | Disable the styling layer. |
 | `watchfocus`, `trackmotion` | Control whether terminal focus changes and mouse motion are tracked. |
-| `ffmpeg` | Path to an ffmpeg executable for audio decoding. |
+| `ffmpeg` | Path to an ffmpeg executable for audio and image decoding. It applies even with `sound=False`. |
 
 </details>
 
@@ -770,7 +773,7 @@ A value of `None` falls back to its environment variable, and both are empty by 
 
 - **Python 3.8 or newer.**
 - **Windows, macOS or Linux**, in a terminal that supports ANSI escape sequences. Truecolor and the kitty keyboard protocol are used when the terminal offers them.
-- **No required packages.** The optional [`keyboard` and `ffmpeg` extras](#installation) add accurate key tracking and compressed-audio decoding.
+- **No required packages.** The optional [`keyboard` and `ffmpeg` extras](#installation) add accurate key tracking, compressed-audio decoding and more image formats.
 - The project is in **alpha**, so APIs may still change.
 
 <sub>[↑ Back to top](#top)</sub>

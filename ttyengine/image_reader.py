@@ -1,4 +1,4 @@
-import re, struct, zlib
+import os, re, struct, subprocess, zlib
 from array import array
 from math import cos, pi, sqrt
 
@@ -8,19 +8,60 @@ class ImageError(ValueError):
 
 
 def read(path):
+    path = os.fspath(path)
     with open(path, 'rb') as f:
         data = f.read()
-    return decode(data)
+    return decode(data, path)
 
 
-def decode(data):
+def decode(data, path=None):
+    error = None
     for check, decoder in _FORMATS:
         if check(data):
             try:
                 return decoder(data)
-            except (IndexError, KeyError, struct.error, zlib.error) as e:
-                raise ImageError('corrupt or truncated image data') from e
-    raise ImageError('unsupported image format')
+            except ImageError as e:
+                error = e
+            except (ArithmeticError, LookupError, MemoryError, TypeError, ValueError, StopIteration, struct.error, zlib.error) as e:
+                error = ImageError('corrupt or truncated image data')
+                error.__cause__ = e
+            break
+    converted, reason = _ffmpeg(data, path)
+    if converted is not None:
+        return converted
+    if error is not None:
+        raise error
+    raise ImageError('unsupported image format (' + reason + ')')
+
+
+def _ffmpeg(data, path):
+    from .sound import find_ffmpeg
+    exe = find_ffmpeg()
+    if not exe:
+        return None, 'PNG, JPEG, GIF, BMP and PNM are built in; install ffmpeg to read other formats'
+    command = [exe, '-v', 'error', '-nostdin', '-i', '{}', '-an', '-sn', '-frames:v', '1', '-c:v', 'png',
+               '-pix_fmt', 'rgba', '-pred', 'none', '-f', 'image2pipe', 'pipe:1']
+    sources = [('pipe:0', {'input': data})]
+    if path is not None:
+        sources.append(('file:' + os.path.abspath(path), {'stdin': subprocess.DEVNULL}))
+    reason = 'ffmpeg could not decode the image'
+    for source, options in sources:
+        args = [source if part == '{}' else part for part in command]
+        try:
+            proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, **options)
+        except (OSError, subprocess.SubprocessError) as e:
+            reason = f'ffmpeg failed: {e}'
+            continue
+        if proc.returncode == 0 and _is_png(proc.stdout):
+            try:
+                return _png(proc.stdout), ''
+            except (ImageError, ArithmeticError, LookupError, MemoryError, TypeError, ValueError, struct.error, zlib.error):
+                reason = 'ffmpeg produced unreadable output'
+                continue
+        lines = proc.stderr.decode('utf-8', 'replace').strip().splitlines()
+        if lines:
+            reason = 'ffmpeg: ' + lines[-1]
+    return None, reason
 
 
 def _blank(w, h):
@@ -105,7 +146,9 @@ def _png(data):
     if hdr is None or not idat:
         raise ImageError('corrupt PNG')
     w, h, depth, ctype, _, _, interlace = hdr
-    if ctype not in _PNG_CHANNELS or depth not in (1, 2, 4, 8, 16):
+    if ctype not in _PNG_CHANNELS or depth not in (1, 2, 4, 8, 16) or interlace not in (0, 1):
+        raise ImageError('invalid PNG header')
+    if (ctype == 3 and depth > 8) or (ctype in (2, 4, 6) and depth < 8):
         raise ImageError('invalid PNG header')
     channels = _PNG_CHANNELS[ctype]
     raw = zlib.decompress(b''.join(idat))
@@ -114,12 +157,14 @@ def _png(data):
     maxv = (1 << sdepth) - 1
     keyed = None
     if ctype == 0 and len(trns) >= 2:
-        keyed = int.from_bytes(trns[:2], 'big') >> (8 if depth == 16 else 0)
+        keyed = int.from_bytes(trns[:2], 'big')
     elif ctype == 2 and len(trns) >= 6:
-        keyed = tuple(int.from_bytes(trns[i:i + 2], 'big') >> (8 if depth == 16 else 0) for i in (0, 2, 4))
+        keyed = tuple(int.from_bytes(trns[i:i + 2], 'big') for i in (0, 2, 4))
     pal = [(plte[i], plte[i + 1], plte[i + 2], trns[i // 3] if i // 3 < len(trns) else 255)
            for i in range(0, len(plte) - 2, 3)]
     bpp = max(1, channels * depth // 8)
+    fast = ctype == 6 and depth == 8 and not interlace
+    black = (0, 0, 0, 255)
     pos = 0
     for x0, y0, dx, dy in (_ADAM7 if interlace else ((0, 0, 1, 1),)):
         pw = (w - x0 + dx - 1) // dx
@@ -129,18 +174,24 @@ def _png(data):
         stride = (pw * channels * depth + 7) // 8
         rows, pos = _png_unfilter(raw, pos, stride, bpp, ph)
         for j, line in enumerate(rows):
+            if fast:
+                o = j * w * 4
+                out[o:o + w * 4] = line
+                continue
             s = _png_samples(line, pw * channels, depth)
+            k = s
+            if keyed is not None and depth == 16:
+                k = [(line[n * 2] << 8) | line[n * 2 + 1] for n in range(pw * channels)]
             base = (y0 + j * dy) * w + x0
             for i in range(pw):
                 if ctype == 0:
                     v = s[i]
                     g = v * 255 // maxv
-                    px = (g, g, g, 0 if v == keyed else 255)
+                    px = (g, g, g, 0 if k[i] == keyed else 255)
                 elif ctype == 2:
-                    t = (s[i * 3], s[i * 3 + 1], s[i * 3 + 2])
-                    px = (t[0], t[1], t[2], 0 if t == keyed else 255)
+                    px = (s[i * 3], s[i * 3 + 1], s[i * 3 + 2], 0 if (k[i * 3], k[i * 3 + 1], k[i * 3 + 2]) == keyed else 255)
                 elif ctype == 3:
-                    px = pal[s[i]]
+                    px = pal[s[i]] if s[i] < len(pal) else black
                 elif ctype == 4:
                     px = (s[i * 2], s[i * 2], s[i * 2], s[i * 2 + 1])
                 else:
@@ -357,6 +408,8 @@ def _gif(data):
                 table = data[pos:pos + n]
                 pos += n
             minbits = data[pos]
+            if not 1 <= minbits <= 8:
+                raise ImageError('corrupt GIF data')
             pos += 1
             chunks = []
             while data[pos]:

@@ -4,6 +4,8 @@ from . import ansi
 from .figlet import Figlet, available
 from .image_reader import read as readimage
 
+DEFAULT_IMAGE_WIDTH = 80
+
 RGB_MAP = {
     "red": (205, 49, 49),
     "orange": (255, 165, 0),
@@ -91,6 +93,11 @@ def alphaparse(text):
     return fa, back, ba
 
 
+@lru_cache(maxsize=512)
+def _rgb(color):
+    return Styler._rgb_uncached(color)
+
+
 class Styler:
     def __init__(self, source=None, bgcolor=DEFAULT_BG, fgcolor=DEFAULT_FG):
         self.source = source
@@ -126,10 +133,18 @@ class Styler:
         return available()
 
     @staticmethod
-    @lru_cache(maxsize=512)
     def rgb(color):
-        if isinstance(color, (tuple, list)):
+        if isinstance(color, list):
             color = tuple(color)
+        try:
+            hash(color)
+        except TypeError:
+            return None
+        return _rgb(color)
+
+    @staticmethod
+    def _rgb_uncached(color):
+        if isinstance(color, tuple):
             if len(color) == 3:
                 return tuple(max(0, min(255, int(c))) for c in color)
             elif len(color) == 2:
@@ -175,6 +190,10 @@ class Styler:
                bold=False, italic=False, underline=False, size=None):
         rgb = self.rgb
         getcolor = self.getcolor
+        if alpha is not None:
+            alpha = max(0.0, min(1.0, alpha))
+        if bgalpha is not None:
+            bgalpha = max(0.0, min(1.0, bgalpha))
         bg_rgb  = rgb(bg)  or bg
         fg_rgb  = rgb(fg)  or fg
         match_bgcolor = ""
@@ -299,8 +318,7 @@ class Styler:
             color = len(shades) == 1
         iw, ih, px = readimage(path)
         if width is None and height is None:
-            termx, termy = shutil.get_terminal_size()
-            width = min(termx, int(termy * iw / (ih * aspect)))
+            width = min(iw, DEFAULT_IMAGE_WIDTH)
         if width is None:
             width = round(height * iw / (ih * aspect))
         if height is None:

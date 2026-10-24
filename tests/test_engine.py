@@ -2,7 +2,9 @@ import io
 import math
 import os
 import struct
+import subprocess
 import sys
+import tempfile
 import time
 import unittest
 import zlib
@@ -11,9 +13,9 @@ from unittest import mock
 os.environ.setdefault("COLUMNS", "100")
 os.environ.setdefault("LINES", "40")
 
-from ttyengine import errors, image_reader, launcher
+from ttyengine import ansi, ascii_styler, compositor, errors, figlet, image_reader, launcher, terminal
 from ttyengine.launcher import Session
-from ttyengine.sound import Sound
+from ttyengine.sound import Sound, find_ffmpeg
 
 
 def make_scene(**kwargs):
@@ -146,6 +148,216 @@ class ImageTests(unittest.TestCase):
     def test_garbage_raises_image_error(self):
         with self.assertRaises(image_reader.ImageError):
             image_reader.decode(b"not an image")
+
+    @staticmethod
+    def raw_png(width, height, depth, ctype, rows, extra=b""):
+        def chunk(kind, data):
+            body = kind + data
+            return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, ctype, 0, 0, 0))
+                + extra
+                + chunk(b"IDAT", zlib.compress(b"".join(b"\x00" + row for row in rows)))
+                + chunk(b"IEND", b""))
+
+    @staticmethod
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    def test_rgba_png_decodes_all_rows(self):
+        rows = [bytes([1, 2, 3, 4, 5, 6, 7, 8]), bytes([9, 10, 11, 12, 13, 14, 15, 16])]
+        width, height, data = image_reader.decode(self.raw_png(2, 2, 8, 6, rows))
+        self.assertEqual((width, height), (2, 2))
+        self.assertEqual(bytes(data), b"".join(rows))
+
+    def test_png_16bit_transparent_key_compares_full_value(self):
+        key = self.chunk(b"tRNS", struct.pack(">H", 0x1299))
+        rows = [struct.pack(">HH", 0x1234, 0x1299)]
+        _, _, data = image_reader.decode(self.raw_png(2, 1, 16, 0, rows, key))
+        self.assertEqual(data[3], 255)
+        self.assertEqual(data[7], 0)
+
+    def test_png_palette_index_out_of_range_is_black(self):
+        palette = self.chunk(b"PLTE", bytes([255, 0, 0]))
+        _, _, data = image_reader.decode(self.raw_png(2, 1, 8, 3, [bytes([0, 5])], palette))
+        self.assertEqual(bytes(data), bytes([255, 0, 0, 255, 0, 0, 0, 255]))
+
+    def test_png_rejects_invalid_depth_for_color_type(self):
+        with mock.patch.object(image_reader, "_ffmpeg", return_value=(None, "")):
+            with self.assertRaises(image_reader.ImageError):
+                image_reader.decode(self.raw_png(1, 1, 4, 2, [b"\x00" * 2]))
+
+    def test_gif_rejects_invalid_code_size(self):
+        gif = (b"GIF89a" + struct.pack("<HHBBB", 1, 1, 0x80, 0, 0) + bytes(6)
+               + b"\x2c" + struct.pack("<HHHHB", 0, 0, 1, 1, 0) + bytes([200, 1, 0, 0]) + b"\x3b")
+        with mock.patch.object(image_reader, "_ffmpeg", return_value=(None, "")):
+            with self.assertRaises(image_reader.ImageError):
+                image_reader.decode(gif)
+
+    def test_corrupt_data_only_raises_image_error(self):
+        png = self.png(3, 3, [(10, 20, 30)] * 9)
+        samples = [
+            png[:40], png[:len(png) // 2], png[:20] + b"\xff" * 20 + png[40:],
+            b"GIF89a" + b"\x01" * 30, b"\xff\xd8\xff\xdb\x00\x04\x00\x00\xff\xc0\x00\x02",
+            b"P3\n1 1\n10\n99 99 99", b"P6\n2 2\n255\n\x00", b"P5\nx y\n255\n", b"BM" + b"\x00" * 60,
+        ]
+        with mock.patch.object(image_reader, "_ffmpeg", return_value=(None, "")):
+            for data in samples:
+                with self.assertRaises(image_reader.ImageError, msg=data[:12]):
+                    image_reader.decode(data)
+
+    def test_unknown_format_mentions_ffmpeg_when_missing(self):
+        with mock.patch("ttyengine.sound.find_ffmpeg", return_value=None):
+            with self.assertRaises(image_reader.ImageError) as caught:
+                image_reader.decode(b"RIFF\x00\x00\x00\x00WEBPVP8 ")
+        self.assertIn("ffmpeg", str(caught.exception))
+
+    def test_ffmpeg_fallback_decodes_other_formats(self):
+        exe = find_ffmpeg()
+        if not exe:
+            self.skipTest("ffmpeg is not available")
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "red.tiff")
+            subprocess.run([exe, "-v", "error", "-f", "lavfi", "-i", "color=c=0xff0000:s=4x2", "-frames:v", "1", "-pix_fmt", "rgb24", path],
+                           check=True, stdin=subprocess.DEVNULL)
+            width, height, data = image_reader.read(path)
+        self.assertEqual((width, height), (4, 2))
+        for got, want in zip(data[:4], (255, 0, 0, 255)):
+            self.assertAlmostEqual(got, want, delta=4)
+        self.assertEqual(len(data), 4 * 2 * 4)
+
+    def test_ffmpeg_fallback_ignores_wrong_extension(self):
+        exe = find_ffmpeg()
+        if not exe:
+            self.skipTest("ffmpeg is not available")
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "actually-a-tiff.png")
+            subprocess.run([exe, "-v", "error", "-f", "lavfi", "-i", "color=c=0x00ff00:s=4x4", "-frames:v", "1",
+                            "-pix_fmt", "rgb24", "-f", "image2", "-c:v", "tiff", path], check=True, stdin=subprocess.DEVNULL)
+            width, height, data = image_reader.read(path)
+        self.assertEqual((width, height), (4, 4))
+        for got, want in zip(data[:4], (0, 255, 0, 255)):
+            self.assertAlmostEqual(got, want, delta=4)
+
+
+class StylerImageTests(unittest.TestCase):
+    def test_default_size_does_not_depend_on_terminal(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "white.ppm")
+            with open(path, "wb") as f:
+                f.write(b"P6\n200 100\n255\n" + b"\xff" * (200 * 100 * 3))
+            outputs = []
+            for size in ((10, 5), (300, 100)):
+                with mock.patch("shutil.get_terminal_size", return_value=os.terminal_size(size)):
+                    outputs.append(ascii_styler.image(path, shades=" #", color=False))
+            small = ascii_styler.image(os.path.join(folder, "white.ppm"), shades=" #", color=False)
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(outputs[0], small)
+        lines = outputs[0].split("\n")
+        self.assertEqual(len(lines[0]), ascii_styler.DEFAULT_IMAGE_WIDTH)
+        self.assertEqual(len(lines), 20)
+
+    def test_default_size_never_upscales_small_images(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "tiny.ppm")
+            with open(path, "wb") as f:
+                f.write(b"P6\n8 4\n255\n" + b"\xff" * (8 * 4 * 3))
+            lines = ascii_styler.image(path, shades=" #", color=False).split("\n")
+        self.assertEqual((len(lines[0]), len(lines)), (8, 2))
+
+
+class VsyncTests(unittest.TestCase):
+    def test_synchronized_output_code_is_gone(self):
+        self.assertFalse(hasattr(ansi, "SYNC_BEGIN"))
+        self.assertFalse(hasattr(ansi, "SYNC_END"))
+        self.assertFalse(hasattr(terminal, "MODE_SYNC"))
+        self.assertFalse(hasattr(terminal.Terminal, "synchronized_output"))
+
+    def test_vblank_is_a_noop_when_disabled(self):
+        comp = compositor.Compositor(vsync=False, refresh=30)
+        start = time.perf_counter()
+        for _ in range(5):
+            self.assertFalse(comp.vblank())
+        self.assertLess(time.perf_counter() - start, 0.05)
+
+    def test_vblank_locks_presentation_to_refresh_rate(self):
+        comp = compositor.Compositor(vsync=True, refresh=50)
+        comp.vblank()
+        stamps = []
+        for _ in range(6):
+            time.sleep(0.003)
+            comp.vblank()
+            stamps.append(time.perf_counter())
+        gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+        for gap in gaps:
+            self.assertAlmostEqual(gap, 0.02, delta=0.006)
+
+    def test_refresh_is_validated(self):
+        comp = compositor.Compositor(vsync=True)
+        for bad in (0, 5, 5000, "fast"):
+            with self.assertRaises(ValueError):
+                comp.refresh = bad
+        comp.refresh = 144
+        self.assertEqual(comp.refresh_rate(), 144.0)
+        comp.refresh = None
+        self.assertGreaterEqual(comp.refresh_rate(), compositor.MIN_REFRESH)
+
+    def test_refresh_environment_override(self):
+        with mock.patch.dict(os.environ, {"TTYENGINE_REFRESH": "75"}):
+            self.assertEqual(compositor.detect_refresh(), 75.0)
+
+    def test_session_hands_vsync_to_compositor(self):
+        session, _ = make_scene(vsync=True, refresh=90)
+        self.assertTrue(session.vsync)
+        self.assertEqual(session.refresh, 90)
+
+
+class FfmpegSettingTests(unittest.TestCase):
+    def test_ffmpeg_path_applies_without_sound(self):
+        with mock.patch.object(launcher, "set_ffmpeg") as setter:
+            Session(sound=False, inp=False, ffmpeg="/opt/ffmpeg")
+        setter.assert_called_once_with("/opt/ffmpeg")
+
+
+class FigletTests(unittest.TestCase):
+    def test_glyph_exactly_as_wide_as_width_terminates(self):
+        font = figlet.FigletFont("standard")
+        width = font.width[ord("a")]
+        text = figlet.Figlet("standard", width=width).renderText("a")
+        self.assertTrue(text.strip())
+
+    def test_right_to_left_works_for_every_tested_font(self):
+        for name in ("1943____", "3d_diagonal", "4x4_offr", "a_zooloo", "advenger"):
+            with self.subTest(font=name):
+                text = figlet.Figlet(name, direction="right-to-left").renderText("Hello")
+                self.assertTrue(text.strip())
+
+    def test_glyph_wider_than_width_raises(self):
+        with self.assertRaises(figlet.CharNotPrinted):
+            figlet.Figlet("standard", width=1).renderText("a")
+
+
+class StylerColorTests(unittest.TestCase):
+    def test_rgb_accepts_lists(self):
+        self.assertEqual(ascii_styler.Styler.rgb([255, 0, 0]), (255, 0, 0))
+        self.assertIsNone(ascii_styler.Styler.rgb({}))
+
+    def test_style_accepts_list_color(self):
+        out = ascii_styler.Styler().style("x", color=[255, 0, 0])
+        self.assertIn("38;2;255;0;0", out)
+
+    def test_alpha_is_clamped(self):
+        styler = ascii_styler.Styler()
+        for alpha in (2, -1, 1.5):
+            for kwargs in ({"color": "red", "alpha": alpha}, {"bgcolor": "red", "bgalpha": alpha}):
+                out = styler.style("x", **kwargs)
+                self.assertNotIn("-", out.replace("\x1b[", ""))
+                for part in out.split("\x1b[")[1:]:
+                    numbers = [int(n) for n in part.split("m")[0].split(";") if n.isdigit()]
+                    if part.startswith(("38;2;", "48;2;")):
+                        self.assertTrue(all(0 <= n <= 255 for n in numbers[2:5]), out)
 
 
 class SoundTests(unittest.TestCase):

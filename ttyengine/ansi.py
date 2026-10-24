@@ -75,8 +75,6 @@ ERASE_BELOW = csi('', 'J')
 FULL_RESET = ESC + 'c'
 SAVE_CURSOR = ESC + '7'
 RESTORE_CURSOR = ESC + '8'
-SYNC_BEGIN = mode(2026, True)
-SYNC_END = mode(2026, False)
 
 _ANY = re.compile(
     ESC_RE + r'(?:' + re.escape(CSI_INTRO) + r'[0-?]*[ -/]*[@-~]|'

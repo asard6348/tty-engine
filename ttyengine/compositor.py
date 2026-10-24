@@ -1,5 +1,10 @@
+import os
 import re
+import sys
 import math
+import time
+import shutil
+import subprocess
 from itertools import groupby
 from operator import itemgetter
 from . import ansi
@@ -32,12 +37,106 @@ def clamp(color):
     return tuple(max(0, min(255, int(round(v)))) for v in color)
 
 
+MIN_REFRESH = 24.0
+MAX_REFRESH = 1000.0
+FALLBACK_REFRESH = 60.0
+SPIN = 0.002
+_detected = []
+
+
+def valid_refresh(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if MIN_REFRESH <= value <= MAX_REFRESH else None
+
+
+def _windows_refresh():
+    import ctypes
+    dc = ctypes.windll.user32.GetDC(0)
+    try:
+        return ctypes.windll.gdi32.GetDeviceCaps(dc, 116)
+    finally:
+        ctypes.windll.user32.ReleaseDC(0, dc)
+
+
+def _macos_refresh():
+    import ctypes
+    lib = ctypes.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+    lib.CGMainDisplayID.restype = ctypes.c_uint32
+    lib.CGDisplayCopyDisplayMode.argtypes = [ctypes.c_uint32]
+    lib.CGDisplayCopyDisplayMode.restype = ctypes.c_void_p
+    lib.CGDisplayModeGetRefreshRate.argtypes = [ctypes.c_void_p]
+    lib.CGDisplayModeGetRefreshRate.restype = ctypes.c_double
+    lib.CGDisplayModeRelease.argtypes = [ctypes.c_void_p]
+    mode = lib.CGDisplayCopyDisplayMode(lib.CGMainDisplayID())
+    if not mode:
+        return None
+    try:
+        return lib.CGDisplayModeGetRefreshRate(mode)
+    finally:
+        lib.CGDisplayModeRelease(mode)
+
+
+def _xrandr_refresh():
+    exe = shutil.which('xrandr')
+    if not exe:
+        return None
+    out = subprocess.run([exe, '--current'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, timeout=5).stdout.decode('utf-8', 'replace')
+    primary = first = None
+    current = None
+    for line in out.splitlines():
+        if line[:1] and not line[:1].isspace():
+            current = (' primary ' in line) if ' connected' in line else None
+            continue
+        if current is None:
+            continue
+        found = re.search(r'(\d+(?:\.\d+)?)\*', line)
+        if found:
+            rate = float(found.group(1))
+            first = first or rate
+            if current:
+                primary = primary or rate
+            current = None
+    return primary or first
+
+
+def detect_refresh():
+    rate = valid_refresh(os.environ.get('TTYENGINE_REFRESH'))
+    if rate:
+        return rate
+    if not _detected:
+        if sys.platform == 'win32':
+            finders = (_windows_refresh,)
+        elif sys.platform == 'darwin':
+            finders = (_macos_refresh,)
+        else:
+            finders = (_xrandr_refresh,)
+        found = None
+        for finder in finders:
+            try:
+                found = valid_refresh(finder())
+            except Exception:
+                found = None
+            if found:
+                break
+        _detected.append(found or FALLBACK_REFRESH)
+    return _detected[0]
+
+
 class Compositor:
     runs = re.compile(b'\x01(?:\x00{0,3}\x01)*')
     sgr = ansi.SGR
 
-    def __init__(self, no_color=None):
+    def __init__(self, no_color=None, vsync=False, refresh=None):
         self.no_color = no_color
+        self.vsync = vsync
+        self._refresh = None
+        self.refresh = refresh
+        self._phase = None
+        self._flush = None
         self.front = None
         self.width = 0
         self.height = 0
@@ -54,6 +153,54 @@ class Compositor:
 
     def invalidate(self):
         self.front = None
+
+    @property
+    def refresh(self):
+        return self._refresh
+
+    @refresh.setter
+    def refresh(self, value):
+        if value is not None and valid_refresh(value) is None:
+            raise ValueError(f'refresh must be between {MIN_REFRESH:g} and {MAX_REFRESH:g} Hz, got {value!r}')
+        self._refresh = None if value is None else float(value)
+
+    def refresh_rate(self):
+        return self._refresh or detect_refresh()
+
+    def _dwm_flush(self):
+        if self._flush is None:
+            try:
+                import ctypes
+                self._flush = ctypes.windll.dwmapi.DwmFlush
+                self._flush.restype = ctypes.c_long
+            except Exception:
+                self._flush = False
+        if not self._flush:
+            return False
+        try:
+            return self._flush() == 0
+        except Exception:
+            self._flush = False
+            return False
+
+    def vblank(self):
+        if not self.vsync:
+            return False
+        if self._refresh is None and sys.platform == 'win32' and self._dwm_flush():
+            return True
+        period = 1.0 / self.refresh_rate()
+        now = time.perf_counter()
+        if self._phase is None:
+            self._phase = now
+            return True
+        wait = self._phase + (math.floor((now - self._phase) / period) + 1) * period - now
+        if wait > 0:
+            deadline = now + wait
+            if wait > SPIN:
+                time.sleep(wait - SPIN)
+            while time.perf_counter() < deadline:
+                pass
+        return True
 
     @staticmethod
     def vacate(old, new, bounds):
