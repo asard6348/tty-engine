@@ -118,6 +118,22 @@ class InputTests(unittest.TestCase):
         self.feed("\x1b[<0;10;5M")
         self.assertEqual(self.inp.mouse, (9, 4))
 
+    def test_key_callback_error_propagates(self):
+        def bad():
+            raise RuntimeError("press failed")
+
+        self.inp.onpress("a", bad)
+        with self.assertRaisesRegex(RuntimeError, "press failed"):
+            self.feed("a")
+
+    def test_mouse_callback_error_propagates(self):
+        def bad(*args):
+            raise RuntimeError("mouse failed")
+
+        self.inp.onmouse("click", bad)
+        with self.assertRaisesRegex(RuntimeError, "mouse failed"):
+            self.feed("\x1b[<0;10;5M")
+
 
 class ImageTests(unittest.TestCase):
     @staticmethod
@@ -508,6 +524,46 @@ class ErrorTests(unittest.TestCase):
             self.assertIn("ValueError: boom", stream.getvalue())
         finally:
             sys.excepthook = original
+
+
+    def test_thread_error_is_deferred_and_raised(self):
+        import threading
+        original = threading.excepthook
+
+        def worker():
+            raise RuntimeError("thread failed")
+
+        with errors.capture():
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+            self.assertTrue(errors.pending())
+            with self.assertRaisesRegex(RuntimeError, "thread failed"):
+                errors.raise_pending()
+            self.assertFalse(errors.pending())
+        self.assertIs(threading.excepthook, original)
+
+    def test_session_run_is_fatal_on_thread_error(self):
+        import threading
+
+        class Faulty:
+            def update(self):
+                def worker():
+                    raise RuntimeError("background failed")
+
+                thread = threading.Thread(target=worker)
+                thread.start()
+                thread.join()
+
+        session = Session(sound=False, inp=False)
+        session.World().launch(Faulty)
+        guard = threading.Timer(10, session.stop)
+        guard.start()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "background failed"):
+                session.run_attempt()
+        finally:
+            guard.cancel()
 
 
 class RegionTests(unittest.TestCase):

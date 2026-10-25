@@ -1,7 +1,7 @@
 import os, sys, time, threading, traceback, contextlib, inspect, ctypes, socket, subprocess, tempfile, shlex
 from types import SimpleNamespace
 from . import ansi
-from .errors import attempt, highlight_traceback
+from .errors import attempt, highlight_traceback, capture, pending, raise_pending
 
 DEBUG_HOLD = ansi.osc('777;hold')
 DEBUG_RECEIVER = r"""
@@ -611,6 +611,7 @@ class Session():
             for world in self.worlds:
                 self._fit(world.scene, world)
             with contextlib.ExitStack() as main_stack:
+                main_stack.enter_context(capture(self._wake))
                 opt_stack = main_stack.enter_context(contextlib.ExitStack())
                 is_optimized = False
                 changed_optimized = False
@@ -619,6 +620,7 @@ class Session():
 
                 fs = hc = not self._partial()
                 while self.running:
+                    raise_pending()
                     if changed_optimized: changed_optimized = False
                     if self.optimize and not is_optimized:
                         fs = self.fullscreen if self.fullscreen is not None else not self._partial()
@@ -722,7 +724,7 @@ class Session():
                         while time.perf_counter() < tar: pass
                     elif self._pause or len(self.worlds) == 0:
                         with self._resume:
-                            self._resume.wait_for(lambda: not self._pause and len(self.worlds) > 0)
+                            self._resume.wait_for(lambda: (not self._pause and len(self.worlds) > 0) or pending())
 
                 if self.inp:
                     self.inp.stop_all()
@@ -740,6 +742,10 @@ class Session():
 
     def run(self, **kwargs):
         attempt(lambda: self.run_attempt(**kwargs), self._debug_trace)
+
+    def _wake(self):
+        with self._resume:
+            self._resume.notify_all()
 
     def stop(self):
         self.running = False

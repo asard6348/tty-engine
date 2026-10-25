@@ -1,10 +1,14 @@
-import os, re, sys, traceback
+import contextlib, os, re, sys, threading, traceback
 
 from . import ansi
 
 HOLD_ENV = 'TTYENGINE_HOLD'
 HOLD_PROMPT = 'Press Enter to close...'
 EXIT_CODE = 1
+
+_pending = []
+_pending_lock = threading.Lock()
+_wake = None
 
 def highlight_traceback(tb_str: str) -> str:
     if not ansi.color_enabled():
@@ -179,3 +183,55 @@ def install(hold=None, code=EXIT_CODE, stream=None):
 
     sys.excepthook = hook
     return previous
+
+
+def defer(exc):
+    with _pending_lock:
+        if not _pending:
+            _pending.append(exc)
+    wake = _wake
+    if wake is not None:
+        try:
+            wake()
+        except Exception:
+            pass
+
+
+def pending():
+    return bool(_pending)
+
+
+def raise_pending():
+    with _pending_lock:
+        exc = _pending[0] if _pending else None
+        del _pending[:]
+    if exc is not None:
+        raise exc
+
+
+@contextlib.contextmanager
+def capture(wake=None):
+    global _wake
+    previous = threading.excepthook, sys.unraisablehook, _wake
+
+    def on_thread(args):
+        if args.exc_type is SystemExit:
+            return
+        exc = args.exc_value
+        if exc is None:
+            exc = args.exc_type()
+        defer(exc)
+
+    def on_unraisable(args):
+        if args.exc_value is not None:
+            defer(args.exc_value)
+
+    with _pending_lock:
+        del _pending[:]
+    _wake = wake
+    threading.excepthook = on_thread
+    sys.unraisablehook = on_unraisable
+    try:
+        yield
+    finally:
+        threading.excepthook, sys.unraisablehook, _wake = previous

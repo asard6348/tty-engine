@@ -1,4 +1,4 @@
-import sys, re, os, threading, time, inspect, traceback, atexit, codecs, weakref
+import sys, re, os, threading, time, inspect, atexit, codecs, weakref
 from collections import defaultdict, deque
 
 try:
@@ -538,11 +538,7 @@ class inp():
                 args = (x, y, data, event)
                 if nargs is not None:
                     args = args[:nargs]
-                try:
-                    cb(*args)
-                except Exception:
-                    sys.stderr.write("input_handler: onmouse callback for %r raised:\n" % event)
-                    traceback.print_exc()
+                cb(*args)
 
     #CENTRAL UPDATE
     def update(self):
@@ -585,12 +581,7 @@ class inp():
         cb, accepts, token, _delay = entry
         if token is not None and not self._consume(table, token):
             return    # one-shot already fired / removed
-        try:
-            cb(event) if accepts else cb()
-        except Exception:
-            sys.stderr.write("input_handler: %s callback for %r raised:\n"
-                             % ('onpress' if down else 'onrelease', event.name))
-            traceback.print_exc()
+        cb(event) if accepts else cb()
 
     def _fire_key(self, name, event):
         for handle in list(self._key_cbs):
@@ -610,11 +601,7 @@ class inp():
             args = (name, event)
             if nargs is not None:
                 args = args[:nargs]
-            try:
-                cb(*args)
-            except Exception:
-                sys.stderr.write("input_handler: onkey callback for %r raised:\n" % name)
-                traceback.print_exc()
+            cb(*args)
 
     def _fire_delayed_releases(self, now):
         if not self._delayed_rel:
