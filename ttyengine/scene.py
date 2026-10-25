@@ -5,7 +5,7 @@ def _argslen(cb):
 def get_components(module):
     return [
         cls for _, cls in inspect.getmembers(module, inspect.isclass)
-        if cls.__module__ == module.__name__
+        if cls.__module__ == module.__name__ or cls.__module__.startswith(module.__name__ + '.')
     ]
 def wrap_property(component_attr: str, prop: property) -> property:
     def fget(self):
