@@ -648,5 +648,204 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(sc.framerate, 30)
 
 
+class ObjectAccessTests(unittest.TestCase):
+    def setUp(self):
+        _, self.sc = make_scene()
+        self.thing = self.sc.obj().create("hi", 1, -1, xvel=0, light=True)
+        self.bare = self.sc.obj().create("b", 0, 0)
+
+    def test_objects_are_not_iterable(self):
+        with self.assertRaises(TypeError):
+            iter(self.thing)
+        with self.assertRaises(TypeError):
+            list(self.thing)
+
+    def test_object_keys_must_be_names(self):
+        with self.assertRaises(TypeError):
+            self.thing[0]
+        with self.assertRaises(TypeError):
+            self.thing[0] = 1
+
+    def test_unknown_or_missing_settings_raise_key_error(self):
+        with self.assertRaises(KeyError):
+            self.thing["nope"]
+        with self.assertRaises(KeyError):
+            self.bare["xvel"]
+        with self.assertRaises(KeyError):
+            self.bare["xvel"] = 1
+
+    def test_object_membership_follows_attached_components(self):
+        self.assertIn("xvel", self.thing)
+        self.assertNotIn("xvel", self.bare)
+        self.assertNotIn("nope", self.thing)
+
+    def test_object_settings_read_and_write(self):
+        self.thing["x"] = 12
+        self.assertEqual(self.thing["x"], 12)
+        self.assertEqual(self.thing.transform.x, 12)
+
+    def test_components_reject_bad_keys(self):
+        for comp in (self.thing.transform, self.thing.physics, self.thing.light):
+            with self.assertRaises(TypeError):
+                comp[0]
+            with self.assertRaises(TypeError):
+                list(comp)
+            with self.assertRaises(KeyError):
+                comp["nope"]
+            with self.assertRaises(KeyError):
+                comp["nope"] = 1
+        self.assertIn("x", self.thing.transform)
+        self.assertNotIn("nope", self.thing.transform)
+
+
+class CallbackAndBounceTests(unittest.TestCase):
+    def test_bound_methods_get_all_their_arguments(self):
+        class Listener:
+            def __init__(self):
+                self.seen = []
+
+            def touched(self, other, intersection):
+                self.seen.append("touch")
+
+            def changed(self, attr, old):
+                self.seen.append(attr)
+
+        _, sc = make_scene()
+        sc.gravity = (0, -1)
+        listener = Listener()
+        ball = sc.obj().create("O", 5, 0, bounciness=0)
+        sc.obj().create("#" * 20, 0, -3, dynamic=False)
+        ball.physics.ontouch(listener.touched)
+        ball.transform.onchange(listener.changed)
+        for _ in range(10):
+            sc.tick()
+        self.assertIn("touch", listener.seen)
+        self.assertIn("y", listener.seen)
+
+    def test_bounce_can_ignore_headings_that_already_leave_the_surface(self):
+        _, sc = make_scene()
+        t = sc.obj().create("O", 0, 0).transform
+        self.assertTrue(t.approaching((0, 1), angle=180))
+        self.assertFalse(t.approaching((0, 1), angle=0))
+        self.assertAlmostEqual(t.bounce((0, 1), angle=135), 45)
+        self.assertEqual(t.bounce((0, 1), angle=45, incoming_only=True), 45)
+        self.assertAlmostEqual(t.bounce((0, 1), angle=135, incoming_only=True), 45)
+        self.assertEqual(t.rotation, 0)
+
+    def test_bounce_threshold_is_configurable(self):
+        def rebound(**kwargs):
+            _, sc = make_scene()
+            sc.gravity = (0, -0.02)
+            ball = sc.obj().create("O", 5, -3, bounciness=1, **kwargs)
+            sc.obj().create("#" * 20, 0, -6, dynamic=False)
+            for _ in range(400):
+                sc.tick()
+                if ball.physics.yvel > 0:
+                    return True
+            return False
+
+        self.assertFalse(rebound())
+        self.assertTrue(rebound(bouncethreshold=0))
+
+
+PARTS = {
+    "torso": "###\n###\n###", "head": "O",
+    "upper_arm": "|\n|\n|", "forearm": "|\n|\n|", "hand": "o",
+    "thigh": "|\n|\n|", "shin": "|\n|\n|", "foot": "__",
+}
+
+
+class HumanoidTests(unittest.TestCase):
+    def make(self, parts=PARTS, gravity=-0.05, **config):
+        _, sc = make_scene()
+        sc.gravity = (0, gravity)
+        sc.obj().create("#" * 200, -50, -30, dynamic=False)
+        body = sc.obj().create(None, 20, -20, humanoid=dict(parts=parts, **config))
+        return sc, body, body.humanoid
+
+    def test_parts_come_from_the_given_texts(self):
+        _, body, h = self.make({"torso": "##", "head": "O", "upper_arm": {"text": "|", "style": {"fg": "red"}}})
+        self.assertEqual(sorted(h), ["head", "left_upper_arm", "right_upper_arm", "torso"])
+        self.assertEqual(body.transform.text, "##")
+        self.assertEqual(h["head"].transform.text, "O")
+        self.assertEqual(h["left_upper_arm"].transform.fg, "red")
+        self.assertIs(h["torso"], body)
+
+    def test_side_specific_texts_override_shared_ones(self):
+        _, _, h = self.make({"torso": "###", "upper_arm": "|", "left_upper_arm": "L"})
+        self.assertEqual(h["left_upper_arm"].transform.text, "L")
+        self.assertEqual(h["right_upper_arm"].transform.text, "|")
+
+    def test_invalid_configuration_is_rejected(self):
+        _, sc = make_scene()
+        bad = [
+            (True, TypeError), ({"parts": {}}, ValueError), ({"parts": {"head": "O"}}, ValueError),
+            ({"parts": {"torso": "#", "wing": "x"}}, ValueError),
+            ({"parts": {"torso": "#", "forearm": "|"}}, ValueError),
+            ({"parts": {"torso": 5}}, TypeError), ({"parts": {"torso": "#"}, "nope": 1}, TypeError),
+        ]
+        for config, error in bad:
+            with self.assertRaises(error):
+                sc.obj().create(None, 0, 0, humanoid=config)
+
+    def test_stands_on_the_floor(self):
+        sc, body, h = self.make()
+        for _ in range(200):
+            sc.tick()
+        self.assertTrue(h.grounded)
+        self.assertEqual(body.transform.rotation, 0)
+        self.assertLess(abs(h["right_foot"].transform.y - (-29.5)), 0.6)
+        self.assertGreater(body.transform.y, h["right_foot"].transform.y)
+
+    def test_pose_swings_limbs_and_clamps_to_joint_limits(self):
+        sc, _, h = self.make()
+        for _ in range(100):
+            sc.tick()
+        h.pose({"upper_arm": 90, "left_shin": -50})
+        for _ in range(20):
+            sc.tick()
+        self.assertAlmostEqual(h["left_upper_arm"].transform.rotation, 90, delta=1)
+        self.assertAlmostEqual(h["right_upper_arm"].transform.rotation, -90, delta=1)
+        self.assertEqual(h.angle("left_shin"), 0)
+        h.reset_pose()
+        for _ in range(20):
+            sc.tick()
+        self.assertAlmostEqual(h["left_upper_arm"].transform.rotation, 0, delta=1)
+
+    def test_walking_moves_the_figure(self):
+        sc, body, h = self.make()
+        for _ in range(100):
+            sc.tick()
+        start = body.transform.x
+        for i in range(100):
+            h.velocity = (0.1, None)
+            h.walk(i * 0.12)
+            sc.tick()
+        self.assertGreater(body.transform.x - start, 8)
+        self.assertEqual(body.transform.rotation, 0)
+
+    def test_detach_add_and_remove_parts(self):
+        sc, _, h = self.make()
+        seen = []
+        h.onbreak(lambda name, part: seen.append(name))
+        h.detach("left_forearm")
+        self.assertEqual(seen, ["left_forearm"])
+        self.assertEqual(h.remove_part("hand"), ["left_hand", "right_hand"])
+        self.assertNotIn("hand", h)
+        self.assertEqual(h.add_part("hand", "x"), ["left_hand", "right_hand"])
+        self.assertIn("hand", h)
+        with self.assertRaises(ValueError):
+            h.set_text("head", "OO")
+        with self.assertRaises(ValueError):
+            h.remove_part("torso")
+
+    def test_discarding_the_root_removes_every_part(self):
+        sc, body, h = self.make()
+        before = len(sc.objs)
+        body.discard()
+        self.assertEqual(len(sc.objs), before - 14)
+        self.assertEqual(len(sc.solids), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

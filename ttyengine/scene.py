@@ -1,8 +1,7 @@
 import inspect
 def _argslen(cb):
     params = inspect.signature(cb).parameters
-    l = len(params) - (1 if hasattr(cb, '__self__') else 0)
-    return l
+    return len(params)
 def get_components(module):
     return [
         cls for _, cls in inspect.getmembers(module, inspect.isclass)
@@ -89,16 +88,36 @@ def _comname(c):
 
 
 class obj:
+    __iter__ = None
+
     def __init__(self, scene):
         self.scene = scene
         self._ondiscardcb = []
         self._ghosts = []
 
+    def _owner(self, key):
+        if not isinstance(key, str):
+            raise TypeError('object settings are looked up by name, not by %s' % type(key).__name__)
+        comp = _attrs.get(key)
+        if comp is None:
+            raise KeyError(key)
+        found = getattr(self, comp.__name__, None)
+        if found is None:
+            raise KeyError('%s belongs to the %s component, which this object does not have' % (key, comp.__name__))
+        return found
+
     def __getitem__(self, key):
-        return getattr(getattr(self, _attrs[key].__name__), key)
+        return getattr(self._owner(key), key)
 
     def __setitem__(self, key, value):
-        setattr(getattr(self, _attrs[key].__name__), key, value)
+        setattr(self._owner(key), key, value)
+
+    def __contains__(self, key):
+        try:
+            self._owner(key)
+        except KeyError:
+            return False
+        return True
 
     def add(self, com, **kwargs):
         kwargs, _ = _expand(kwargs)
@@ -268,6 +287,7 @@ class Scene:
         self.gravity = (0, 0)
         self.drag = 1
         self.precision = 0.5
+        self.bouncethreshold = 0.25
         self.aspect = 0.5
         self.lights = []
         self.ambient = 1.0

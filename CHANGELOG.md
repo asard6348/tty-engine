@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- New `humanoid` component: `scene.obj().create(None, x, y, humanoid={'parts': {...}})` builds a jointed, posable figure from a dict of part texts, with `pose`, `walk`, `velocity`, `jump`, `detach`, `add_part` and `remove_part`.
+- Objects and components raise a clear `TypeError` when indexed with something other than a setting name, and are no longer iterable by accident. Unknown names and settings of components an object does not have raise `KeyError`, and `name in obj` reports whether the setting exists.
+- `transform.bounce(normal, angle=None, incoming_only=False)` and the new `transform.approaching(normal, angle=None)` let a heading that already leaves the surface stay unchanged.
+- New `bouncethreshold` setting (`scene.bouncethreshold` and per-body `physics` setting) for the impact speed below which collisions stop bouncing.
+- Callbacks that are bound methods are now called with the right number of arguments in `ontouch`, `onchange` and the other callback hooks.
+- Assigning an unknown setting through a component, such as `transform['nope'] = 1`, raises `KeyError` instead of silently creating an attribute.
+
 ## 0.1.0
 
 - First public release.

@@ -243,6 +243,7 @@ An object starts out empty. `create()` looks at its keyword arguments, attaches 
 | `force` | `force=...` or `force={...}` | Pushes other objects, optionally limited by a radius or a filter. Settings: `strength`, `affect`, `cap`, `position`, `radius`, `torque`, `shield`. |
 | `joint` | `preset`, `joints`, `elasticity`, `kind`, ... | Links objects together as a rope, rod, spring, hinge, slider or fixed joint. |
 | `light` | `light=True` or `light={...}` | Turns the object into a light source. Settings: `color`, `alpha`, `radius`, `falloff`, `shadows`, `cone`, `direction`, `glow` and more. `scene.ambient` sets the base brightness. |
+| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a dict of part texts, with the object as its torso. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `rig`. |
 
 Settings can be given flat, or grouped under the component's name. The two calls below are equivalent:
 
@@ -379,6 +380,7 @@ floor = scene.obj().create('#' * 40, 0, -10, dynamic=False)   # immovable
 | `mass` | Defaults to the number of visible characters. |
 | `gravity` | An `(x, y)` pair that overrides the scene's gravity for this object. |
 | `drag` | Overrides the scene's drag for this object. |
+| `bouncethreshold` | Impact speed below which a collision does not bounce. Defaults to `scene.bouncethreshold` (`0.25`); set it to `0` to let shallow impacts bounce. When two bodies disagree, the lower value wins. |
 
 **Reacting to contact.** Two tools cover the two common cases:
 
@@ -397,6 +399,46 @@ player.physics.ontouch(entered)
 ```
 
 `ontouch(callback, when=None, once=False)` accepts a `when(other)` filter and can be limited to a single call with `once=True`.
+
+`ontouch` fires when one body moves into another. A body that is only resting against, or pushed against by, another body does not trigger it, so use `touch`, `sides` and `grounded` for that case.
+
+**Headings and bouncing.** `transform.forward` and `transform.bounce` use the object's `rotation` as the heading unless you pass `angle=`. Assigning the result to `rotation` also turns the sprite and its collision cells, so keep a separate heading and pass it as `angle` when the object should not rotate:
+
+```python
+heading = ball_heading                                  # your own variable, in degrees
+if ball.transform.approaching(normal, angle=heading):  # True when moving into the surface
+    heading = ball.transform.bounce(normal, angle=heading)
+heading = ball.transform.bounce(normal, angle=heading, incoming_only=True)   # same check in one call
+dx, dy = ball.transform.forward(1, angle=heading)
+```
+
+</details>
+
+<details>
+<summary><b>Humanoid figures</b></summary>
+
+&nbsp;
+
+A `humanoid` component turns an object into the torso of a figure. Every part is built from the text you give it, so there are no built-in glyphs, and a part exists only if its text is in the dict. Limbs come in pairs: `upper_arm` creates `left_upper_arm` and `right_upper_arm`, and a `left_` or `right_` key overrides one side.
+
+```python
+parts = {
+    'torso': '###\n###\n###', 'head': 'O',
+    'upper_arm': '|\n|\n|', 'forearm': '|\n|\n|', 'hand': 'o',
+    'thigh': '|\n|\n|', 'shin': '|\n|\n|', 'foot': '__',
+}
+body = scene.obj().create(None, 20, -10, humanoid={'parts': parts})
+figure = body.humanoid
+
+figure.apply_pose('arms_out')            # named poses live in humanoid.poses
+figure.pose({'left_thigh': -30})         # angles are degrees from the rest pose, clamped to joint limits
+figure.velocity = (0.2, None)            # moves every part together
+figure.walk(phase)                       # call each frame with a growing phase
+figure.jump(0.6)                         # only while grounded
+figure.detach('left_forearm')            # frees a limb and everything attached to it
+```
+
+A part can also be a dict with a `text` and optional `style`, `physics`, `joint`, `solid` and `z`. `solid` is `None` (only the lowest leg part collides with the world), a bool, or a list of part names. The skeleton is `humanoid.rig`; add entries to it, or pass `rig={...}`, to support more parts.
 
 </details>
 
