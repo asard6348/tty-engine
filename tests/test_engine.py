@@ -805,9 +805,33 @@ class CallbackAndBounceTests(unittest.TestCase):
 
 
 PARTS = {
-    "torso": "###\n###\n###", "head": "O",
-    "upper_arm": "|\n|\n|", "forearm": "|\n|\n|", "hand": "o",
-    "thigh": "|\n|\n|", "shin": "|\n|\n|", "foot": "__",
+    "torso": "###\n###\n###",
+    "head": {"text": "O", "parent": "torso", "at": "top", "joint": "neck"},
+    "left_arm": {"text": "|\n|\n|", "parent": "torso", "at": "top_left", "pin": "top", "shift": (-0.5, 0),
+                 "joint": "shoulder", "group": "arm"},
+    "right_arm": {"mirror": "left_arm"},
+    "left_forearm": {"text": "|\n|\n|", "parent": "left_arm", "joint": "elbow", "group": "forearm"},
+    "right_forearm": {"mirror": "left_forearm"},
+    "left_hand": {"text": "o", "parent": "left_forearm", "joint": "wrist", "group": "hand"},
+    "right_hand": {"mirror": "left_hand"},
+    "left_thigh": {"text": "|\n|\n|", "parent": "torso", "at": "bottom_left", "pin": "top", "shift": (0.5, 0),
+                   "joint": "hip", "group": "thigh", "density": 10},
+    "right_thigh": {"mirror": "left_thigh", "flip": False},
+    "left_shin": {"text": "|\n|\n|", "parent": "left_thigh", "joint": "knee", "group": "shin",
+                  "contact": True, "density": 10},
+    "right_shin": {"mirror": "left_shin", "flip": False},
+    "left_foot": {"text": "__", "parent": "left_shin", "at": "bottom_left", "pin": "top", "joint": "ankle",
+                  "group": "foot", "contact": True, "density": 10},
+    "right_foot": {"mirror": "left_foot", "flip": False},
+}
+
+CYCLES = {
+    "walk": {
+        "left_thigh": {"amp": -32}, "right_thigh": {"amp": 32},
+        "left_shin": {"amp": 50, "shift": -math.pi / 2, "rectify": True},
+        "right_shin": {"amp": 50, "shift": math.pi / 2, "rectify": True},
+        "arm": {"amp": 35}, "forearm": {"amp": -12.5, "bias": -12.5},
+    },
 }
 
 
@@ -819,29 +843,112 @@ class HumanoidTests(unittest.TestCase):
         body = sc.obj().create(None, 20, -20, humanoid=dict(parts=parts, **config))
         return sc, body, body.humanoid
 
-    def test_parts_come_from_the_given_texts(self):
-        _, body, h = self.make({"torso": "##", "head": "O", "upper_arm": {"text": "|", "style": {"fg": "red"}}})
-        self.assertEqual(sorted(h), ["head", "left_upper_arm", "right_upper_arm", "torso"])
-        self.assertEqual(body.transform.text, "##")
-        self.assertEqual(h["head"].transform.text, "O")
-        self.assertEqual(h["left_upper_arm"].transform.fg, "red")
-        self.assertIs(h["torso"], body)
+    def rects(self, parts):
+        _, _, h = self.make(parts)
+        return {name: h._nodes[name]["rect"] for name in h}
 
-    def test_side_specific_texts_override_shared_ones(self):
-        _, _, h = self.make({"torso": "###", "upper_arm": "|", "left_upper_arm": "L"})
-        self.assertEqual(h["left_upper_arm"].transform.text, "L")
-        self.assertEqual(h["right_upper_arm"].transform.text, "|")
+    def test_parts_come_from_the_given_graph(self):
+        _, body, h = self.make({
+            "core": "##",
+            "cap": {"text": "O", "parent": "core", "at": "top", "style": {"fg": "red"}},
+            "tail": {"text": "~", "parent": "core", "at": "right", "group": "extra"},
+        })
+        self.assertEqual(sorted(h), ["cap", "core", "tail"])
+        self.assertEqual(body.transform.text, "##")
+        self.assertEqual(h["cap"].transform.fg, "red")
+        self.assertIs(h["core"], body)
+        self.assertIs(h["extra"], h["tail"])
+        self.assertIn("extra", h)
+
+    def test_any_part_can_be_the_root(self):
+        _, body, h = self.make({"leg": "|\n|", "foot": {"text": "__", "parent": "leg", "pin": "top_right"}})
+        self.assertIs(h["leg"], body)
+        self.assertEqual(len(h), 2)
+
+    def test_anchors_place_and_pivot_parts_consistently(self):
+        rects = self.rects({
+            "base": "####\n####",
+            "above": {"text": "o", "parent": "base", "at": "top"},
+            "below": {"text": "|", "parent": "base"},
+            "side": {"text": "-", "parent": "base", "at": "right"},
+            "corner": {"text": "x", "parent": "base", "at": "top_left", "pin": "bottom_right"},
+            "inset": {"text": "i", "parent": "base", "at": (0.25, 0.5), "pin": "center"},
+            "nudged": {"text": "n", "parent": "base", "at": "bottom_left", "pin": "top_left", "shift": (1, 1)},
+        })
+        self.assertEqual(rects["above"], (2, -1, 1, 1))
+        self.assertEqual(rects["below"], (2, 2, 1, 1))
+        self.assertEqual(rects["side"], (4, 1, 1, 1))
+        self.assertEqual(rects["corner"], (-1, -1, 1, 1))
+        self.assertEqual(rects["inset"], (1, 1, 1, 1))
+        self.assertEqual(rects["nudged"], (1, 3, 1, 1))
+
+    def test_joint_sits_at_the_shared_point(self):
+        _, _, h = self.make()
+        for name in h:
+            node = h._nodes[name]
+            if node["parent"] is None:
+                continue
+            x, y, w, hh = node["rect"]
+            fx, fy = node["pin"]
+            self.assertEqual(node["point"], (x + fx * w, y + fy * hh))
+
+    def test_mirror_reflects_layout_and_inherits_settings(self):
+        _, _, h = self.make()
+        torso = h._nodes["torso"]["rect"]
+        for left, right in (("left_arm", "right_arm"), ("left_shin", "right_shin"), ("left_foot", "right_foot")):
+            a, b = h._nodes[left]["rect"], h._nodes[right]["rect"]
+            self.assertEqual(a[0] + a[2] + b[0], 2 * torso[0] + torso[2])
+            self.assertEqual(a[1], b[1])
+        self.assertEqual(h._nodes["right_forearm"]["parent"], "right_arm")
+        self.assertEqual(h._nodes["right_foot"]["parent"], "right_shin")
+        self.assertEqual(h["right_foot"].transform.text, "__")
+        self.assertEqual(h["right_thigh"].physics.mass, h["left_thigh"].physics.mass)
+        self.assertEqual(h._nodes["right_arm"]["groups"], ["right_arm", "arm"])
+
+    def test_mirrored_joints_flip_only_when_asked(self):
+        _, _, h = self.make()
+        self.assertEqual(h._nodes["left_arm"]["limits"], (-170, 170))
+        self.assertEqual(h._nodes["left_forearm"]["limits"], (-150, 0))
+        self.assertEqual(h._nodes["right_forearm"]["limits"], (0, 150))
+        self.assertEqual(h._nodes["left_shin"]["limits"], (0, 140))
+        self.assertEqual(h._nodes["right_shin"]["limits"], (0, 140))
+
+    def test_joint_overrides_follow_groups_and_names(self):
+        _, _, h = self.make(joints={"forearm": {"range": (-90, 0)}, "left_forearm": {"range": (-45, 0)}})
+        self.assertEqual(h._nodes["left_forearm"]["limits"], (-45, 0))
+        self.assertEqual(h._nodes["right_forearm"]["limits"], (0, 90))
+
+    def test_mirror_axis_can_be_another_part(self):
+        _, _, h = self.make({
+            "base": "#####",
+            "mast": {"text": "|", "parent": "base", "at": "top"},
+            "left": {"text": "<", "parent": "mast", "at": "left"},
+            "right": {"mirror": "left"},
+        }, axis="mast")
+        mast = h._nodes["mast"]["rect"]
+        left, right = h._nodes["left"]["rect"], h._nodes["right"]["rect"]
+        self.assertEqual(left[0] + left[2] + right[0], 2 * mast[0] + mast[2])
+        self.assertEqual(left[0] + left[2], mast[0])
+        self.assertEqual(right[0], mast[0] + mast[2])
 
     def test_invalid_configuration_is_rejected(self):
         _, sc = make_scene()
         bad = [
-            (True, TypeError), ({"parts": {}}, ValueError), ({"parts": {"head": "O"}}, ValueError),
-            ({"parts": {"torso": "#", "wing": "x"}}, ValueError),
-            ({"parts": {"torso": "#", "forearm": "|"}}, ValueError),
-            ({"parts": {"torso": 5}}, TypeError), ({"parts": {"torso": "#"}, "nope": 1}, TypeError),
+            (True, TypeError), ({"parts": {}}, ValueError), ({"parts": {"a": "#", "b": "#"}}, ValueError),
+            ({"parts": {"a": "#", "b": {"text": "#", "parent": "ghost"}}}, ValueError),
+            ({"parts": {"a": {"text": "#", "parent": "b"}, "b": {"text": "#", "parent": "a"}}}, ValueError),
+            ({"parts": {"a": "#", "b": {"mirror": "a"}}}, ValueError),
+            ({"parts": {"a": "#", "b": {"mirror": "c", "parent": "a"}}}, ValueError),
+            ({"parts": {"a": "#", "b": {"mirror": "b", "parent": "a"}}}, ValueError),
+            ({"parts": {"a": "#", "b": {"text": "#", "parent": "a", "at": "nowhere"}}}, ValueError),
+            ({"parts": {"a": "#", "b": {"text": "#", "parent": "a", "joint": "nope"}}}, KeyError),
+            ({"parts": {"a": "#", "b": {"text": "#", "parent": "a", "flip": True}}}, TypeError),
+            ({"parts": {"a": "#", "b": {"text": "#", "parent": "a", "wing": 1}}}, TypeError),
+            ({"parts": {"a": 5}}, TypeError), ({"parts": {"a": "#"}, "nope": 1}, TypeError),
+            ({"parts": {"a": "#"}, "poses": []}, TypeError), ({"parts": {"a": "#"}, "axis": "z"}, ValueError),
         ]
         for config, error in bad:
-            with self.assertRaises(error):
+            with self.assertRaises(error, msg=repr(config)):
                 sc.obj().create(None, 0, 0, humanoid=config)
 
     def test_stands_on_the_floor(self):
@@ -857,25 +964,48 @@ class HumanoidTests(unittest.TestCase):
         sc, _, h = self.make()
         for _ in range(100):
             sc.tick()
-        h.pose({"upper_arm": 90, "left_shin": -50})
+        h.pose({"arm": 90, "left_shin": -50})
         for _ in range(20):
             sc.tick()
-        self.assertAlmostEqual(h["left_upper_arm"].transform.rotation, 90, delta=1)
-        self.assertAlmostEqual(h["right_upper_arm"].transform.rotation, -90, delta=1)
+        self.assertAlmostEqual(h["left_arm"].transform.rotation, 90, delta=1)
+        self.assertAlmostEqual(h["right_arm"].transform.rotation, -90, delta=1)
         self.assertEqual(h.angle("left_shin"), 0)
         h.reset_pose()
         for _ in range(20):
             sc.tick()
-        self.assertAlmostEqual(h["left_upper_arm"].transform.rotation, 0, delta=1)
+        self.assertAlmostEqual(h["left_arm"].transform.rotation, 0, delta=1)
+
+    def test_named_poses_come_from_the_configuration(self):
+        sc, _, h = self.make(poses={"out": {"arm": 90}})
+        for _ in range(100):
+            sc.tick()
+        h.apply_pose("out")
+        for _ in range(20):
+            sc.tick()
+        self.assertAlmostEqual(h["left_arm"].transform.rotation, 90, delta=1)
+        with self.assertRaises(KeyError):
+            h.apply_pose("missing")
+        with self.assertRaises(KeyError):
+            h.pose({"nothing": 1}, strict=True)
+
+    def test_cycles_sample_channels(self):
+        _, _, h = self.make(cycles=CYCLES)
+        sample = h.sample("walk", math.pi / 2)
+        self.assertAlmostEqual(sample["left_thigh"], -32)
+        self.assertAlmostEqual(sample["right_thigh"], 32)
+        self.assertAlmostEqual(sample["left_shin"], 0)
+        self.assertAlmostEqual(sample["right_shin"], 0)
+        self.assertAlmostEqual(sample["forearm"], -25)
+        self.assertAlmostEqual(h.sample("walk", math.pi / 2, scale=0.5)["arm"], 17.5)
 
     def test_walking_moves_the_figure(self):
-        sc, body, h = self.make()
+        sc, body, h = self.make(cycles=CYCLES)
         for _ in range(100):
             sc.tick()
         start = body.transform.x
         for i in range(100):
             h.velocity = (0.1, None)
-            h.walk(i * 0.12)
+            h.animate("walk", i * 0.12)
             sc.tick()
         self.assertGreater(body.transform.x - start, 8)
         self.assertEqual(body.transform.rotation, 0)
@@ -888,12 +1018,28 @@ class HumanoidTests(unittest.TestCase):
         self.assertEqual(seen, ["left_forearm"])
         self.assertEqual(h.remove_part("hand"), ["left_hand", "right_hand"])
         self.assertNotIn("hand", h)
-        self.assertEqual(h.add_part("hand", "x"), ["left_hand", "right_hand"])
+        self.assertEqual(h.add_parts({
+            "left_hand": {"text": "x", "parent": "left_forearm", "group": "hand"},
+            "right_hand": {"mirror": "left_hand", "parent": "right_forearm"},
+        }), ["left_hand", "right_hand"])
         self.assertIn("hand", h)
+        self.assertEqual(h.add_part("cap", {"text": "^", "parent": "head", "at": "top"}), ["cap"])
+        with self.assertRaises(ValueError):
+            h.add_part("cap", "^")
+        with self.assertRaises(ValueError):
+            h.add_part("orphan", "?")
         with self.assertRaises(ValueError):
             h.set_text("head", "OO")
         with self.assertRaises(ValueError):
             h.remove_part("torso")
+
+    def test_solid_parts_follow_contact_flags_or_settings(self):
+        _, _, h = self.make()
+        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["left_foot", "right_foot"])
+        _, _, h = self.make(solid=["shin"])
+        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["left_shin", "right_shin"])
+        _, _, h = self.make(solid=True)
+        self.assertTrue(all(h.parts[n].physics.solid for n in h))
 
     def test_discarding_the_root_removes_every_part(self):
         sc, body, h = self.make()

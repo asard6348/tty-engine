@@ -243,7 +243,7 @@ An object starts out empty. `create()` looks at its keyword arguments, attaches 
 | `force` | `force=...` or `force={...}` | Pushes other objects, optionally limited by a radius or a filter. Settings: `strength`, `affect`, `cap`, `position`, `radius`, `torque`, `shield`. |
 | `joint` | `preset`, `joints`, `elasticity`, `kind`, ... | Links objects together as a rope, rod, spring, hinge, slider or fixed joint. |
 | `light` | `light=True` or `light={...}` | Turns the object into a light source. Settings: `color`, `alpha`, `radius`, `falloff`, `shadows`, `cone`, `direction`, `glow` and more. `scene.ambient` sets the base brightness. |
-| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a dict of part texts, with the object as its torso. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `rig`. |
+| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`. |
 
 Settings can be given flat, or grouped under the component's name. The two calls below are equivalent:
 
@@ -419,26 +419,46 @@ dx, dy = ball.transform.forward(1, angle=heading)
 
 &nbsp;
 
-A `humanoid` component turns an object into the torso of a figure. Every part is built from the text you give it, so there are no built-in glyphs, and a part exists only if its text is in the dict. Limbs come in pairs: `upper_arm` creates `left_upper_arm` and `right_upper_arm`, and a `left_` or `right_` key overrides one side.
+A `humanoid` component turns an object into the root of a jointed, posable figure. A figure is a graph of parts: every part is built from the text you give it, one part has no parent and becomes the object itself, and every other part hangs off a parent through a joint. Nothing is built in, so the same component makes people, spiders, robots or trees.
 
 ```python
 parts = {
-    'torso': '###\n###\n###', 'head': 'O',
-    'upper_arm': '|\n|\n|', 'forearm': '|\n|\n|', 'hand': 'o',
-    'thigh': '|\n|\n|', 'shin': '|\n|\n|', 'foot': '__',
+    'torso': '###\n###\n###',
+    'head': {'text': 'O', 'parent': 'torso', 'at': 'top', 'joint': 'neck'},
+    'left_arm': {'text': '|\n|\n|', 'parent': 'torso', 'at': 'top_left', 'pin': 'top', 'shift': (-0.5, 0),
+                 'joint': 'shoulder', 'group': 'arm'},
+    'right_arm': {'mirror': 'left_arm'},
+    'left_thigh': {'text': '|\n|\n|', 'parent': 'torso', 'at': 'bottom_left', 'pin': 'top', 'shift': (0.5, 0),
+                   'joint': 'hip', 'group': 'thigh', 'density': 10},
+    'right_thigh': {'mirror': 'left_thigh', 'flip': False},
+    'left_shin': {'text': '|\n|\n|', 'parent': 'left_thigh', 'joint': 'knee', 'group': 'shin',
+                  'contact': True, 'density': 10},
+    'right_shin': {'mirror': 'left_shin', 'flip': False},
 }
-body = scene.obj().create(None, 20, -10, humanoid={'parts': parts})
+poses = {'arms_out': {'arm': 90}, 'crouch': {'thigh': -60, 'shin': 100}}
+cycles = {'walk': {'left_thigh': {'amp': -32}, 'right_thigh': {'amp': 32}, 'arm': {'amp': 35}}}
+body = scene.obj().create(None, 20, -10, humanoid={'parts': parts, 'poses': poses, 'cycles': cycles})
 figure = body.humanoid
 
-figure.apply_pose('arms_out')            # named poses live in humanoid.poses
+figure.apply_pose('arms_out')            # poses and cycles are plain dicts: figure.poses, figure.cycles
 figure.pose({'left_thigh': -30})         # angles are degrees from the rest pose, clamped to joint limits
 figure.velocity = (0.2, None)            # moves every part together
-figure.walk(phase)                       # call each frame with a growing phase
+figure.animate('walk', phase)            # call each frame with a growing phase
 figure.jump(0.6)                         # only while grounded
-figure.detach('left_forearm')            # frees a limb and everything attached to it
+figure.detach('left_shin')               # frees a part and everything attached to it
 ```
 
-A part can also be a dict with a `text` and optional `style`, `physics`, `joint`, `solid` and `z`. `solid` is `None` (only the lowest leg part collides with the world), a bool, or a list of part names. The skeleton is `humanoid.rig`; add entries to it, or pass `rig={...}`, to support more parts.
+**Placement.** A part is placed by two anchors that meet at its joint: `at` is a point on the parent and `pin` is a point on the part itself. An anchor is a name (`top`, `bottom`, `left`, `right`, `center`, `top_left`, `top_right`, `bottom_left`, `bottom_right`) or an `(x, y)` pair of fractions of the part's size. `at` defaults to `bottom` and `pin` defaults to the opposite point, so a part sits against the parent on the side of its anchor. `shift=(dx, dy)` moves the joint in cells. The part is snapped to whole cells and the joint sits exactly on its `pin`.
+
+**Mirroring.** `{'mirror': 'name'}` reflects another part across the vertical centre line of the root (or of the part named by the `axis` setting), inherits its text, `contact`, `density`, `solid`, `z`, `physics`, `style`, `group` and joint, and hangs from the mirror of the source's parent unless `parent` is given. A mirrored joint has its limits and rest angle reversed, and so do the angles you pass through a group name; set `flip` to `False` to keep the same direction on both sides.
+
+**Naming.** A pose, cycle, `style`, `get`, `set_text` or `remove_part` key is a part name or a `group`. Every part belongs to a group with its own name and to any `group` names it lists (a string or a list), and mirrored parts share the groups of their source. An exact part name sets the raw angle; a group name applies it with the sign flip of each member.
+
+**Joints.** `joint` is a preset name from `joint.presets` or a dict of joint settings (`range`, `rest`, `elasticity`, `durability`, ...). The default is `hinge`. The `joints` setting overrides joints by group or part name.
+
+**Cycles.** A cycle channel is `bias + amp * sin(phase + shift)`, or a bare number for `amp`; `rectify=True` clamps the sine to positive values. `figure.sample(cycle, phase, scale=1.0)` returns the angles and `figure.animate(cycle, phase, weight=1.0, scale=1.0)` applies them.
+
+**Other part settings.** `text`, `parent`, `at`, `pin`, `shift`, `joint`, `mirror`, `flip`, `group`, `contact`, `density` (mass per non-blank cell), `solid`, `z`, `physics` and `style`. With `solid=None` only the lowest part of every chain of `contact` parts collides with the world; `solid` can also be a bool or a list of part or group names. `add_part(name, spec)` and `add_parts({...})` grow a figure later.
 
 </details>
 

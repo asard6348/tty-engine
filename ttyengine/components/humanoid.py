@@ -4,6 +4,22 @@ from .transform import transform
 from .physics import physics
 from .joint import joint
 
+_ANCHORS = {
+    'center': (0.5, 0.5),
+    'top': (0.5, 0.0),
+    'bottom': (0.5, 1.0),
+    'left': (0.0, 0.5),
+    'right': (1.0, 0.5),
+    'top_left': (0.0, 0.0),
+    'top_right': (1.0, 0.0),
+    'bottom_left': (0.0, 1.0),
+    'bottom_right': (1.0, 1.0),
+}
+_SPEC_KEYS = ('text', 'parent', 'at', 'pin', 'shift', 'joint', 'mirror', 'flip', 'group',
+              'contact', 'density', 'solid', 'z', 'physics', 'style')
+_INHERITED = ('text', 'solid', 'z', 'physics', 'style', 'contact', 'density')
+_CHANNEL_KEYS = ('amp', 'shift', 'bias', 'rectify')
+
 def _clockwise(vector, degrees):
     r = math.radians(degrees)
     u, v = vector
@@ -13,30 +29,31 @@ def _extent_of(scene, text):
     lines = scene.recomp.sub('', text).split('\n')
     return max(len(line) for line in lines), len(lines)
 
+def _pair(value, label):
+    try:
+        a, b = value
+        return float(a), float(b)
+    except (TypeError, ValueError):
+        raise TypeError('%s must be a pair of numbers' % label) from None
+
+def _anchor(value):
+    if isinstance(value, str):
+        if value not in _ANCHORS:
+            raise ValueError("unknown anchor '%s'; use one of: %s" % (value, ', '.join(_ANCHORS)))
+        return _ANCHORS[value]
+    return _pair(value, 'an anchor')
+
+def _preset(value):
+    if isinstance(value, str):
+        if value not in joint.presets:
+            raise KeyError('unknown joint preset: ' + value)
+        return dict(joint.presets[value])
+    return dict(value)
+
 class humanoid:
     _owned = ['humanoid']
     _required = [transform, physics]
-    _keys = ('parts', 'solid', 'physics', 'style', 'joints', 'rig')
-    _sides = ('left', 'right')
-    rig = {
-        'torso': {'parent': None},
-        'head': {'parent': 'torso', 'preset': 'neck', 'place': 'above'},
-        'upper_arm': {'parent': 'torso', 'preset': 'shoulder', 'place': 'beside', 'paired': True, 'flip': True},
-        'forearm': {'parent': 'upper_arm', 'preset': 'elbow', 'place': 'below', 'paired': True, 'flip': True},
-        'hand': {'parent': 'forearm', 'preset': 'wrist', 'place': 'below', 'paired': True, 'flip': True},
-        'thigh': {'parent': 'torso', 'preset': 'hip', 'place': 'under', 'paired': True, 'mass': 10},
-        'shin': {'parent': 'thigh', 'preset': 'knee', 'place': 'below', 'paired': True, 'contact': True, 'mass': 10},
-        'foot': {'parent': 'shin', 'preset': 'ankle', 'place': 'outward', 'paired': True, 'contact': True, 'mass': 10},
-    }
-    poses = {
-        'stand': {},
-        'arms_out': {'upper_arm': 90},
-        'arms_up': {'upper_arm': 170},
-        'guard': {'upper_arm': 35, 'forearm': -110},
-        'wave': {'upper_arm': 150, 'forearm': -40},
-        'crouch': {'thigh': -60, 'shin': 100},
-        'sit': {'thigh': -90, 'shin': 90},
-    }
+    _keys = ('parts', 'solid', 'physics', 'style', 'joints', 'poses', 'cycles', 'axis')
 
     def on_discard(self):
         for name in reversed(self._order):
@@ -50,16 +67,19 @@ class humanoid:
     def __init__(self, obj, **kwargs):
         config = kwargs.get('humanoid')
         if not isinstance(config, dict) or not isinstance(config.get('parts'), dict):
-            raise TypeError("humanoid needs a dict of part texts: humanoid={'parts': {'torso': ..., ...}}")
+            raise TypeError("humanoid needs a dict of parts: humanoid={'parts': {...}}")
         unknown = [key for key in config if key not in self._keys]
         if unknown:
             raise TypeError('unknown humanoid setting: ' + ', '.join(map(str, unknown)))
+        for key in ('physics', 'style', 'joints', 'poses', 'cycles'):
+            if not isinstance(config.get(key, {}), dict):
+                raise TypeError("humanoid setting '%s' must be a dict" % key)
         self.obj = obj
         self.scene = obj.scene
         self.t = obj.transform
         self._config = config
-        self.rig = dict(type(self).rig)
-        self.rig.update(config.get('rig', {}))
+        self.poses = dict(config.get('poses', {}))
+        self.cycles = dict(config.get('cycles', {}))
         self.parts = {}
         self._nodes = {}
         self._order = []
@@ -71,13 +91,17 @@ class humanoid:
         self._physics = dict(config.get('physics', {}))
         self._style = dict(config.get('style', {}))
         self._joints = dict(config.get('joints', {}))
-        roots = [name for name, spec in self.rig.items() if spec.get('parent') is None]
-        if len(roots) != 1:
-            raise ValueError('the humanoid rig needs exactly one part without a parent')
-        self._root = roots[0]
+        self._root = None
+        self._axis = config.get('axis')
         entries = self._entries(config['parts'])
-        if not any(name == self._root for name, _, _ in entries):
-            raise ValueError("humanoid parts need a '%s' text" % self._root)
+        roots = [entry['name'] for entry in entries if entry['parent'] is None]
+        if len(roots) != 1:
+            raise ValueError('a humanoid needs exactly one part without a parent')
+        self._root = roots[0]
+        if self._axis is None:
+            self._axis = self._root
+        if self._axis not in {entry['name'] for entry in entries}:
+            raise ValueError("the humanoid axis '%s' is not a part" % self._axis)
         self._install(entries)
 
     def __getitem__(self, name):
@@ -222,7 +246,7 @@ class humanoid:
                 goals[name] = value * sign
         for name, goal in goals.items():
             node = self._nodes[name]
-            if name in self._detached:
+            if name in self._detached or node['parent'] is None:
                 continue
             if node['limits'] is not None:
                 goal = max(node['limits'][0], min(node['limits'][1], goal))
@@ -239,26 +263,19 @@ class humanoid:
     def reset_pose(self, weight=1.0):
         return self.pose({}, weight, reset=True)
 
-    @staticmethod
-    def walk_cycle(phase, stride=32.0, bend=50.0, swing=35.0, elbow=25.0):
-        s = math.sin(phase)
-        c = math.cos(phase)
-        return {
-            'left_thigh': -stride * s,
-            'right_thigh': stride * s,
-            'left_shin': bend * max(0.0, -c),
-            'right_shin': bend * max(0.0, c),
-            'upper_arm': swing * s,
-            'forearm': -elbow * (0.5 + 0.5 * s),
-        }
+    def sample(self, cycle, phase, scale=1.0):
+        return {key: scale * self._wave(channel, phase) for key, channel in self.cycles[cycle].items()}
 
-    def walk(self, phase, weight=1.0, **kwargs):
-        return self.pose(self.walk_cycle(phase, **kwargs), weight)
+    def animate(self, cycle, phase, weight=1.0, scale=1.0):
+        return self.pose(self.sample(cycle, phase, scale), weight)
 
     def add_part(self, name, value):
-        entries = self._entries({name: value}, require_root=False)
-        if not entries:
-            raise KeyError(name)
+        return self.add_parts({name: value})
+
+    def add_parts(self, parts):
+        entries = self._entries(parts)
+        if any(entry['parent'] is None for entry in entries):
+            raise ValueError('a humanoid already has a part without a parent')
         return self._install(entries)
 
     def remove_part(self, name):
@@ -290,10 +307,22 @@ class humanoid:
     def offbreak(self, callback):
         self._breaks = [cb for cb in self._breaks if cb is not callback]
 
+    @staticmethod
+    def _wave(channel, phase):
+        if isinstance(channel, (int, float)):
+            channel = {'amp': channel}
+        unknown = [key for key in channel if key not in _CHANNEL_KEYS]
+        if unknown:
+            raise TypeError('unknown cycle setting: ' + ', '.join(map(str, unknown)))
+        wave = math.sin(phase + channel.get('shift', 0.0))
+        if channel.get('rectify'):
+            wave = max(0.0, wave)
+        return channel.get('bias', 0.0) + channel.get('amp', 1.0) * wave
+
     def _names(self, key):
         if key in self._nodes:
             return [key]
-        return [name for name in ('left_' + key, 'right_' + key) if name in self._nodes]
+        return [name for name in self._order if key in self._nodes[name]['groups']]
 
     def _select(self, parts):
         if parts is None:
@@ -308,113 +337,177 @@ class humanoid:
     def _resolve(self, key):
         if key in self._nodes:
             return [(key, 1.0)]
-        found = []
-        for side in self._sides:
-            name = side + '_' + key
-            if name in self._nodes:
-                flip = self._nodes[name]['flip'] and side == 'right'
-                found.append((name, -1.0 if flip else 1.0))
-        return found
-
-    def _entries(self, texts, require_root=True):
-        known = set()
-        for name, spec in self.rig.items():
-            known.add(name)
-            if spec.get('paired'):
-                known.update(side + '_' + name for side in self._sides)
-        unknown = [key for key in texts if key not in known]
-        if unknown:
-            raise ValueError('unknown humanoid part: ' + ', '.join(map(str, unknown)))
-        entries = []
-        for name, spec in self.rig.items():
-            if spec.get('paired'):
-                for side in self._sides:
-                    key = side + '_' + name
-                    value = texts.get(key, texts.get(name))
-                    if value is not None:
-                        entries.append((key, name, side, value))
-            elif name in texts:
-                entries.append((name, name, None, texts[name]))
-        return [(key, (base, side), self._spec(key, value)) for key, base, side, value in entries]
+        return [(name, -1.0 if self._nodes[name]['flip'] else 1.0) for name in self._names(key)]
 
     @staticmethod
     def _spec(name, value):
         if isinstance(value, str):
-            return {'text': value}
-        if isinstance(value, dict) and isinstance(value.get('text'), str):
-            unknown = [key for key in value if key not in ('text', 'solid', 'z', 'physics', 'style', 'joint')]
-            if unknown:
-                raise TypeError("unknown setting for humanoid part '%s': %s" % (name, ', '.join(map(str, unknown))))
-            return dict(value)
-        raise TypeError("humanoid part '%s' needs a text or a dict with a 'text'" % name)
+            value = {'text': value}
+        if not isinstance(value, dict):
+            raise TypeError("humanoid part '%s' needs a text or a dict" % name)
+        unknown = [key for key in value if key not in _SPEC_KEYS]
+        if unknown:
+            raise TypeError("unknown setting for humanoid part '%s': %s" % (name, ', '.join(map(str, unknown))))
+        mirror = value.get('mirror')
+        if 'text' in value:
+            if not isinstance(value['text'], str):
+                raise TypeError("humanoid part '%s' needs a text" % name)
+        elif not isinstance(mirror, str):
+            raise TypeError("humanoid part '%s' needs a text or a mirror" % name)
+        if mirror is not None:
+            if not isinstance(mirror, str):
+                raise TypeError("the mirror of humanoid part '%s' must be a part name" % name)
+            clash = [key for key in ('at', 'pin') if key in value]
+            if clash:
+                raise TypeError("mirrored humanoid part '%s' cannot set %s" % (name, ', '.join(clash)))
+        elif 'flip' in value:
+            raise TypeError("humanoid part '%s' sets 'flip' without a 'mirror'" % name)
+        if value.get('parent') is not None and not isinstance(value['parent'], str):
+            raise TypeError("the parent of humanoid part '%s' must be a part name" % name)
+        for key in ('at', 'pin'):
+            if key in value:
+                _anchor(value[key])
+        if 'shift' in value:
+            _pair(value['shift'], 'shift')
+        group = value.get('group', ())
+        if not isinstance(group, str) and not (isinstance(group, (list, tuple)) and all(isinstance(item, str) for item in group)):
+            raise TypeError("the group of humanoid part '%s' must be a name or a list of names" % name)
+        return dict(value)
 
-    def _layout(self, node):
-        base, side = node['base'], node['side']
-        rule = self.rig[base].get('place')
-        if node['parent'] is None:
-            node['rect'] = (0, 0) + node['size']
-            node['pivot'] = None
-            return
-        px, py, pw, ph = self._nodes[node['parent']]['rect']
-        w, h = node['size']
-        left = side == 'left'
-        if rule == 'above':
-            x, y = px + (pw - w) // 2, py - h
-            pivot = (x + w / 2, y + h)
-        elif rule == 'beside':
-            x, y = (px - w if left else px + pw), py
-            pivot = (x + w / 2, y)
-        elif rule == 'under':
-            x, y = (px + pw // 2 - w if left else px + (pw + 1) // 2), py + ph
-            pivot = (x + w / 2, y)
-        elif rule == 'below':
-            x, y = px + (pw - w) // 2, py + ph
-            pivot = (x + w / 2, y)
-        elif rule == 'outward':
-            x, y = (px + pw - w if left else px), py + ph
-            pivot = (x + w / 2, y)
-        else:
-            raise ValueError("unknown placement '%s' for humanoid part '%s'" % (rule, base))
-        node['rect'] = (x, y, w, h)
-        node['pivot'] = pivot
-
-    def _install(self, entries):
-        fresh = []
-        for name, (base, side), spec in entries:
+    def _entries(self, texts):
+        specs = {name: self._spec(name, value) for name, value in texts.items()}
+        for name in specs:
             if name in self._nodes:
                 raise ValueError("duplicate humanoid part '%s'" % name)
-            parent = self.rig[base].get('parent')
-            if parent is not None and self.rig[parent].get('paired'):
-                parent = (side or 'right') + '_' + parent
-            if parent is not None and parent not in self._nodes and not any(e[0] == parent for e in entries):
-                raise ValueError("humanoid part '%s' needs '%s'" % (name, parent))
-            fresh.append({
-                'name': name, 'base': base, 'side': side, 'parent': parent, 'spec': spec,
-                'size': _extent_of(self.scene, spec['text']), 'angle': 0.0, 'limits': None, 'pose': None,
-                'flip': bool(self.rig[base].get('flip')),
+        resolved = {name: node['spec'] for name, node in self._nodes.items()}
+        parents = {name: node['parent'] for name, node in self._nodes.items()}
+        mirrors = {name: node['mirror'] for name, node in self._nodes.items()}
+        mirrors.update({name: spec.get('mirror') for name, spec in specs.items()})
+
+        def effective(name, trail=()):
+            if name in resolved:
+                return resolved[name]
+            if name in trail or name not in specs:
+                raise ValueError("humanoid mirror '%s' is unknown or circular" % name)
+            spec = specs[name]
+            if spec.get('mirror') is None:
+                merged = dict(spec)
+            else:
+                base = effective(spec['mirror'], trail + (name,))
+                merged = {key: base[key] for key in _INHERITED if key in base}
+                merged.update(spec)
+            resolved[name] = merged
+            return merged
+
+        def parent_of(name):
+            if name in parents:
+                return parents[name]
+            spec = specs[name]
+            if spec.get('parent') is not None:
+                found = spec['parent']
+            elif spec.get('mirror') is not None:
+                effective(name)
+                base = parent_of(spec['mirror'])
+                if base is None:
+                    raise ValueError("humanoid part '%s' cannot mirror the root" % name)
+                peers = [other for other, source in mirrors.items() if source == base and other != name]
+                found = peers[0] if peers else (mirrors.get(base) or base)
+            else:
+                found = None
+            parents[name] = found
+            return found
+
+        known = set(self._nodes) | set(specs)
+        entries = []
+        for name, spec in specs.items():
+            parent = parent_of(name)
+            if parent is not None and (parent not in known or parent == name):
+                raise ValueError("humanoid part '%s' needs the part '%s'" % (name, parent))
+            entries.append({
+                'name': name, 'parent': parent, 'raw': spec, 'spec': effective(name),
+                'mirror': spec.get('mirror'),
             })
-        pending = list(fresh)
+        return entries
+
+    def _needs(self, node):
+        needs = []
+        if node['parent'] is not None:
+            needs.append(node['parent'])
+        if node['mirror'] is not None:
+            needs.extend((node['mirror'], self._axis))
+        return needs
+
+    def _sequence(self, entries):
+        names = {entry['name'] for entry in entries} | set(self._nodes)
+        for entry in entries:
+            for need in self._needs(entry):
+                if need not in names:
+                    raise ValueError("humanoid part '%s' needs the part '%s'" % (entry['name'], need))
+        done = set(self._nodes)
+        pending = list(entries)
         ordered = []
         while pending:
-            ready = [n for n in pending if n['parent'] is None or n['parent'] in self._nodes
-                     or any(o['name'] == n['parent'] for o in ordered)]
-            if not ready:
-                raise ValueError('humanoid parts are missing a parent')
-            ordered.extend(ready)
-            pending = [n for n in pending if n not in ready]
-        created = []
+            ready = next((entry for entry in pending if all(need in done for need in self._needs(entry))), None)
+            if ready is None:
+                raise ValueError('humanoid parts form a loop')
+            ordered.append(ready)
+            done.add(ready['name'])
+            pending = [entry for entry in pending if entry is not ready]
+        return ordered
+
+    def _groups(self, node):
+        found = [node['name']]
+        if node['mirror'] is not None:
+            found.extend(self._nodes[node['mirror']]['groups'][1:])
+        extra = node['raw'].get('group', ())
+        found.extend((extra,) if isinstance(extra, str) else extra)
+        return list(dict.fromkeys(found))
+
+    def _layout(self, node):
+        w, h = node['size']
+        spec = node['spec']
+        if node['parent'] is None:
+            node['rect'] = (0, 0, w, h)
+            node['pin'] = (0.5, 0.5)
+            node['point'] = (w / 2, h / 2)
+            return
+        sx, sy = _pair(spec.get('shift', (0, 0)), 'shift')
+        if node['mirror'] is not None:
+            source = self._nodes[node['mirror']]
+            ax, _, aw, _ = self._nodes[self._axis]['rect']
+            fx, fy = source['pin']
+            pin = (1 - fx, fy)
+            point = (2 * ax + aw - source['point'][0] + sx, source['point'][1] + sy)
+        else:
+            px, py, pw, ph = self._nodes[node['parent']]['rect']
+            ux, uy = _anchor(spec.get('at', 'bottom'))
+            pin = _anchor(spec['pin']) if 'pin' in spec else (1 - ux, 1 - uy)
+            point = (px + ux * pw + sx, py + uy * ph + sy)
+        x = math.floor(point[0] - pin[0] * w + 0.5)
+        y = math.floor(point[1] - pin[1] * h + 0.5)
+        node['rect'] = (x, y, w, h)
+        node['pin'] = pin
+        node['point'] = (x + pin[0] * w, y + pin[1] * h)
+
+    def _install(self, entries):
+        ordered = self._sequence(entries)
         for node in ordered:
+            node['size'] = _extent_of(self.scene, node['spec']['text'])
+            node['angle'] = 0.0
+            node['limits'] = None
+            node['pose'] = None
+            node['flip'] = node['mirror'] is not None and bool(node['spec'].get('flip', True))
+            node['groups'] = self._groups(node)
             self._nodes[node['name']] = node
             self._order.append(node['name'])
             self._layout(node)
             self._spawn(node)
-            created.append(node)
-        self._isolate([self.parts[n['name']] for n in created])
-        for node in created:
+        self._isolate([self.parts[node['name']] for node in ordered])
+        for node in ordered:
             if node['parent'] is not None:
                 self._link(node)
         self._resolidify()
-        return [n['name'] for n in created]
+        return [node['name'] for node in ordered]
 
     def _spawn(self, node):
         name = node['name']
@@ -427,7 +520,7 @@ class humanoid:
             if 'z' in spec:
                 self.obj.rendering.z = spec['z']
             settings = {**self._physics, **spec.get('physics', {})}
-            if 'mass' not in settings and self.rig[node['base']].get('mass'):
+            if 'mass' not in settings and spec.get('density'):
                 settings['mass'] = self._mass(node)
             for key, value in settings.items():
                 setattr(self.obj.physics, key, value)
@@ -443,7 +536,7 @@ class humanoid:
             kwargs = {'xvel': 0, 'rotation': rotation}
             kwargs.update(self._physics)
             kwargs.update(spec.get('physics', {}))
-            if 'mass' not in kwargs and self.rig[node['base']].get('mass'):
+            if 'mass' not in kwargs and spec.get('density'):
                 kwargs['mass'] = self._mass(node)
             kwargs.update(self._style)
             kwargs.update(spec.get('style', {}))
@@ -455,7 +548,7 @@ class humanoid:
 
     def _mass(self, node):
         text = self.scene.recomp.sub('', node['spec']['text'])
-        return self.rig[node['base']]['mass'] * sum(1 for c in text if c not in ' \n')
+        return node['spec']['density'] * sum(1 for c in text if c not in ' \n')
 
     def _isolate(self, fresh):
         pool = list(self.parts.values())
@@ -468,25 +561,35 @@ class humanoid:
                 if not any(g is a for g in b._ghosts):
                     b._ghosts.append(a)
 
+    def _shape(self, name, own=True):
+        node = self._nodes[name]
+        spec = node['spec']
+        if node['mirror'] is not None and 'joint' not in spec:
+            shape = self._shape(node['mirror'], False)
+            if node['flip']:
+                shape = joint.mirrored(shape)
+        else:
+            value = spec.get('joint')
+            shape = _preset(value if isinstance(value, str) else 'hinge')
+            for group in node['groups'][1:]:
+                shape.update(self._joints.get(group, {}))
+            if isinstance(value, dict):
+                shape.update(value)
+        if own:
+            shape.update(self._joints.get(name, {}))
+        return shape
+
     def _link(self, node):
         parent = self.parts[node['parent']]
         child = self.parts[node['name']]
         pnode = self._nodes[node['parent']]
-        preset = self.rig[node['base']].get('preset')
-        shape = {}
-        if preset is not None:
-            shape = dict(joint.presets[preset]) if isinstance(preset, str) else dict(preset)
-            if node['flip'] and node['side'] == 'right':
-                shape = joint.mirrored(shape)
-        shape.update(self._joints.get(node['base'], {}))
-        shape.update(self._joints.get(node['name'], {}))
-        shape.update(node['spec'].get('joint', {}))
+        shape = self._shape(node['name'])
         if shape.get('range') is not None:
             values = [float(v) for v in shape['range']]
             node['limits'] = (min(values), max(values))
         settings = {key: value for key, value in shape.items() if key not in ('kind', 'range', 'rest', 'radius')}
         settings['kind'] = 'fixed'
-        px, py = node['pivot']
+        px, py = node['point']
         x, y, w, h = pnode['rect']
         settings['xoffset'] = px - x - w / 2
         settings['yoffset'] = -(py - y - h / 2)
@@ -536,10 +639,10 @@ class humanoid:
 
     def _contact(self, name):
         node = self._nodes[name]
-        if not self.rig[node['base']].get('contact'):
+        if not node['spec'].get('contact'):
             return False
         return not any(
-            self._nodes[n]['parent'] == name and self.rig[self._nodes[n]['base']].get('contact')
+            self._nodes[n]['parent'] == name and self._nodes[n]['spec'].get('contact')
             for n in self._order
         )
 
@@ -553,5 +656,5 @@ class humanoid:
             elif isinstance(self._solid, bool):
                 solid = self._solid
             else:
-                solid = name in self._solid or node['base'] in self._solid
+                solid = any(group in self._solid for group in node['groups'])
             self.parts[name].physics.solid = solid
