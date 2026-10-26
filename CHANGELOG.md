@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `styler.image` now defaults `shades` to a 256-step gradient from a space to `█`, so images come out as monochrome shaded text unless `color=True` is given. The new `bgcolor` argument fills every cell with a background color and blends transparent pixels into it.
 - The `rendering` component is merged into `transform`: `show`, `z`, `spaces`, `front()` and `back()` now live on `obj.transform`, and `obj.rendering` no longer exists.
 - Per-object `transform.aspect` is now honoured everywhere an object's own geometry is computed (transform, physics, joint, light, force, pen and humanoid) instead of falling back to `scene.aspect`.
 - New `humanoid` component: `scene.obj().create(None, x, y, humanoid={'parts': {...}})` builds a jointed, posable figure from a graph of parts. Parts are placed by `at`/`pin` anchors, mirrored with `mirror`, grouped with `group` and animated with `poses` and `cycles`; the figure offers `pose`, `animate`, `velocity`, `jump`, `detach`, `add_part`, `add_parts` and `remove_part`, `ragdoll`. Joints default to an `elasticity` of 1.25 so a standing figure rests without jitter. New `snap` joint setting rigidly places a physical joint's follower back when it is stretched further than the given distance.

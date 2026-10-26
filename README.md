@@ -501,6 +501,7 @@ session.style('tint', color=(255, 80, 120), bgcolor='darkblue')
 - **FIGlet fonts** are bundled. `session.styler.fonts()` lists them, and `font=` accepts any name from that list.
 - **Shapes** are available through `session.styler.shapes`: `circle`, `ellipse`, `block`, `triangle`, `diamond` and `line`.
 - **Images** are converted to text with `session.styler.image(path, width=..., height=...)`. PNG, JPEG, GIF, BMP and PNM are decoded by the engine itself, and other formats (WebP, TIFF, TGA, ...) are decoded through ffmpeg when it is available. If you give neither `width` nor `height`, the image is `80` columns wide (or its own pixel width, if that is smaller), so the result is the same on every terminal.
+  `shades` is the string of characters from darkest to brightest, and defaults to a 256-step gradient from a space to `█`. It is plain monochrome unless you pass `color=True`, and `bgcolor=` (a name or `(r, g, b)`) fills every cell with that background and blends transparent pixels into it.
 
 ```python
 ring = session.styler.shapes.circle(5)

@@ -71,7 +71,7 @@ ALPHA_FGBACK = 1300
 ALPHA_BG = 1600
 alphamark = ansi.Pattern(re.escape(ansi.CSI) + r'(1[0-8]\d\d)m')
 _figlet_cache = {}
-DEFAULT_SHADES = "█"#" .:-=+*#%@"
+DEFAULT_SHADES = "                          ..................'''''''''::::::,,,____\"\"\"^^^;;;;;!!!!!+===rrr//(cc?||[[[[jvvJ}{YYn3oe5%%hh$$GGXbmm#&00DKRRR░░░░WW@MMMMMMMMMMMMMMMMMMMMMMMMMM▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓███████████████"
 
 
 def alphacode(base, alpha):
@@ -319,13 +319,19 @@ class Styler:
         )
 
     @staticmethod
-    def image(path, width=None, height=None, shades=DEFAULT_SHADES, aspect=0.5, color=None):
+    def image(path, width=None, height=None, shades=DEFAULT_SHADES, aspect=0.5, color=None, bgcolor=None):
         if not shades:
             raise ValueError("shades must not be empty")
         if aspect <= 0:
             raise ValueError("aspect must be positive")
         if color is None:
             color = len(shades) == 1
+        backdrop = None
+        if bgcolor is not None:
+            backdrop = Styler.rgb(bgcolor)
+            if backdrop is None:
+                raise ValueError('unknown color: %r' % (bgcolor,))
+        coverage = bool(color) or backdrop is not None
         iw, ih, px = readimage(path)
         if width is None and height is None:
             width = min(iw, DEFAULT_IMAGE_WIDTH)
@@ -353,9 +359,9 @@ class Styler:
                 sr = [t + v * w for t, v, w in zip(sr, r, a)]
                 sg = [t + v * w for t, v, w in zip(sg, g, a)]
                 sb = [t + v * w for t, v, w in zip(sb, b, a)]
-                if color:
+                if coverage:
                     sa = [t + w for t, w in zip(sa, a)]
-            row = []
+            row = [] if backdrop is None else [ansi.bg(*backdrop)]
             current = None
             for cx in range(width):
                 x0 = cx * iw // width
@@ -364,19 +370,27 @@ class Styler:
                 red = sum(sr[x0:x1]) / norm
                 green = sum(sg[x0:x1]) / norm
                 blue = sum(sb[x0:x1]) / norm
+                opaque = sum(sa[x0:x1]) if coverage else 1
+                if backdrop is not None:
+                    clear = 1 - opaque / norm
+                    red += backdrop[0] * clear
+                    green += backdrop[1] * clear
+                    blue += backdrop[2] * clear
                 level = (54 * red + 183 * green + 19 * blue) / 65280
                 char = shades[min(top, int(level * len(shades)))]
-                if color:
-                    if not sum(sa[x0:x1]):
+                if coverage:
+                    if not opaque:
                         char = ' '
-                    elif char != ' ':
+                    elif color and char != ' ':
                         rgb = (round(red), round(green), round(blue))
                         if rgb != current:
                             row.append(ansi.fg(*rgb))
                             current = rgb
                 row.append(char)
-            line = ''.join(row).rstrip(' ')
-            lines.append(line + ansi.RESET if current else line)
+            line = ''.join(row)
+            if backdrop is None:
+                line = line.rstrip(' ')
+            lines.append(line + ansi.RESET if current or backdrop is not None else line)
         return '\n'.join(lines)
 
 class Shapes:

@@ -283,6 +283,49 @@ class StylerImageTests(unittest.TestCase):
             lines = ascii_styler.image(path, shades=" #", color=False).split("\n")
         self.assertEqual((len(lines[0]), len(lines)), (8, 2))
 
+    @staticmethod
+    def rgba_png(folder, pixels):
+        def chunk(kind, data):
+            body = kind + data
+            return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+        rows = b"\x00" + b"".join(bytes(p) for p in pixels)
+        path = os.path.join(folder, "alpha.png")
+        with open(path, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n"
+                    + chunk(b"IHDR", struct.pack(">IIBBBBB", len(pixels), 1, 8, 6, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(rows))
+                    + chunk(b"IEND", b""))
+        return path
+
+    def test_default_shades_cover_every_brightness_level(self):
+        self.assertEqual(len(ascii_styler.DEFAULT_SHADES), 256)
+        self.assertEqual(ascii_styler.DEFAULT_SHADES[0], " ")
+        self.assertEqual(ascii_styler.DEFAULT_SHADES[-1], "█")
+
+    def test_bgcolor_fills_every_cell_and_blends_transparency(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.rgba_png(folder, [(255, 255, 255, 255), (255, 255, 255, 0)])
+            plain = ascii_styler.image(path, width=2, height=1, shades=" #", color=False)
+            filled = ascii_styler.image(path, width=2, height=1, shades=" #", color=False, bgcolor=(10, 20, 30))
+            lit = ascii_styler.image(path, width=2, height=1, shades=" #", color=False, bgcolor="white")
+        self.assertEqual(plain, "#")
+        self.assertEqual(filled, ansi.bg(10, 20, 30) + "# " + ansi.RESET)
+        self.assertNotIn(ansi.bg(10, 20, 30), plain)
+        self.assertEqual(lit, ansi.bg(255, 255, 255) + "# " + ansi.RESET)
+
+    def test_bgcolor_with_color_keeps_pixel_colors(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.rgba_png(folder, [(200, 100, 50, 255)])
+            out = ascii_styler.image(path, width=1, height=1, shades="#", color=True, bgcolor="blue")
+        self.assertEqual(out, ansi.bg(36, 114, 200) + ansi.fg(200, 100, 50) + "#" + ansi.RESET)
+
+    def test_bgcolor_rejects_unknown_colors(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.rgba_png(folder, [(0, 0, 0, 255)])
+            with self.assertRaises(ValueError):
+                ascii_styler.image(path, bgcolor="nope")
+
 
 class FakeClock:
     def __init__(self, overshoot=0.0):
