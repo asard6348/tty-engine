@@ -960,6 +960,60 @@ class HumanoidTests(unittest.TestCase):
         self.assertLess(abs(h["right_foot"].transform.y - (-29.5)), 0.6)
         self.assertGreater(body.transform.y, h["right_foot"].transform.y)
 
+    def test_standing_figure_comes_to_rest_without_flicker(self):
+        sc, _, h = self.make()
+        for _ in range(500):
+            sc.tick()
+        low = {n: h[n].transform.y for n in h}
+        high = dict(low)
+        for _ in range(80):
+            sc.tick()
+            for n in h:
+                y = h[n].transform.y
+                low[n] = min(low[n], y)
+                high[n] = max(high[n], y)
+        self.assertLess(max(high[n] - low[n] for n in h), 0.02)
+
+    def test_ragdoll_releases_every_joint_and_can_be_undone(self):
+        sc, body, h = self.make()
+        for _ in range(100):
+            sc.tick()
+        self.assertFalse(h.ragdolled)
+        top, bottom = h.bounds[1], h.bounds[3]
+        h.ragdoll()
+        self.assertTrue(h.ragdolled)
+        self.assertTrue(all(h.parts[n].physics.solid for n in h))
+        h.pose({"arm": 90})
+        self.assertEqual(h.angle("left_arm"), 0)
+        for _ in range(300):
+            sc.tick()
+        self.assertLess(h.bounds[1] - h.bounds[3], (top - bottom) - 3)
+        for name in h:
+            node = h._nodes[name]
+            if node["parent"] is not None:
+                self.assertEqual(h[name].joint.kind, "hinge")
+                ex, ey, _ = h[node["parent"]].joint.link(h[name]).error(False)
+                self.assertLess(math.hypot(ex * sc.aspect, ey), 3)
+        h.ragdoll(False)
+        self.assertFalse(h.ragdolled)
+        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["left_foot", "right_foot"])
+        h.pose({"arm": 40}, reset=True)
+        self.assertEqual(h.angle("left_arm"), 40)
+        self.assertEqual(h.angle("right_arm"), -40)
+
+    def test_parts_snap_back_when_a_joint_is_stretched_far(self):
+        sc, body, h = self.make(gravity=0)
+        sc.tick()
+        body.transform.x += 12
+        body.transform.y += 6
+        for _ in range(3):
+            sc.tick()
+        for name in h:
+            node = h._nodes[name]
+            if node["parent"] is not None:
+                ex, ey, _ = h[node["parent"]].joint.link(h[name]).error(False)
+                self.assertLess(math.hypot(ex * sc.aspect, ey), 2.5, name)
+
     def test_pose_swings_limbs_and_clamps_to_joint_limits(self):
         sc, _, h = self.make()
         for _ in range(100):

@@ -243,7 +243,7 @@ An object starts out empty. `create()` looks at its keyword arguments, attaches 
 | `force` | `force=...` or `force={...}` | Pushes other objects, optionally limited by a radius or a filter. Settings: `strength`, `affect`, `cap`, `position`, `radius`, `torque`, `shield`. |
 | `joint` | `preset`, `joints`, `elasticity`, `kind`, ... | Links objects together as a rope, rod, spring, hinge, slider or fixed joint. |
 | `light` | `light=True` or `light={...}` | Turns the object into a light source. Settings: `color`, `alpha`, `radius`, `falloff`, `shadows`, `cone`, `direction`, `glow` and more. `scene.ambient` sets the base brightness. |
-| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`. |
+| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`, `elasticity`. |
 
 Settings can be given flat, or grouped under the component's name. The two calls below are equivalent:
 
@@ -446,6 +446,7 @@ figure.velocity = (0.2, None)            # moves every part together
 figure.animate('walk', phase)            # call each frame with a growing phase
 figure.jump(0.6)                         # only while grounded
 figure.detach('left_shin')               # frees a part and everything attached to it
+figure.ragdoll()                         # releases every joint; figure.ragdoll(False) stiffens them again
 ```
 
 **Placement.** A part is placed by two anchors that meet at its joint: `at` is a point on the parent and `pin` is a point on the part itself. An anchor is a name (`top`, `bottom`, `left`, `right`, `center`, `top_left`, `top_right`, `bottom_left`, `bottom_right`) or an `(x, y)` pair of fractions of the part's size. `at` defaults to `bottom` and `pin` defaults to the opposite point, so a part sits against the parent on the side of its anchor. `shift=(dx, dy)` moves the joint in cells. The part is snapped to whole cells and the joint sits exactly on its `pin`.
@@ -455,6 +456,10 @@ figure.detach('left_shin')               # frees a part and everything attached 
 **Naming.** A pose, cycle, `style`, `get`, `set_text` or `remove_part` key is a part name or a `group`. Every part belongs to a group with its own name and to any `group` names it lists (a string or a list), and mirrored parts share the groups of their source. An exact part name sets the raw angle; a group name applies it with the sign flip of each member.
 
 **Joints.** `joint` is a preset name from `joint.presets` or a dict of joint settings (`range`, `rest`, `elasticity`, `durability`, ...). The default is `hinge`. The `joints` setting overrides joints by group or part name.
+
+**Ragdoll.** `figure.ragdoll(on=True, solid=True, limits=True)` turns every pose-driven joint into a free hinge that keeps its length, so the figure collapses under gravity and swings with impacts. `solid=True` makes every part collide with the world while it is limp, and `limits=True` keeps the joint ranges. While limp, `pose` and `animate` do nothing; `ragdoll(False)` stiffens the joints in their current angles, after which `pose` works again. `figure.ragdolled` tells the current state.
+
+**Stability.** Joints use an `elasticity` of `1.25` by default (the `elasticity` setting), which lets a standing figure come to a complete rest; `1.0` is stiffer but makes parts jitter between two rows, and values above about `3` make the figure sag. Joints also use `snap` (the `snap` setting, `2.0` cells by default): when a joint is stretched further than that, for example by dragging the figure, the part is placed back rigidly instead of being pulled back softly. The `snap` joint setting is available on every `joint`; `0` disables it.
 
 **Cycles.** A cycle channel is `bias + amp * sin(phase + shift)`, or a bare number for `amp`; `rectify=True` clamps the sine to positive values. `figure.sample(cycle, phase, scale=1.0)` returns the angles and `figure.animate(cycle, phase, weight=1.0, scale=1.0)` applies them.
 

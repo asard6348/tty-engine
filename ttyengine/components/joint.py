@@ -73,6 +73,11 @@ def _check_durability(value):
         raise ValueError('durability must not be negative')
     return value
 
+def _check_snap(value):
+    if value < 0:
+        raise ValueError('snap must not be negative')
+    return value
+
 _PARAMS = {
     'xoffset': (0, None),
     'yoffset': (0, None),
@@ -80,6 +85,7 @@ _PARAMS = {
     'range': (None, _check_range),
     'elasticity': (1, _check_elasticity),
     'durability': (0, _check_durability),
+    'snap': (0, _check_snap),
     'physical': (True, bool),
     'vel': (0, None),
     'collide': (False, bool),
@@ -411,10 +417,10 @@ class _edge():
 class joint(_lerpable, _keyed):
     _angles = frozenset(('rest', 'axis'))
     _owned = ['joints', 'xoffset', 'yoffset', 'pinx', 'piny', 'jradius', 'range', 'elasticity',
-              'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide', 'preset']
+              'durability', 'snap', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide', 'preset']
     _required = [transform]
     _settings = ('preset', 'joints', 'xoffset', 'yoffset', 'pinx', 'piny', 'radius', 'range', 'elasticity',
-                 'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide')
+                 'durability', 'snap', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide')
     _aliases = {'radius': 'jradius'}
     _watch = frozenset(('x', 'y', 'rotation', 'text'))
     _active = False
@@ -1087,7 +1093,7 @@ class joint(_lerpable, _keyed):
                     self._break(edge)
                 else:
                     if ex or ey:
-                        if edge.beyond():
+                        if edge.beyond() or (f.snap and math.hypot(ex * self.scene.aspect, ey) > f.snap):
                             self._fix(edge, self, f, False, False)
                         else:
                             edge.engaged = True

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- New `humanoid` component: `scene.obj().create(None, x, y, humanoid={'parts': {...}})` builds a jointed, posable figure from a graph of parts. Parts are placed by `at`/`pin` anchors, mirrored with `mirror`, grouped with `group` and animated with `poses` and `cycles`; the figure offers `pose`, `animate`, `velocity`, `jump`, `detach`, `add_part`, `add_parts` and `remove_part`.
+- New `humanoid` component: `scene.obj().create(None, x, y, humanoid={'parts': {...}})` builds a jointed, posable figure from a graph of parts. Parts are placed by `at`/`pin` anchors, mirrored with `mirror`, grouped with `group` and animated with `poses` and `cycles`; the figure offers `pose`, `animate`, `velocity`, `jump`, `detach`, `add_part`, `add_parts` and `remove_part`, `ragdoll`. Joints default to an `elasticity` of 1.25 so a standing figure rests without jitter. New `snap` joint setting rigidly places a physical joint's follower back when it is stretched further than the given distance.
 - Objects and components raise a clear `TypeError` when indexed with something other than a setting name, and are no longer iterable by accident. Unknown names and settings of components an object does not have raise `KeyError`, and `name in obj` reports whether the setting exists.
 - `transform.bounce(normal, angle=None, incoming_only=False)` and the new `transform.approaching(normal, angle=None)` let a heading that already leaves the surface stay unchanged.
 - New `bouncethreshold` setting (`scene.bouncethreshold` and per-body `physics` setting) for the impact speed below which collisions stop bouncing.

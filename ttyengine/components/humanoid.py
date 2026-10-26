@@ -53,7 +53,7 @@ def _preset(value):
 class humanoid:
     _owned = ['humanoid']
     _required = [transform, physics]
-    _keys = ('parts', 'solid', 'physics', 'style', 'joints', 'poses', 'cycles', 'axis')
+    _keys = ('parts', 'solid', 'physics', 'style', 'joints', 'poses', 'cycles', 'axis', 'elasticity', 'snap')
 
     def on_discard(self):
         for name in reversed(self._order):
@@ -86,6 +86,11 @@ class humanoid:
         self._by_id = {}
         self._detached = set()
         self._watched = set()
+        self._loose = False
+        self._loose_solid = True
+        self._loose_limits = True
+        self._elasticity = config.get('elasticity', 1.25)
+        self._snap = config.get('snap', 2.0)
         self._breaks = []
         self._solid = config.get('solid')
         self._physics = dict(config.get('physics', {}))
@@ -236,7 +241,30 @@ class humanoid:
             self.parts[part].transform.text = text
         return self
 
+    @property
+    def ragdolled(self):
+        return self._loose
+
+    def ragdoll(self, on=True, solid=True, limits=True):
+        if on:
+            self._loose_solid = solid
+            self._loose_limits = limits
+        if bool(on) == self._loose and not on:
+            return self
+        self._loose = bool(on)
+        for name in self._order:
+            node = self._nodes[name]
+            if node['parent'] is not None and name not in self._detached:
+                if on:
+                    self._loosen(node)
+                else:
+                    self._stiffen(node)
+        self._resolidify()
+        return self
+
     def pose(self, targets, weight=1.0, reset=False, strict=False):
+        if self._loose:
+            return self
         goals = {name: 0.0 for name in self._order if name != self._root} if reset else {}
         for key, value in targets.items():
             resolved = self._resolve(key)
@@ -506,6 +534,10 @@ class humanoid:
         for node in ordered:
             if node['parent'] is not None:
                 self._link(node)
+        if self._loose:
+            for node in ordered:
+                if node['parent'] is not None:
+                    self._loosen(node)
         self._resolidify()
         return [node['name'] for node in ordered]
 
@@ -571,6 +603,8 @@ class humanoid:
         else:
             value = spec.get('joint')
             shape = _preset(value if isinstance(value, str) else 'hinge')
+            shape.setdefault('elasticity', self._elasticity)
+            shape.setdefault('snap', self._snap)
             for group in node['groups'][1:]:
                 shape.update(self._joints.get(group, {}))
             if isinstance(value, dict):
@@ -578,6 +612,18 @@ class humanoid:
         if own:
             shape.update(self._joints.get(name, {}))
         return shape
+
+    def _loosen(self, node):
+        child = self.parts[node['name']]
+        shape = self._shape(node['name'])
+        child.joint.apply(kind='hinge', radius='keep', rest=node['pose'][1],
+                          range=shape.get('range') if self._loose_limits else None)
+
+    def _stiffen(self, node):
+        child = self.parts[node['name']]
+        child.joint.apply(kind='fixed')
+        link = self.parts[node['parent']].joint.link(child)
+        node['angle'] = _wrap(link.pose[1] - node['pose'][1])
 
     def _link(self, node):
         parent = self.parts[node['parent']]
@@ -649,7 +695,9 @@ class humanoid:
     def _resolidify(self):
         for name in self._order:
             node = self._nodes[name]
-            if 'solid' in node['spec']:
+            if self._loose and self._loose_solid:
+                solid = True
+            elif 'solid' in node['spec']:
                 solid = bool(node['spec']['solid'])
             elif self._solid is None:
                 solid = self._contact(name)
