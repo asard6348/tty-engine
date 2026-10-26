@@ -95,7 +95,7 @@ class pen(_lerpable):
         self._pshape = value
 
     def footprint(self, r=None, shape=None):
-        return _footprint(self._pradius if r is None else r, self.scene.aspect, self._pshape if shape is None else shape)
+        return _footprint(self._pradius if r is None else r, self.obj.transform.aspect, self._pshape if shape is None else shape)
 
     @property
     def char(self):

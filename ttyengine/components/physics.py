@@ -381,7 +381,7 @@ class physics(_change_callback, _lerpable, _keyed):
             if n == 0:
                 self._body_cache = (0.0, 0.0, 1.0)
             else:
-                A = self.scene.aspect
+                A = self.t.aspect
                 cx = sum(p[0] for p in pixels) / n
                 cy = sum(p[1] for p in pixels) / n
                 spread = sum(((p[0] - cx) * A) ** 2 + (p[1] - cy) ** 2 for p in pixels) / n
@@ -394,14 +394,14 @@ class physics(_change_callback, _lerpable, _keyed):
         return 1.0 / (self.mass * self.body()[2])
 
     def _velocity(self):
-        A = self.scene.aspect
+        A = self.t.aspect
         return self.xvel / self.mass * A, self.yvel / self.mass
 
     def _omega(self):
         return -math.radians(self.avel / self.mass)
 
     def _impulse(self, jx, jy, rx=0.0, ry=0.0):
-        A = self.scene.aspect
+        A = self.t.aspect
         self.xvel += jx / A
         self.yvel += jy
         if rx or ry:
@@ -413,7 +413,7 @@ class physics(_change_callback, _lerpable, _keyed):
             self.avel -= math.degrees(torque * inv) * self.mass
 
     def _arm(self, point):
-        A = self.scene.aspect
+        A = self.t.aspect
         cx, cy, _ = self.body()
         return (point[0] - cx) * A, point[1] - cy
 
@@ -483,7 +483,7 @@ class physics(_change_callback, _lerpable, _keyed):
         return members
 
     def _solve(self, other, group, point, nx, ny, restitution=None):
-        A = self.scene.aspect
+        A = self.t.aspect
         ra = self._arm(point)
         va = self._velocity()
         wa = self._omega()
@@ -511,7 +511,7 @@ class physics(_change_callback, _lerpable, _keyed):
                 invib = single._invinertia()
             else:
                 rb = (0.0, 0.0)
-                vbx = sum(m.xvel / m.mass * A * m.mass for m in group) / total
+                vbx = sum(m.xvel / m.mass * m.t.aspect * m.mass for m in group) / total
                 vby = sum(m.yvel for m in group) / total
                 invib = 0.0
             e_other = max(m.bounciness for m in group)
@@ -553,7 +553,7 @@ class physics(_change_callback, _lerpable, _keyed):
                 vbx = vb[0] - wb * rb[1]
                 vby = vb[1] + wb * rb[0]
             else:
-                vbx = sum(m.xvel * A / 1.0 for m in group) / total
+                vbx = sum(m.xvel * m.t.aspect / 1.0 for m in group) / total
                 vby = sum(m.yvel for m in group) / total
             vt = (vax - vbx) * tx + (vay - vby) * ty
             cat = (ra[0] * ty - ra[1] * tx) ** 2 * ia
@@ -581,13 +581,13 @@ class physics(_change_callback, _lerpable, _keyed):
 
     def _contact_normal(self, other, point, nx, ny, inside):
         return _contact_normal_cells(self.getpixels(), other.getpixels(), point, nx, ny, inside,
-                                     self.slope and other.slope, self.scene.aspect)
+                                     self.slope and other.slope, self.t.aspect)
 
     def normal(self, other, local=None):
         return self.t.normal(other, local)
 
     def _mtv(self, other_pixels):
-        return _mtv_cells(self.getpixels(), other_pixels, self.scene.aspect)
+        return _mtv_cells(self.getpixels(), other_pixels, self.t.aspect)
 
     def _remember(self):
         self._good = (self.t.x, self.t.y, self.t.rotation)
@@ -634,7 +634,7 @@ class physics(_change_callback, _lerpable, _keyed):
             t.x, t.y = x, y
             if t.rotation != r:
                 t.rotation = r
-        for dx, dy in _offsets(6, self.scene.aspect):
+        for dx, dy in _offsets(6, self.t.aspect):
             if not self._tunnels(found, dx, dy) and not self.overlaps(self._shifted(dx, dy)):
                 t.x += dx
                 t.y += dy

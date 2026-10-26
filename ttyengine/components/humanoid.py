@@ -177,12 +177,12 @@ class humanoid:
 
     @property
     def visible(self):
-        return self.obj.rendering.show
+        return self.obj.transform.show
 
     @visible.setter
     def visible(self, value):
         for part in self.parts.values():
-            part.rendering.show = value
+            part.transform.show = value
 
     def get(self, key):
         return [self.parts[name] for name in self._names(key)]
@@ -550,7 +550,7 @@ class humanoid:
             for key, value in {**self._style, **spec.get('style', {})}.items():
                 setattr(self.t, key, value)
             if 'z' in spec:
-                self.obj.rendering.z = spec['z']
+                self.t.z = spec['z']
             settings = {**self._physics, **spec.get('physics', {})}
             if 'mass' not in settings and spec.get('density'):
                 settings['mass'] = self._mass(node)
@@ -559,7 +559,7 @@ class humanoid:
         else:
             parent = self.parts[node['parent']]
             pnode = self._nodes[node['parent']]
-            A = self.scene.aspect
+            A = parent.transform.aspect
             pcx, pcy = parent.transform.extent()[:2]
             rotation = parent.transform.rotation
             x, y, w, h = node['rect']

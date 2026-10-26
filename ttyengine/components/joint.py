@@ -272,7 +272,7 @@ class _edge():
 
     def _geometry(self):
         f = self.follower
-        A = f.scene.aspect
+        A = f.t.aspect
         ax, ay = self.anchor()
         cx, cy = self.pin()
         dx = (cx - ax) * A
@@ -373,7 +373,7 @@ class _edge():
             wc, wp = 0.0, 1.0
         else:
             return
-        A = f.scene.aspect
+        A = f.t.aspect
         k = min(1.0, 1.0 / f.elasticity)
         damp = 1.0 - (1.0 - math.sqrt(k)) ** 2
         pinned = self.pinned and f.kind == 'ball'
@@ -575,7 +575,7 @@ class joint(_lerpable, _keyed):
     def _local(self, point):
         # world point -> (xoffset, yoffset) in this object's frame (inverse of _anchor)
         cx, cy = self.t.extent()[:2]
-        A = self.scene.aspect
+        A = self.t.aspect
         r = math.radians(self.t.rotation)
         dx, dy = (point[0] - cx) * A, point[1] - cy
         return (dx * math.cos(r) - dy * math.sin(r)) / A, dx * math.sin(r) + dy * math.cos(r)
@@ -584,7 +584,7 @@ class joint(_lerpable, _keyed):
         edge = self._edges.get(id(other))
         if edge is None or not edge.alive or not edge.colliding:
             return False
-        A = self.scene.aspect
+        A = self.t.aspect
         points = (edge.anchor(), edge.pin())
         frontier = [c for c in cells
                     if any(math.hypot((c[0] + 0.5 - p[0]) * A, c[1] - 0.5 - p[1]) <= 1.5 for p in points)]
@@ -659,7 +659,7 @@ class joint(_lerpable, _keyed):
         jt = getattr(old, 'joint', None)
         if jt is None or not jt._edges:
             return
-        A = old.scene.aspect
+        A = old.transform.aspect
         cells = []
         for part in parts:
             t = getattr(part, 'transform', None)
@@ -894,7 +894,7 @@ class joint(_lerpable, _keyed):
 
     def _anchor(self, xoffset, yoffset):
         cx, cy = self.t.extent()[:2]
-        A = self.scene.aspect
+        A = self.t.aspect
         r = math.radians(self.t.rotation)
         u = xoffset * A
         v = yoffset
@@ -947,7 +947,7 @@ class joint(_lerpable, _keyed):
         p = getattr(self.obj, 'physics', None)
         if p is None or not p.dynamic:
             return 0.0, 0.0
-        A = self.scene.aspect
+        A = self.t.aspect
         cx, cy, _ = p.body()
         rx, ry = (point[0] - cx - 0.5) * A, point[1] - cy + 0.5
         om = p._omega()
@@ -958,7 +958,7 @@ class joint(_lerpable, _keyed):
         # linear and angular motion so the point itself moves by about that much
         p = self.obj.physics
         if p._invinertia():
-            A = self.scene.aspect
+            A = self.t.aspect
             cx, cy, spread = p.body()
             rx, ry = (point[0] - cx - 0.5) * A, point[1] - cy + 0.5
             n = math.hypot(gx * A, gy)
@@ -975,7 +975,7 @@ class joint(_lerpable, _keyed):
         p = getattr(self.obj, 'physics', None)
         if p is None or not p.dynamic:
             return
-        A = self.scene.aspect
+        A = self.t.aspect
         ux, uy = ex * A, ey
         n = math.hypot(ux, uy)
         if n < 1e-9:
@@ -1093,7 +1093,7 @@ class joint(_lerpable, _keyed):
                     self._break(edge)
                 else:
                     if ex or ey:
-                        if edge.beyond() or (f.snap and math.hypot(ex * self.scene.aspect, ey) > f.snap):
+                        if edge.beyond() or (f.snap and math.hypot(ex * self.t.aspect, ey) > f.snap):
                             self._fix(edge, self, f, False, False)
                         else:
                             edge.engaged = True

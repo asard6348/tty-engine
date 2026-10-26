@@ -227,7 +227,7 @@ class light(_lerpable, _keyed):
 
     def origin(self):
         cx, cy = self.t.extent()[:2]
-        A = self.scene.aspect
+        A = self.t.aspect
         r = math.radians(self.t.rotation)
         u = self._offset[0] * A
         v = self._offset[1]
@@ -237,7 +237,7 @@ class light(_lerpable, _keyed):
     def _casters(self):
         ox, oy = self._origin
         span = self._radius + self._length / 2
-        reach_x = span / self.scene.aspect + 2
+        reach_x = span / self.t.aspect + 2
         reach_y = span + 2
         found = []
         pool = list(self.scene.solids)
@@ -403,7 +403,7 @@ class light(_lerpable, _keyed):
             return origin
         ox, oy = origin or self._origin
         qx, qy = self._foot(dx, dy)
-        return (ox + qx / self.scene.aspect, oy + qy)
+        return (ox + qx / self.t.aspect, oy + qy)
 
     def _level(self, dx, dy):
         qx, qy = self._foot(dx, dy)
@@ -429,7 +429,7 @@ class light(_lerpable, _keyed):
         if self._occ is None:
             self._prepare()
         ox, oy = self._origin
-        dx = (cx - ox) * self.scene.aspect
+        dx = (cx - ox) * self.t.aspect
         dy = cy - oy
         amount = self._level(dx, dy)
         if amount <= 0:
@@ -444,7 +444,7 @@ class light(_lerpable, _keyed):
         return self._glow and self._on
 
     def _stamp(self):
-        aspect = self.scene.aspect
+        aspect = self.t.aspect
         angular = self._cone is not None or self._focus or self._length
         key = (self._radius, self._alpha, self._falloff, aspect, self._cone, self._length, self._focus,
                round((self.t.rotation + self._direction) % 360) if angular else 0)
@@ -488,7 +488,7 @@ class light(_lerpable, _keyed):
             return self._glowrows
         gx, gy = self._spot()
         rows = self._stamp()[1]
-        aspect = self.scene.aspect
+        aspect = self.t.aspect
         origin = (gx + 0.5, gy - 0.5)
         out = []
         for j, i0, amounts in rows:

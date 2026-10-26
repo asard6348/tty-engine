@@ -31,7 +31,7 @@ Build animated, interactive scenes out of text, with collisions, joints, lightin
 TTY Engine draws everything as styled text and updates the terminal once per frame. Objects are assembled from small components, which are attached automatically based on the keyword arguments you pass when creating them. A box of text becomes a physics body as soon as you give it a velocity, and a light source as soon as you give it a light.
 
 - **No dependencies.** Image decoding (PNG, JPEG, GIF, BMP, PNM; many more when ffmpeg is installed), FIGlet text, the audio mixer and the terminal and input handling are all implemented in the standard library.
-- **Component-based objects.** `transform`, `rendering`, `physics`, `pen`, `force`, `joint` and `light` cover position and style, collisions, drawing, area forces, linked bodies and lighting.
+- **Component-based objects.** `transform`, `physics`, `pen`, `force`, `joint` and `light` cover position and style, collisions, drawing, area forces, linked bodies and lighting.
 - **Rich text output.** Truecolor, transparency and fades, bundled FIGlet fonts, and image-to-text conversion.
 - **Input and sound included.** Keyboard and mouse input with press, release and held states, plus a built-in mixer with a small synthesizer.
 - **Simple structure.** Write a class (or just a function) with `start`, `update` and `final` methods, and hand it to `start()`.
@@ -232,12 +232,11 @@ Mouse positions are reported in terminal cells counted from the top-left. With t
 
 &nbsp;
 
-An object starts out empty. `create()` looks at its keyword arguments, attaches the components that own them, and passes each value on. `transform` and `rendering` are always attached; the others are added the first time you use one of their settings.
+An object starts out empty. `create()` looks at its keyword arguments, attaches the components that own them, and passes each value on. `transform` is always attached; the others are added the first time you use one of their settings.
 
 | Component | Added when you pass | What it does |
 |---|---|---|
-| `transform` | always | Position, text, colors, opacity, rotation, flipping, shadow. |
-| `rendering` | always | Visibility (`show`), drawing order (`z`) and whether spaces are drawn (`spaces`). |
+| `transform` | always | Position, text, colors, opacity, rotation, flipping, shadow, visibility (`show`), drawing order (`z`) and whether spaces are drawn (`spaces`). |
 | `physics` | `xvel`, `yvel`, `bounciness`, `gravity`, `friction`, `mass`, `phantom`, ... | Velocity, collisions, bouncing, friction and touch callbacks. |
 | `pen` | `pen={...}` | Paints characters at a point relative to the object. Settings: `char`, `x`, `y`, `radius`, `shape`. |
 | `force` | `force=...` or `force={...}` | Pushes other objects, optionally limited by a radius or a filter. Settings: `strength`, `affect`, `cap`, `position`, `radius`, `torque`, `shield`. |

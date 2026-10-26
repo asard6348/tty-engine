@@ -107,9 +107,9 @@ class force(_lerpable):
 
     def apply(self, x=None, y=None):
         affected = []
-        A = self.scene.aspect
         for o in self.targets():
             p = o.physics
+            A = p.t.aspect
             cells = p.getpixels()
             if not cells:
                 continue

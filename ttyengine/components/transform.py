@@ -17,14 +17,21 @@ class transform(_change_callback, _lerpable, _keyed):
         'fg', 'bg', 'alpha', 'bgalpha',
         'flip',
         'shadow',
+        'show', 'renderspaces', 'z',
     ]
     _default = True
     _settings = ('x', 'y', 'text', 'rtext', 'htext', 'rotation', 'aspect', 'fg', 'bg', 'alpha', 'bgalpha',
-                 'flip', 'shadow')
+                 'flip', 'shadow', 'show', 'spaces', 'z')
+    _aliases = {'spaces': 'renderspaces'}
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
         self.scene = obj.scene
+        self._litkey = None
+        self._lit = ''
+        self.show = kwargs.get('show', True)
+        self.renderspaces = kwargs.get('renderspaces', False)
+        self.z = kwargs.get('z', 0)
         raw = kwargs.get('text', '')
         ctext = obj.scene.recomp.sub('', raw) if raw else ''
         self._x = kwargs.get('x', 0)
@@ -228,6 +235,22 @@ class transform(_change_callback, _lerpable, _keyed):
         old = self._shadow
         self._shadow = _check_shadow(value)
         self._change('shadow', old)
+
+    @property
+    def z(self):
+        return self._z
+    @z.setter
+    def z(self, value):
+        self._z = value
+        if self._z > self.scene._lastz: self.scene._lastz = self._z
+        if self._z < self.scene._firstz: self.scene._firstz = self._z
+
+    @property
+    def spaces(self):
+        return self.renderspaces
+    @spaces.setter
+    def spaces(self, value):
+        self.renderspaces = value
 
     @property
     def vrtext(self):
@@ -456,7 +479,7 @@ class transform(_change_callback, _lerpable, _keyed):
         other = getattr(other, 'obj', other)
         mine = me.transform.cells()
         theirs = other.transform.cells()
-        aspect = self.scene.aspect
+        aspect = self.aspect
         slope = all(getattr(getattr(o, 'physics', None), 'slope', True) for o in (me, other))
         inside = bool(mine & theirs)
         if inside:
@@ -918,7 +941,7 @@ class transform(_change_callback, _lerpable, _keyed):
         parent = getattr(self.obj, 'physics', None)
         motion = None
         if parent is not None:
-            A = self.scene.aspect
+            A = self.aspect
             pcx, pcy, _ = parent.body()
             motion = (parent.xvel / parent.mass * A, parent.yvel / parent.mass, parent._omega(),
                       parent.avel / parent.mass, pcx, pcy)
@@ -976,7 +999,7 @@ class transform(_change_callback, _lerpable, _keyed):
                 if fp is not None and motion is not None:
                     vx, vy, omega, spin, pcx, pcy = motion
                     fcx, fcy, _ = fp.body()
-                    A = obj_ref.scene.aspect
+                    A = ft.aspect
                     rx, ry = (fcx - pcx) * A, fcy - pcy
                     fp.xvel = (vx - omega * ry) / A * fp.mass
                     fp.yvel = (vy + omega * rx) * fp.mass
@@ -1343,3 +1366,34 @@ class transform(_change_callback, _lerpable, _keyed):
                     ci += len(part)
         self._opacity_cache = (text, found)
         return found
+
+    def _shown(self):
+        self._stylecheck()
+        text = self.vtext
+        sc = self.scene
+        if not text or (not sc.lights and sc.ambient >= 1):
+            return text
+        from .light import light
+        lights = tuple((id(l), l._version) for l in sc.lights if l.on and l._affects(self.obj))
+        key = (text, self._origin(), sc.ambient, sc.bgcolor, sc.fgcolor, lights)
+        if self._litkey != key:
+            self._litkey = key
+            self._lit = light.shade(sc, self.obj, text)
+        return self._lit
+
+    def state(self, camx, camy, xoff, yoff):
+        if not self.show:
+            return (0, 0, '', 0, 0)
+        return (
+            int((self._x + self.vx - camx + 0.5) // 1),
+            -int((self._y + self.vy - camy + 0.5) // 1),
+            self._shown(),
+            xoff,
+            yoff,
+        )
+
+    def front(self):
+        self.z = self.scene._lastz + 1
+
+    def back(self):
+        self.z = self.scene._firstz - 1

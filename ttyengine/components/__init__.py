@@ -5,7 +5,6 @@
 
 from .inherit import _metainit, _change_callback, _lerpable, _keyed
 from .transform import transform
-from .rendering import rendering
 from .physics import physics
 from .pen import pen
 from .force import force

@@ -505,16 +505,16 @@ class Compositor:
                 yoff = sc.dimyoffset
                 bgcolor = sc.bgcolor
             for o in sc.objs:
-                r = getattr(o, 'rendering', None)
-                if r is None:
+                t = getattr(o, 'transform', None)
+                if t is None:
                     continue
-                seen.add(r)
-                if not live or not r.t.rtext:
+                seen.add(t)
+                if not live or not t.rtext:
                     continue
-                state = known.get(r)
+                state = known.get(t)
                 if state is None:
-                    state = known[r] = [(0, 0, '', 0, 0), None, [], 0]
-                current = r.state(camx, camy, xoff, yoff)
+                    state = known[t] = [(0, 0, '', 0, 0), None, [], 0]
+                current = t.state(camx, camy, xoff, yoff)
                 previous = state[0]
                 if previous == current:
                     continue
@@ -522,10 +522,10 @@ class Compositor:
                     x, y, _, xo, yo = previous
                     rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
                 if current[2]:
-                    key = (current[2], r.renderspaces, bgcolor)
+                    key = (current[2], t.renderspaces, bgcolor)
                     if state[1] != key:
                         state[1] = key
-                        state[2] = self.parse(sc, current[2], r.renderspaces)
+                        state[2] = self.parse(sc, current[2], t.renderspaces)
                         state[3] = max(row[0] for row in state[2])
                     x, y, _, xo, yo = current
                     rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
@@ -548,8 +548,8 @@ class Compositor:
                 glowing.update(light for light in sc.lights if light in self.glows)
         for light in [light for light in self.glows if light not in glowing]:
             rects.append(self.glows.pop(light)[1])
-        for r in [r for r in known if r not in seen]:
-            state = known.pop(r)
+        for t in [t for t in known if t not in seen]:
+            state = known.pop(t)
             if state[0][2]:
                 x, y, _, xo, yo = state[0]
                 rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
@@ -563,14 +563,14 @@ class Compositor:
             ext = self.extent(sc, view) if sc.camrotation % 360.0 else view
             bg = self.bgstyle(sc.bgcolor) if autobg and getattr(w, 'autobg', True) else None
             sprites = []
-            for r in sorted([o.rendering for o in sc.objs if hasattr(o, 'rendering')], key=lambda r: r.z):
-                state = self.known.get(r)
+            for t in sorted([o.transform for o in sc.objs if hasattr(o, 'transform')], key=lambda t: t.z):
+                state = self.known.get(t)
                 if state is None or not state[0][2]:
                     continue
-                key = (state[0][2], r.renderspaces, sc.bgcolor)
+                key = (state[0][2], t.renderspaces, sc.bgcolor)
                 if state[1] != key:
                     state[1] = key
-                    state[2] = self.parse(sc, state[0][2], r.renderspaces)
+                    state[2] = self.parse(sc, state[0][2], t.renderspaces)
                     state[3] = max(row[0] for row in state[2])
                 x, y, _, xo, yo = state[0]
                 sprites.append((x + xo, y - yo, state[2]))
