@@ -1,5 +1,6 @@
 import io
 import math
+import random
 import os
 import struct
 import subprocess
@@ -1137,6 +1138,238 @@ class HumanoidTests(unittest.TestCase):
         self.assertEqual([n for n in h if h.parts[n].physics.solid], ["left_shin", "right_shin"])
         _, _, h = self.make(solid=True)
         self.assertTrue(all(h.parts[n].physics.solid for n in h))
+
+    def momentum(self, h):
+        px = py = 0.0
+        for name in h:
+            part = h[name]
+            px += part.physics.xvel * part.transform.aspect
+            py += part.physics.yvel
+        return px, py
+
+    def kick_all(self, h, seed=4):
+        rng = random.Random(seed)
+        for name in h:
+            p = h[name].physics
+            p.xvel += rng.uniform(-0.3, 0.3) * p.mass
+            p.yvel += rng.uniform(-0.3, 0.3) * p.mass
+            p.avel += rng.uniform(-30, 30) * p.mass
+
+    def test_limp_figure_in_midair_conserves_momentum(self):
+        for aspect in (0.25, 0.5, 1.0):
+            sc, _, h = self.make(gravity=-0.05)
+            sc.aspect = aspect
+            sc.solids[:] = []
+            h.ragdoll()
+            self.kick_all(h)
+            sc.tick()
+            mass = sum(h[n].physics.mass for n in h)
+            px0, py0 = self.momentum(h)
+            for t in range(1, 150):
+                sc.tick()
+                px, py = self.momentum(h)
+                self.assertAlmostEqual(px, px0, delta=0.05, msg=aspect)
+                self.assertAlmostEqual(py, py0 - 0.05 * mass * t, delta=0.05, msg=aspect)
+
+    def test_limp_figure_in_midair_follows_drag(self):
+        sc, _, h = self.make(gravity=0)
+        sc.solids[:] = []
+        sc.drag = 0.97
+        h.ragdoll()
+        self.kick_all(h)
+        sc.tick()
+        px0, py0 = self.momentum(h)
+        for t in range(1, 60):
+            sc.tick()
+            px, py = self.momentum(h)
+            self.assertAlmostEqual(px, px0 * 0.97 ** t, delta=0.05)
+            self.assertAlmostEqual(py, py0 * 0.97 ** t, delta=0.05)
+
+    def test_limp_figure_does_not_gain_energy(self):
+        sc, _, h = self.make(gravity=-0.05)
+        sc.solids[:] = []
+        h.ragdoll()
+        self.kick_all(h, 7)
+        sc.tick()
+
+        def energy():
+            total = 0.0
+            for name in h:
+                part = h[name]
+                p = part.physics
+                vx, vy = p.xvel / p.mass * sc.aspect, p.yvel / p.mass
+                total += 0.5 * p.mass * (vx * vx + vy * vy) + 0.05 * p.mass * part.transform.extent()[1]
+            return total
+
+        start = energy()
+        for _ in range(300):
+            sc.tick()
+            self.assertLess(energy() - start, 40)
+
+    def test_detached_limb_flies_freely_while_limp(self):
+        sc, _, h = self.make(gravity=-0.05)
+        sc.solids[:] = []
+        h.ragdoll()
+        self.kick_all(h)
+        for _ in range(40):
+            sc.tick()
+        freed = [h[n] for n in h._subtree("left_forearm")]
+        mass = sum(p.physics.mass for p in freed)
+
+        def centre():
+            return (sum(p.physics.mass * p.transform.extent()[0] * sc.aspect for p in freed) / mass,
+                    sum(p.physics.mass * p.transform.extent()[1] for p in freed) / mass)
+
+        h.detach("left_forearm")
+        vx = sum(p.physics.xvel * sc.aspect for p in freed) / mass
+        vy = sum(p.physics.yvel for p in freed) / mass
+        x0, y0 = centre()
+        for t in range(1, 80):
+            sc.tick()
+            x, y = centre()
+            self.assertAlmostEqual(x, x0 + vx * t, delta=1.0)
+            self.assertAlmostEqual(y, y0 + vy * t - 0.025 * t * (t + 1), delta=1.0)
+
+    def test_ragdoll_keeps_the_designed_joint_lengths(self):
+        sc, _, h = self.make(gravity=0)
+        sc.tick()
+        h["left_hand"].transform.x += 1.2
+        h["right_foot"].transform.y -= 1.2
+        designed = {n: h._nodes[n]["pose"][0] for n in h if h._nodes[n]["parent"] is not None}
+        h.ragdoll()
+        for _ in range(100):
+            sc.tick()
+        for name, length in designed.items():
+            link = h[h._nodes[name]["parent"]].joint.link(h[name])
+            self.assertAlmostEqual(link.pose[0], length, places=6)
+        h.ragdoll(False)
+        for name, length in designed.items():
+            link = h[h._nodes[name]["parent"]].joint.link(h[name])
+            self.assertAlmostEqual(link.pose[0], length, places=6)
+
+    def test_limp_figure_lands_on_a_long_floor_without_sinking(self):
+        _, sc = make_scene()
+        sc.gravity = (0, -0.05)
+        sc.obj().create("#" * 4000, -50, -30, dynamic=False)
+        body = sc.obj().create(None, 20, -5, humanoid=dict(parts=PARTS))
+        h = body.humanoid
+        for _ in range(20):
+            sc.tick()
+        h.ragdoll()
+        for _ in range(500):
+            sc.tick()
+            low = min(h[n].transform.extent()[1] - h[n].transform.extent()[3] for n in h)
+            self.assertGreater(low, -31)
+
+    def test_mixed_part_aspects_stay_finite_and_joined(self):
+        sc, _, h = self.make(gravity=-0.05)
+        sc.solids[:] = []
+        for name in ("left_forearm", "right_shin", "head"):
+            h[name].transform.aspect = 1.0
+        h.ragdoll()
+        self.kick_all(h)
+        for _ in range(200):
+            sc.tick()
+        for name in h:
+            t = h[name].transform
+            self.assertTrue(math.isfinite(t.x) and math.isfinite(t.y) and math.isfinite(t.rotation))
+            node = h._nodes[name]
+            if node["parent"] is not None:
+                ex, ey, _ = h[node["parent"]].joint.link(h[name]).error(False)
+                self.assertLess(math.hypot(ex * t.aspect, ey), 3)
+
+    def cut_across(self, sc, part, row=0):
+        pen = sc.obj().create(penchar="#", pradius=1)
+        x, y, w, _ = part.transform.extent()
+        pen.pen.cut(x - w - 2, y + row, r=0)
+        pen.pen.cut(x + w + 2, y + row, r=0)
+        pen.pen.cutcommit(r=0, hitbox=False)
+        pen.discard()
+
+    def figures(self, sc):
+        return [o for o in sc.objs if getattr(o, "humanoid", None) is not None]
+
+    def test_cutting_the_root_part_keeps_a_single_figure(self):
+        sc, body, h = self.make()
+        for _ in range(60):
+            sc.tick()
+        count = len(sc.objs)
+        self.cut_across(sc, body)
+        for _ in range(60):
+            sc.tick()
+        self.assertEqual(len(self.figures(sc)), 1)
+        self.assertEqual(len(h), 14)
+        self.assertIs(h.root.humanoid, h)
+        self.assertIsNot(h.root, body)
+        self.assertLess(len(sc.objs), count + 6)
+        for name in h:
+            self.assertIn(h[name], sc.objs)
+        h.ragdoll()
+        for _ in range(60):
+            sc.tick()
+        h.ragdoll(False)
+        h.pose({"arm": 30})
+        for _ in range(30):
+            sc.tick()
+
+    def test_cutting_a_limb_keeps_the_figure_and_its_joints(self):
+        for name in ("left_thigh", "right_shin", "left_forearm", "head"):
+            sc, _, h = self.make()
+            for _ in range(60):
+                sc.tick()
+            self.cut_across(sc, h[name])
+            for _ in range(60):
+                sc.tick()
+            self.assertEqual(len(self.figures(sc)), 1, name)
+            self.assertEqual(len(h), 14, name)
+            for part in h:
+                self.assertIn(h[part], sc.objs, name)
+            h.ragdoll()
+            for _ in range(40):
+                sc.tick()
+            h.ragdoll(False)
+            for _ in range(20):
+                sc.tick()
+            members = [h[part] for part in h]
+            h.root.discard()
+            for part in members:
+                self.assertNotIn(part, sc.objs, name)
+
+    def test_split_part_shares_its_mass_between_the_pieces(self):
+        sc, _, h = self.make()
+        for _ in range(60):
+            sc.tick()
+        thigh = h["left_thigh"]
+        mass = thigh.physics.mass
+        found = []
+        pen = sc.obj().create(penchar="#", pradius=1)
+        x, y, w, _ = thigh.transform.extent()
+        pen.pen.cut(x - w - 2, y, r=0)
+        pen.pen.cut(x + w + 2, y, r=0)
+        pen.pen.cutcommit(r=0, hitbox=False, callback=lambda pieces, old: found.append((old, pieces)) if old is thigh else None)
+        self.assertEqual(len(found), 1)
+        pieces = found[0][1]
+        self.assertGreaterEqual(len(pieces), 2)
+        self.assertAlmostEqual(sum(o.physics.mass for o in pieces), mass, places=6)
+        self.assertIn(h["left_thigh"], pieces)
+
+    def test_erasing_a_part_detaches_what_hung_from_it(self):
+        sc, _, h = self.make()
+        for _ in range(60):
+            sc.tick()
+        seen = []
+        h.onbreak(lambda name, part: seen.append(name))
+        h["left_forearm"].discard()
+        self.assertNotIn("left_forearm", h)
+        self.assertEqual(seen, ["left_hand"])
+        self.assertEqual(len(h), 13)
+        h.ragdoll()
+        for _ in range(60):
+            sc.tick()
+        h.ragdoll(False)
+        for _ in range(20):
+            sc.tick()
+        self.assertTrue(math.isfinite(h.bounds[0]))
 
     def test_discarding_the_root_removes_every_part(self):
         sc, body, h = self.make()

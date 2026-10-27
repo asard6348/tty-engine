@@ -56,6 +56,7 @@ class humanoid:
     _keys = ('parts', 'solid', 'physics', 'style', 'joints', 'poses', 'cycles', 'axis', 'elasticity', 'snap')
 
     def on_discard(self):
+        self._closing = True
         for name in reversed(self._order):
             if name == self._root:
                 continue
@@ -82,11 +83,13 @@ class humanoid:
         self.cycles = dict(config.get('cycles', {}))
         self.parts = {}
         self._nodes = {}
+        self._gone = {}
         self._order = []
         self._by_id = {}
         self._detached = set()
         self._watched = set()
         self._loose = False
+        self._closing = False
         self._loose_solid = True
         self._loose_limits = True
         self._elasticity = config.get('elasticity', 1.25)
@@ -530,6 +533,7 @@ class humanoid:
             self._order.append(node['name'])
             self._layout(node)
             self._spawn(node)
+            self._guard(node['name'])
         self._isolate([self.parts[node['name']] for node in ordered])
         for node in ordered:
             if node['parent'] is not None:
@@ -578,6 +582,79 @@ class humanoid:
         self.parts[name] = part
         self._by_id[id(part)] = name
 
+    def _guard(self, name):
+        part = self.parts[name]
+        def split(pieces, old):
+            self._split(name, old, pieces)
+        def gone():
+            self._vanish(name, part)
+        part.transform.onsplit(split)
+        part.ondiscard(gone)
+
+    def _heir(self, name, pieces):
+        node = self._nodes[name]
+        parent = node['parent']
+        if parent is not None and name not in self._detached:
+            jt = getattr(self.parts[parent], 'joint', None)
+            for piece in pieces:
+                edge = jt._edges.get(id(piece)) if jt is not None else None
+                if edge is not None and edge.alive:
+                    return piece
+        return max(pieces, key=lambda piece: len(piece.physics.getpixels()))
+
+    def _split(self, name, old, pieces):
+        if self._closing or self.parts.get(name) is not old:
+            return
+        pieces = [piece for piece in pieces if getattr(piece, 'transform', None) is not None]
+        if not pieces:
+            return
+        node = self._nodes[name]
+        heir = self._heir(name, pieces)
+        base = old.physics
+        cells = max(1, len(base.getpixels()))
+        for piece in pieces:
+            share = max(1, len(piece.physics.getpixels()))
+            piece.physics.automass = False
+            piece.physics.mass = base.mass * share / cells
+        self.parts[name] = heir
+        self._by_id.pop(id(old), None)
+        self._by_id[id(heir)] = name
+        if name == self._root:
+            del old.humanoid
+            heir.humanoid = self
+            self.obj = heir
+            self.t = heir.transform
+        self._guard(name)
+        for child in list(self._order):
+            cnode = self._nodes[child]
+            if cnode['parent'] != name or child in self._detached:
+                continue
+            jt = getattr(heir, 'joint', None)
+            edge = jt._edges.get(id(self.parts[child])) if jt is not None else None
+            if edge is None or not edge.alive:
+                self._lost(child)
+        if name in self._watched:
+            self._watched.discard(name)
+            if getattr(heir, 'joint', None) is not None:
+                self._watch(name)
+        self._isolate([heir])
+        self._resolidify()
+
+    def _vanish(self, name, part):
+        if self._closing or name == self._root or self.parts.get(name) is not part:
+            return
+        for child in list(self._order):
+            if self._nodes[child]['parent'] == name and child not in self._detached:
+                self._lost(child)
+        self.parts.pop(name, None)
+        self._gone[name] = self._nodes.pop(name)
+        if name in self._order:
+            self._order.remove(name)
+        self._by_id.pop(id(part), None)
+        self._detached.discard(name)
+        self._watched.discard(name)
+        self._resolidify()
+
     def _mass(self, node):
         text = self.scene.recomp.sub('', node['spec']['text'])
         return node['spec']['density'] * sum(1 for c in text if c not in ' \n')
@@ -594,7 +671,7 @@ class humanoid:
                     b._ghosts.append(a)
 
     def _shape(self, name, own=True):
-        node = self._nodes[name]
+        node = self._nodes.get(name) or self._gone[name]
         spec = node['spec']
         if node['mirror'] is not None and 'joint' not in spec:
             shape = self._shape(node['mirror'], False)
@@ -618,12 +695,18 @@ class humanoid:
         shape = self._shape(node['name'])
         child.joint.apply(kind='hinge', radius='keep', rest=node['pose'][1],
                           range=shape.get('range') if self._loose_limits else None)
+        self._restore_length(node)
 
     def _stiffen(self, node):
         child = self.parts[node['name']]
         child.joint.apply(kind='fixed')
-        link = self.parts[node['parent']].joint.link(child)
+        link = self._restore_length(node)
         node['angle'] = _wrap(link.pose[1] - node['pose'][1])
+
+    def _restore_length(self, node):
+        link = self.parts[node['parent']].joint.link(self.parts[node['name']])
+        link.pose = (node['pose'][0], link.pose[1], link.pose[2])
+        return link
 
     def _link(self, node):
         parent = self.parts[node['parent']]
@@ -674,7 +757,7 @@ class humanoid:
         doomed = self._subtree(name)
         for part in reversed(doomed):
             obj = self.parts.pop(part)
-            self._nodes.pop(part)
+            self._gone[part] = self._nodes.pop(part)
             self._order.remove(part)
             self._by_id.pop(id(obj), None)
             self._detached.discard(part)

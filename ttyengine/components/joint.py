@@ -399,19 +399,21 @@ class _edge():
             if along < 0 or f.kind != 'ball' or high - low <= 1e-9:
                 fx = -along * ux / n / A * damp
                 fy = -along * uy / n * damp
+        gx = ex * k + fx
+        gy = ey * k + fy
+        bodies = []
         for comp, point, w, kick in ((f, fpoint, wc, fkick), (o, opoint, -wp, okick)):
             p = getattr(comp.obj, 'physics', None)
             if p is not None and p.dynamic:
                 if w:
-                    gx = (ex * k + fx) * w
-                    gy = (ey * k + fy) * w
-                    if kick:
-                        comp._kick(point, gx, gy)
-                    else:
-                        p.xvel += gx * p.mass
-                        p.yvel += gy * p.mass
+                    bodies.append((comp, point, 1.0 if w > 0 else -1.0, kick))
             else:
                 comp._push(ex * w * k, ey * w * k)
+        if not bodies:
+            return
+        reduced = 1.0 / sum(1.0 / comp._effective(point, gx, gy, kick) for comp, point, _, kick in bodies)
+        for comp, point, sign, kick in bodies:
+            comp._kick(point, gx * reduced * sign, gy * reduced * sign, kick)
 
 @_withparams
 class joint(_lerpable, _keyed):
@@ -452,6 +454,7 @@ class joint(_lerpable, _keyed):
         self._preset = None
         self._stamp = None
         self._spun = None
+        self._resolved = None
         self._joints = _jointlist(self)
         if kwargs.get('preset') is not None:
             self.apply(kwargs['preset'])
@@ -876,11 +879,7 @@ class joint(_lerpable, _keyed):
             other = edge.other(comp)
             if comp._edges.get(id(other.obj)) is edge:
                 del comp._edges[id(other.obj)]
-        f = edge.follower
-        p = getattr(f.obj, 'physics', None)
-        if p is not None and f.kind != 'ball' and not any(e.follower is f for e in f._edges.values()):
-            p.avel = 0
-        f._spun = None
+        edge.follower._spun = None
 
     def _break(self, edge):
         o, f = edge.origin, edge.follower
@@ -906,6 +905,7 @@ class joint(_lerpable, _keyed):
         t = o.transform
         p = getattr(o, 'physics', None)
         x, y = t.x, t.y
+        x0, y0 = x, y
         if p is not None and p.dynamic and p.solid and not p.phantom:
             def depth(px, py):
                 return sum(len(v) for v in p.overlaps(p.getpixels(px, py)).values())
@@ -934,6 +934,7 @@ class joint(_lerpable, _keyed):
             t.x = x
         if y != t.y:
             t.y = y
+        return x - x0, y - y0
 
     def _push(self, dx, dy):
         p = getattr(self.obj, 'physics', None)
@@ -953,25 +954,30 @@ class joint(_lerpable, _keyed):
         om = p._omega()
         return p.xvel / p.mass - om * ry / A, p.yvel / p.mass + om * rx
 
-    def _kick(self, point, gx, gy):
-        # change the velocity of `point` on this body by (gx, gy), spreading it between
-        # linear and angular motion so the point itself moves by about that much
+    def _effective(self, point, gx, gy, kick):
         p = self.obj.physics
-        if p._invinertia():
-            A = self.t.aspect
-            cx, cy, spread = p.body()
-            rx, ry = (point[0] - cx - 0.5) * A, point[1] - cy + 0.5
-            n = math.hypot(gx * A, gy)
-            if n > 1e-12:
-                cross = (rx * gy - ry * gx * A) / n
-                s = 1.0 / (1.0 + cross * cross / spread)
-                gx *= s
-                gy *= s
-                p._spin((rx * gy - ry * gx * A) * p.mass)
-        p.xvel += gx * p.mass
-        p.yvel += gy * p.mass
+        if not kick or not p._invinertia():
+            return p.mass
+        A = self.t.aspect
+        cx, cy, spread = p.body()
+        rx, ry = (point[0] - cx - 0.5) * A, point[1] - cy + 0.5
+        n = math.hypot(gx * A, gy)
+        if n <= 1e-12:
+            return p.mass
+        cross = (rx * gy - ry * gx * A) / n
+        return p.mass / (1.0 + cross * cross / spread)
 
-    def _absorb(self, ex, ey):
+    def _kick(self, point, jx, jy, kick=True):
+        p = self.obj.physics
+        if kick and p._invinertia():
+            A = self.t.aspect
+            cx, cy, _ = p.body()
+            rx, ry = (point[0] - cx - 0.5) * A, point[1] - cy + 0.5
+            p._spin(rx * jy - ry * jx * A)
+        p.xvel += jx
+        p.yvel += jy
+
+    def _relax(self, other, ex, ey):
         p = getattr(self.obj, 'physics', None)
         if p is None or not p.dynamic:
             return
@@ -982,10 +988,20 @@ class joint(_lerpable, _keyed):
             return
         ux /= n
         uy /= n
-        along = (p.xvel / p.mass * A) * ux + (p.yvel / p.mass) * uy
-        if along < 0:
-            p.xvel -= along * ux / A * p.mass
-            p.yvel -= along * uy * p.mass
+        q = getattr(other.obj, 'physics', None)
+        shared = q is not None and q.dynamic
+        B = other.t.aspect
+        bx, by = (other.velocity[0] * B / A, other.velocity[1]) if shared else (0.0, 0.0)
+        closing = ((p.xvel / p.mass - bx) * A) * ux + (p.yvel / p.mass - by) * uy
+        if closing >= 0:
+            return
+        reduced = 1.0 / (1.0 / p.mass + 1.0 / q.mass) if shared else p.mass
+        j = -closing * reduced
+        p.xvel += j * ux / A
+        p.yvel += j * uy
+        if shared:
+            q.xvel -= j * ux / B
+            q.yvel -= j * uy
 
     def _order(self):
         depth = {id(self): 0}
@@ -1042,11 +1058,16 @@ class joint(_lerpable, _keyed):
         moved = False
         if ex or ey:
             mover = far if far.movable else near
+            other = near if mover is far else far
             if mover.movable:
                 dx, dy = (ex, ey) if mover is f else (-ex, -ey)
-                mover._absorb(dx, dy)
-                mover._move(dx, dy)
+                mover._relax(other, dx, dy)
+                gx, gy = mover._move(dx, dy)
                 moved = True
+                rx, ry = dx - gx, dy - gy
+                if other.movable and (rx or ry) and math.hypot(rx * self.t.aspect, ry) > 1e-6:
+                    other._relax(mover, -rx, -ry)
+                    other._move(-rx, -ry)
         if f._orient(edge):
             moved = True
         return moved
@@ -1081,10 +1102,52 @@ class joint(_lerpable, _keyed):
             return
         self._settle()
 
+    def _network(self):
+        seen = {id(self): self}
+        queue = [self]
+        edges = []
+        marked = set()
+        for comp in queue:
+            for edge in list(comp._edges.values()):
+                if not edge.alive or id(edge) in marked:
+                    continue
+                marked.add(id(edge))
+                edges.append(edge)
+                other = edge.other(comp)
+                if id(other) not in seen:
+                    seen[id(other)] = other
+                    queue.append(other)
+        return list(seen.values()), edges
+
+    def _resolve(self):
+        tick = self.scene._ticks
+        if self._resolved == tick:
+            return
+        members, edges = self._network()
+        for member in members:
+            member._resolved = tick
+        edges = [e for e in edges if e.physical]
+        for _ in range(_SWEEPS):
+            moved = False
+            for edge in edges:
+                if not edge.alive:
+                    continue
+                ex, ey, dist = edge.error(False)
+                if not (ex or ey):
+                    continue
+                f = edge.follower
+                if edge.beyond() or (f.snap and math.hypot(ex * f.t.aspect, ey) > f.snap):
+                    if edge.origin._fix(edge, edge.origin, f, False, False):
+                        moved = True
+            if not moved:
+                break
+
     def step(self):
         if joint._active or not self._edges:
             return
         owned = [e for e in list(self._edges.values()) if e.origin is self]
+        if any(e.alive and e.physical for e in owned):
+            self._resolve()
         for edge in owned:
             if edge.alive and edge.physical:
                 ex, ey, dist = edge.error(False)

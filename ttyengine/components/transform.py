@@ -957,7 +957,7 @@ class transform(_change_callback, _lerpable, _keyed):
             target = {self._cell_world(c) for p in group for c in self._rotsrc.get(p, ())}
 
             kw = self.obj.kwargs()
-            for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy', 'xvel', 'yvel', 'avel', 'joints'):
+            for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy', 'xvel', 'yvel', 'avel', 'joints', 'humanoid'):
                 kw.pop(key, None)
             if parent is not None:
                 kw.update(dynamic=parent.dynamic, bounciness=parent.bounciness, friction=parent.friction)
