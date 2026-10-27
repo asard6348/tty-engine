@@ -668,6 +668,55 @@ The older names keep working: `termxoffset`, `termyoffset`, `termwidth` and `ter
 
 </details>
 
+<details>
+<summary><b>Networking: UDP, TCP, servers and peer-to-peer</b></summary>
+
+&nbsp;
+
+`ttyengine.net` shares a running simulation between processes over TCP, UDP or both, using only the standard library. A `Node` is one participant: it can listen (`host`), connect (`connect`) or do both, so the same code builds a dedicated server, a client, or a peer-to-peer mesh. A `Sync` shares engine state over a node.
+
+```python
+from ttyengine import Session, net
+
+node = net.Node('alice')
+node.host(7777)                                  # listen on tcp and udp port 7777
+
+other = net.Node('bob')
+other.connect(('127.0.0.1', 7777), 'udp')        # or 'tcp', or 'auto'
+```
+
+- **Topology.** By default a node that hosts relays messages between the nodes connected to it (a star). `Node(mesh=True)` makes every node that joins also connect to the nodes already there, so each pair talks directly and nothing is relayed. `Node(password=...)` rejects nodes with a different password; the check is an HMAC over a per-connection nonce, so the password is never sent and a captured handshake cannot be replayed. A relayed message is only accepted from the node it claims to come from, or from the host this node joined, and `Sync` honours forwarded entities only from that host.
+- **Transports.** TCP links use length-prefixed frames. UDP links add a handshake, reliable ordered delivery with retransmission and fragmentation for large messages, a latest-wins unreliable mode, keep-alives and round-trip timing. Everything is non-blocking and driven by `node.update()`, which `Sync.attach` calls every frame.
+- **Messages.** `node.send(channel, data, to=None, reliable=True)` and `node.on(channel, callback)` carry any mix of `None`, `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict` and `set`. `'@join'` and `'@leave'` report peers coming and going.
+
+Every layer of the simulation is shared the same way, from the session down to a single variable:
+
+```python
+from ttyengine.net import Node, Sync
+
+sync = Sync(node)
+session = Session()
+sync.share(session, 'game')          # session -> worlds -> scenes -> objects -> components -> variables
+sync.attach(session)                 # pump the network inside the frame loop
+```
+
+| Share | What travels |
+| --- | --- |
+| `session` | `bgcolor`, `fgcolor`, `pause`, `pausephysics`, `pauserendering` and its worlds |
+| `world` | `layer`, `pause`, `pausephysics`, `pauserendering` and its scene |
+| `scene` | `gravity`, `drag`, `precision`, `bouncethreshold`, `aspect`, `ambient` and its objects |
+| `obj` | every setting of every component it has (`transform`, `physics`, `joint`, `light`, `force`, `pen`), plus plain attributes you name |
+| `(obj, 'x', 'y')` | just those variables |
+
+- **Roots have names.** `share(target, 'name')` must be called with the same name on every node that takes part. The cameras, terminal settings and other per-screen values are not shared unless you ask for them with `vars=`.
+- **Choosing variables.** `vars=('transform.x', 'hp')` shares exactly those variables of the object (`'transform'` means the whole component, a bare name such as `'x'` is looked up like `obj['x']`, and names that are not settings are read as plain attributes). `vars={'obj': (...), 'scene': (...)}` applies to every layer of that kind below the root and `exclude=` removes variables the same way. `ignore(obj)` and `filter=` keep objects out of the shared scene.
+- **Ownership.** Each entity has one owner and only the owner's changes are accepted. Roots belong to the host (`owner=net.LOCAL` or a peer id changes that), objects belong to the node that created them. `sync.transfer(obj, peer)` hands an object over, and `sync.transfer(obj, peer, vars=('physics.xvel',))` hands over single variables, so a client can steer an object the host simulates.
+- **Replicas.** An object owned by another node is frozen: the local physics and joints skip it and the owner's values are applied instead. `Sync(replicas='live')` keeps simulating it between updates. When an owner leaves, `orphans='drop'` removes its objects, `'adopt'` gives them to the lowest remaining node id and `'keep'` leaves them in place.
+- **Reliability.** `share(..., reliable=False)` sends variable changes as latest-wins datagrams and refreshes the full state every `Sync(resync=1.0)` seconds so lost packets heal. Creating and removing entities is always reliable. `Sync(rate=30)` limits how often changes are sent.
+- **Unshareable values.** Values that cannot travel, such as the functions used for `light.affect` or `force.affect`, are skipped and listed in `sync.skipped`. Naming one in `vars=` raises `NetError`. Custom components join in with `net.register(MyComponent)`.
+
+</details>
+
 <sub>[↑ Back to top](#top)</sub>
 
 ## Examples

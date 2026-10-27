@@ -94,6 +94,7 @@ class obj:
         self.scene = scene
         self._ondiscardcb = []
         self._ghosts = []
+        self._remote = False
 
     def _owner(self, key):
         if not isinstance(key, str):
@@ -439,7 +440,7 @@ class Scene:
         if physics:
             for o in list(self.objs):
                 phy = getattr(o, 'physics', None)
-                if phy is not None and phy.dynamic:
+                if phy is not None and phy.dynamic and not o._remote:
                     phy.physics()
         self._ticks += 1
         self._tickfade()
@@ -449,7 +450,7 @@ class Scene:
                 tf._tick()
         for o in list(self.objs):
             jnt = getattr(o, 'joint', None)
-            if physics and jnt is not None:
+            if physics and jnt is not None and not o._remote:
                 jnt.step()
             lgt = getattr(o, 'light', None)
             if lgt is not None:
