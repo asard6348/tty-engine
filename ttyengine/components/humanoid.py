@@ -262,6 +262,10 @@ class humanoid:
                     self._loosen(node)
                 else:
                     self._stiffen(node)
+        if not on:
+            for name in self._order:
+                if name not in self._detached:
+                    self.parts[name].physics.avel = 0
         self._resolidify()
         return self
 
