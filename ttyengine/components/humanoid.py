@@ -279,9 +279,13 @@ class humanoid:
                 raise KeyError(key)
             for name, sign in resolved:
                 goals[name] = value * sign
+        spin = None
         for name, goal in goals.items():
             node = self._nodes[name]
-            if name in self._detached or node['parent'] is None:
+            if node['parent'] is None:
+                spin = goal
+                continue
+            if name in self._detached:
                 continue
             if node['limits'] is not None:
                 goal = max(node['limits'][0], min(node['limits'][1], goal))
@@ -290,7 +294,33 @@ class humanoid:
                 node['angle'] = new
                 dist, bearing, turn = node['pose']
                 self.parts[node['parent']].joint.link(self.parts[name]).pose = (dist, _wrap(bearing + new), _wrap(turn + new))
+        if spin is not None:
+            self._orient_root(spin, weight)
         return self
+
+    def _lowest(self):
+        return min(y for name in self._order if name not in self._detached
+                   for _, y in self.parts[name].physics.getpixels())
+
+    def _orient_root(self, goal, weight):
+        root = self.obj
+        turn = _wrap(goal - root.transform.rotation) * weight
+        if abs(turn) <= 1e-3:
+            return
+        floor = self._lowest()
+        for name in self._order:
+            self.parts[name].physics.solid = False
+        root.transform.rotation = root.transform.rotation + turn
+        root.physics.avel = 0
+        for name in self._order:
+            node = self._nodes[name]
+            if node['parent'] is not None and name not in self._detached:
+                parent = self.parts[node['parent']]
+                parent.joint._fix(parent.joint.link(self.parts[name]), parent.joint, self.parts[name].joint, False, False)
+        sunk = floor - self._lowest()
+        if sunk > 0:
+            self.move(0, sunk, True)
+        self._resolidify()
 
     def apply_pose(self, name, weight=1.0):
         return self.pose(self.poses[name], weight, reset=True)
