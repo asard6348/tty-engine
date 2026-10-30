@@ -38,11 +38,12 @@ __version__ = _installed_version() or _pyproject_version() or "0+unknown"
 __all__ = ["Session", "World", "Simulation", "start", "net", "__version__"]
 
 
+import importlib
+
 def __getattr__(name):
     if name in ("Session", "World", "Simulation", "start"):
-        from . import launcher
-        return getattr(launcher, name)
+        submod = importlib.import_module(".launcher", __name__)
+        return getattr(submod, name)
     if name == "net":
-        from . import net
-        return net
+        return importlib.import_module(".net", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
