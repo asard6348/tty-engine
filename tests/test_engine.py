@@ -1051,8 +1051,18 @@ class HumanoidTests(unittest.TestCase):
         self.assertLess(abs(h["right_foot"].transform.y - (-29.5)), 0.6)
         self.assertGreater(body.transform.y, h["right_foot"].transform.y)
 
+    def test_joint_elasticity_defaults_to_one_and_can_be_changed(self):
+        parts = {"a": "##", "b": {"text": "#", "parent": "a", "joint": "hinge"},
+                 "c": {"text": "#", "parent": "b", "joint": {"kind": "hinge", "elasticity": 3}}}
+        _, _, h = self.make(parts)
+        self.assertEqual(h["b"].joint.elasticity, 1)
+        self.assertEqual(h["c"].joint.elasticity, 3)
+        _, _, h = self.make(parts, elasticity=1.25)
+        self.assertEqual(h["b"].joint.elasticity, 1.25)
+        self.assertEqual(h["c"].joint.elasticity, 3)
+
     def test_standing_figure_comes_to_rest_without_flicker(self):
-        sc, _, h = self.make()
+        sc, _, h = self.make(elasticity=1.25)
         for _ in range(500):
             sc.tick()
         low = {n: h[n].transform.y for n in h}

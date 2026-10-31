@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `humanoid` joints now default to an `elasticity` of `1` instead of `1.25`, so the setting means what it says. Pass `elasticity=1.25` in the humanoid config (or `elasticity` in a part's `joint` settings) to keep the softer pull that lets a standing figure rest without jitter.
 - `humanoid.pose` accepts the name of a registered pose as well as a dict.
 - `ontouch` callbacks now fire whenever bodies really collide: after a rotation hits something, for rotating phantoms and non-solid bodies, and when the resting-contact pass applies a collision impulse. Before, a spinning body could knock another one away without either being notified.
 - Limp humanoids are articulated rigid bodies: limbs are pinned ball joints with their own inertia and angular velocity, joint limits are angular impulses, and `tether` sets the pin stiffness.

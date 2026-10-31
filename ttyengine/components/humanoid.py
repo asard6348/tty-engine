@@ -93,7 +93,7 @@ class humanoid:
         self._closing = False
         self._loose_solid = True
         self._loose_limits = True
-        self._elasticity = config.get('elasticity', 1.25)
+        self._elasticity = config.get('elasticity', 1)
         self._snap = config.get('snap', 2.0)
         self._breaks = []
         self._solid = config.get('solid')
@@ -843,7 +843,7 @@ class humanoid:
     def _contact(self, name):
         node = self._nodes[name]
         if not node['spec'].get('contact'):
-            return False
+            return True
         return not any(
             self._nodes[n]['parent'] == name and self._nodes[n]['spec'].get('contact')
             for n in self._order
