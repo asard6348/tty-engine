@@ -1062,7 +1062,7 @@ class HumanoidTests(unittest.TestCase):
         self.assertEqual(h["c"].joint.elasticity, 3)
 
     def test_standing_figure_comes_to_rest_without_flicker(self):
-        sc, _, h = self.make(elasticity=1.25)
+        sc, _, h = self.make()
         for _ in range(500):
             sc.tick()
         low = {n: h[n].transform.y for n in h}

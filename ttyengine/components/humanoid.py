@@ -843,7 +843,7 @@ class humanoid:
     def _contact(self, name):
         node = self._nodes[name]
         if not node['spec'].get('contact'):
-            return True
+            return False
         return not any(
             self._nodes[n]['parent'] == name and self._nodes[n]['spec'].get('contact')
             for n in self._order
