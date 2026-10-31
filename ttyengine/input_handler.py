@@ -1,4 +1,4 @@
-import sys, re, os, threading, time, inspect, atexit, codecs, weakref
+import sys, re, os, threading, time, inspect, atexit, codecs, weakref, struct
 from collections import defaultdict, deque
 
 try:
@@ -32,6 +32,14 @@ if _WINDOWS:
                  'R': ansi.csi('2', '~'), 'S': ansi.csi('3', '~')}
 else:
     import select
+
+_LINUX = sys.platform.startswith('linux')
+if _LINUX:
+    import fcntl, glob
+    try:
+        import grp
+    except ImportError:
+        grp = None
 
 
 def _is_tty():
@@ -120,9 +128,194 @@ def _kitty_name(code):
         return 'space' if code == 32 else chr(code).lower()
     return None
 
+_EV_KEY       = 0x01
+_KEY_MAX      = 0x2ff
+_KEY_ENTER    = 28
+_KEY_A        = 30
+_KEY_SPACE    = 57
+_EVDEV_FMT    = 'llHHi'
+_EVDEV_SIZE   = struct.calcsize(_EVDEV_FMT)
+_EVDEV_DIR    = '/dev/input'
+_EVDEV_RESCAN = 2.0
+_EVDEV_NAMES  = {1: 'esc', 2: '1', 3: '2', 4: '3', 5: '4', 6: '5', 7: '6', 8: '7',
+                 9: '8', 10: '9', 11: '0', 12: '-', 13: '=', 14: 'backspace', 15: 'tab',
+                 16: 'q', 17: 'w', 18: 'e', 19: 'r', 20: 't', 21: 'y', 22: 'u', 23: 'i',
+                 24: 'o', 25: 'p', 26: '[', 27: ']', 28: 'enter', 29: 'ctrl',
+                 30: 'a', 31: 's', 32: 'd', 33: 'f', 34: 'g', 35: 'h', 36: 'j', 37: 'k',
+                 38: 'l', 39: ';', 40: "'", 41: '`', 42: 'shift', 43: '\\',
+                 44: 'z', 45: 'x', 46: 'c', 47: 'v', 48: 'b', 49: 'n', 50: 'm',
+                 51: ',', 52: '.', 53: '/', 54: 'shift', 55: '*', 56: 'alt', 57: 'space',
+                 58: 'caps lock', 69: 'num lock', 70: 'scroll lock',
+                 71: '7', 72: '8', 73: '9', 74: '-', 75: '4', 76: '5', 77: '6',
+                 78: '+', 79: '1', 80: '2', 81: '3', 82: '0', 83: '.',
+                 87: 'f11', 88: 'f12', 96: 'enter', 97: 'ctrl', 98: '/',
+                 99: 'print screen', 100: 'alt', 102: 'home', 103: 'up',
+                 104: 'page up', 105: 'left', 106: 'right', 107: 'end', 108: 'down',
+                 109: 'page down', 110: 'insert', 111: 'delete', 117: '=',
+                 119: 'pause', 125: 'windows', 126: 'windows', 127: 'menu'}
+_EVDEV_NAMES.update({59 + i: 'f%d' % (i + 1) for i in range(10)})
+_EVDEV_NAMES.update({183 + i: 'f%d' % (i + 13) for i in range(12)})
+
 _CSI_RE      = re.compile(ansi.CSI_RE + r'([0-9:;<=>?]*)([ -/]*)([@-~])')
 _CSI_PARTIAL_RE = re.compile(ansi.CSI_RE + r'[0-9:;<=>?]*[ -/]*')
 _ESC_TIMEOUT = 0.05
+
+
+class _EvdevKeyboard:
+    def __init__(self):
+        self._cb      = None
+        self._fds     = {}
+        self._held    = {}
+        self._ignored = set()
+        self._stop    = threading.Event()
+        self._thread  = None
+
+    @staticmethod
+    def accessible():
+        if not _LINUX:
+            return False
+        if os.environ.get('SSH_CONNECTION') or os.environ.get('SSH_TTY'):
+            return False
+        paths = glob.glob(_EVDEV_DIR + '/event*')
+        if not paths:
+            return False
+        try:
+            if os.geteuid() == 0:
+                return True
+        except AttributeError:
+            return False
+        if grp is not None:
+            try:
+                gid = grp.getgrnam('input').gr_gid
+                if gid == os.getegid() or gid in os.getgroups():
+                    return True
+            except (KeyError, OSError):
+                pass
+        return any(os.access(p, os.R_OK) for p in paths)
+
+    @staticmethod
+    def _is_keyboard(fd):
+        buf = bytearray(_KEY_MAX // 8 + 1)
+        req = (2 << 30) | (len(buf) << 16) | (ord('E') << 8) | (0x20 + _EV_KEY)
+        try:
+            fcntl.ioctl(fd, req, buf, True)
+        except OSError:
+            return False
+        return all(buf[k >> 3] & (1 << (k & 7)) for k in (_KEY_A, _KEY_ENTER, _KEY_SPACE))
+
+    def _scan(self):
+        paths = set(glob.glob(_EVDEV_DIR + '/event*'))
+        self._ignored &= paths
+        for path in paths:
+            if path in self._fds or path in self._ignored:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                self._ignored.add(path)
+                continue
+            if self._is_keyboard(fd):
+                self._fds[path] = fd
+                self._held[fd] = set()
+            else:
+                os.close(fd)
+                self._ignored.add(path)
+
+    def open(self):
+        try:
+            self._scan()
+        except Exception:
+            return False
+        return bool(self._fds)
+
+    def _emit(self, kind, code):
+        cb = self._cb
+        name = _EVDEV_NAMES.get(code)
+        if cb and name:
+            cb(_FakeKeyEvent(kind, name, ('k', code)))
+
+    def _drop(self, fd):
+        for path, f in list(self._fds.items()):
+            if f == fd:
+                del self._fds[path]
+        for code in self._held.pop(fd, ()):
+            self._emit('up', code)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def _drain(self, fd):
+        try:
+            data = os.read(fd, _EVDEV_SIZE * 64)
+        except BlockingIOError:
+            return
+        except OSError:
+            self._drop(fd)
+            return
+        if not data:
+            self._drop(fd)
+            return
+        held = self._held.get(fd, set())
+        for off in range(0, len(data) - _EVDEV_SIZE + 1, _EVDEV_SIZE):
+            _, _, etype, code, value = struct.unpack_from(_EVDEV_FMT, data, off)
+            if etype != _EV_KEY or value == 2:
+                continue
+            if value:
+                held.add(code)
+                self._emit('down', code)
+            else:
+                held.discard(code)
+                self._emit('up', code)
+
+    def _run(self, stop):
+        next_scan = 0.0
+        while not stop.is_set():
+            now = time.monotonic()
+            if now >= next_scan:
+                try:
+                    self._scan()
+                except Exception:
+                    pass
+                next_scan = now + _EVDEV_RESCAN
+            fds = list(self._fds.values())
+            if not fds:
+                stop.wait(0.25)
+                continue
+            try:
+                ready, _, _ = select.select(fds, [], [], 0.25)
+            except (OSError, ValueError):
+                for fd in fds:
+                    try:
+                        os.fstat(fd)
+                    except OSError:
+                        self._drop(fd)
+                continue
+            for fd in ready:
+                self._drain(fd)
+
+    def hook(self, callback, suppress=False):
+        self._cb = callback
+        if not (self._thread and self._thread.is_alive()):
+            self._stop = threading.Event()
+            self._thread = threading.Thread(target=self._run, args=(self._stop,), daemon=True)
+            self._thread.start()
+        return callback
+
+    def unhook_all(self):
+        self._cb = None
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread and thread is not threading.current_thread():
+            thread.join(1.0)
+        for fd in list(self._fds.values()):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fds.clear()
+        self._held.clear()
+        self._ignored.clear()
 
 
 class inp():
@@ -161,7 +354,17 @@ class inp():
             except Exception:
                 self.keyboard = None
 
-        # Tier 2/3: terminal input. Kitty keyboard protocol (true press/release)
+        if self.keyboard is None and _EvdevKeyboard.accessible():
+            evdev_kb = _EvdevKeyboard()
+            if evdev_kb.open():
+                try:
+                    self._kb_hook = evdev_kb.hook(self._kb_event_raw, suppress=False)
+                    self.keyboard = evdev_kb
+                except Exception:
+                    evdev_kb.unhook_all()
+                    self.keyboard = None
+
+        # Tier 3/4: terminal input. Kitty keyboard protocol (true press/release)
         # if the terminal answers the probe, else raw stdin (press-only, held()
         # is emulated and only stays True while key repeats keep arriving).
         if self.keyboard is None:
@@ -215,7 +418,7 @@ class inp():
     @property
     def backend(self):
         if not self._kb_is_fallback:
-            return 'keyboard'
+            return 'evdev' if isinstance(self.keyboard, _EvdevKeyboard) else 'keyboard'
         if self._kitty_state == 'on':
             return 'kitty'
         return 'terminal'
@@ -625,7 +828,7 @@ class inp():
         # release events and held() is emulated from key-repeat. It replaces
         # legacy_hold for this call, so a developer can bridge the OS
         # repeat-start gap (often 250-600 ms) for actions like a persistent jump.
-        # Ignored by the `keyboard` and kitty tiers, which report real releases.
+        # Ignored by the `keyboard`, evdev and kitty tiers, which report real releases.
         if not self.focused:
             return False
         pressed = self._pressed_keys
@@ -670,7 +873,7 @@ class inp():
         # delay: seconds after the key's last press before the callback fires.
         # Only used in the last tier (terminal fallback without kitty), where the
         # release is emulated; it replaces legacy_hold for this callback and
-        # matches held(key, delay=...). Ignored by the keyboard and kitty tiers.
+        # matches held(key, delay=...). Ignored by the keyboard, evdev and kitty tiers.
         accepts = _accepts_arg(callback)
         token = object() if once else None
         if caps:
