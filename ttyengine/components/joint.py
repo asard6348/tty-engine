@@ -388,10 +388,14 @@ class _edge():
         ux, uy = ex * A, ey
         n = math.hypot(ux, uy)
         full = f.kind in ('fixed', 'slider') or n <= 1e-9
+        rigid = False
         if not full:
             low, high = _band(f.radius, (self.pose or self.capture())[0])
             full = high <= 1e-9
+            rigid = full
         if full:
+            if pinned and (rigid or n <= 1e-9):
+                damp = 1.0
             fx = -rx * damp
             fy = -ry * damp
         else:

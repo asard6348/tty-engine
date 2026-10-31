@@ -452,6 +452,9 @@ class Scene:
             jnt = getattr(o, 'joint', None)
             if physics and jnt is not None and not o._remote:
                 jnt.step()
+            hum = getattr(o, 'humanoid', None)
+            if physics and hum is not None and not o._remote:
+                hum.step()
             lgt = getattr(o, 'light', None)
             if lgt is not None:
                 lgt.step()

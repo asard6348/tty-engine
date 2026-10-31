@@ -242,7 +242,7 @@ An object starts out empty. `create()` looks at its keyword arguments, attaches 
 | `force` | `force=...` or `force={...}` | Pushes other objects, optionally limited by a radius or a filter. Settings: `strength`, `affect`, `cap`, `position`, `radius`, `torque`, `shield`. |
 | `joint` | `preset`, `joints`, `elasticity`, `kind`, ... | Links objects together as a rope, rod, spring, hinge, slider or fixed joint. |
 | `light` | `light=True` or `light={...}` | Turns the object into a light source. Settings: `color`, `alpha`, `radius`, `falloff`, `shadows`, `cone`, `direction`, `glow` and more. `scene.ambient` sets the base brightness. |
-| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`, `elasticity`. |
+| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`, `elasticity`, `tether`. |
 
 Settings can be given flat, or grouped under the component's name. The two calls below are equivalent:
 
@@ -440,6 +440,7 @@ body = scene.obj().create(None, 20, -10, humanoid={'parts': parts, 'poses': pose
 figure = body.humanoid
 
 figure.apply_pose('arms_out')            # poses and cycles are plain dicts: figure.poses, figure.cycles
+figure.pose('arms_out')                  # a registered pose name works too
 figure.pose({'left_thigh': -30})         # angles are degrees from the rest pose, clamped to joint limits
 figure.velocity = (0.2, None)            # moves every part together
 figure.animate('walk', phase)            # call each frame with a growing phase
@@ -459,6 +460,8 @@ figure.ragdoll()                         # releases every joint; figure.ragdoll(
 **Ragdoll.** `figure.ragdoll(on=True, solid=True, limits=True)` turns every pose-driven joint into a free hinge that keeps its length, so the figure collapses under gravity and swings with impacts. `solid=True` makes every part collide with the world while it is limp, and `limits=True` keeps the joint ranges. While limp, `pose` and `animate` do nothing; `ragdoll(False)` stiffens the joints in their current angles, after which `pose` works again. `figure.ragdolled` tells the current state.
 
 **Stability.** Joints use an `elasticity` of `1.25` by default (the `elasticity` setting), which lets a standing figure come to a complete rest; `1.0` is stiffer but makes parts jitter between two rows, and values above about `3` make the figure sag. Joints also use `snap` (the `snap` setting, `2.0` cells by default): when a joint is stretched further than that, for example by dragging the figure, the part is placed back rigidly instead of being pulled back softly. The `snap` joint setting is available on every `joint`; `0` disables it.
+
+**Limp figures.** A ragdoll's limbs are real rigid bodies: each limb is a ball joint pinned at its attach point with its own mass, moment of inertia and angular velocity, and the joint limits are angular impulses between the two bodies, so spin and momentum are conserved and only contacts and friction remove energy. `tether` (default `6`) sets how firmly the pins pull back together: higher values pull more softly. It is a trade-off between stretch and jitter, and the best value depends on the scene.
 
 **Cycles.** A cycle channel is `bias + amp * sin(phase + shift)`, or a bare number for `amp`; `rectify=True` clamps the sine to positive values. `figure.sample(cycle, phase, scale=1.0)` returns the angles and `figure.animate(cycle, phase, weight=1.0, scale=1.0)` applies them.
 

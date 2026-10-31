@@ -40,6 +40,53 @@ class PhysicsTests(unittest.TestCase):
         self.assertLessEqual(ball.transform.y, floor.transform.y + 1)
         self.assertEqual(floor.transform.y, -10)
 
+    def test_a_spinning_body_that_pushes_another_reports_the_touch(self):
+        for avel in (40, 120, 400, 1500):
+            _, sc = make_scene()
+            sc.gravity = (0, 0)
+            bar = sc.obj().create("\n".join(["#" * 3] * 14), 0, 0, dynamic=True, avel=avel, mass=40)
+            ship = sc.obj().create("##\n##", 5, -8, dynamic=True, mass=4)
+            counts = {"bar": 0, "ship": 0}
+            bar.physics.ontouch(lambda o, i: counts.__setitem__("bar", counts["bar"] + 1))
+            ship.physics.ontouch(lambda o, i: counts.__setitem__("ship", counts["ship"] + 1))
+            x0 = ship.transform.x
+            for _ in range(120):
+                sc.tick()
+            self.assertGreater(abs(ship.transform.x - x0), 0.3, avel)
+            self.assertGreater(counts["bar"], 0, avel)
+            self.assertGreater(counts["ship"], 0, avel)
+
+    def test_a_rotating_phantom_reports_the_bodies_it_sweeps(self):
+        _, sc = make_scene()
+        sc.gravity = (0, 0)
+        zone = sc.obj().create("\n".join(["#" * 3] * 14), 0, 0, dynamic=True, avel=200, mass=40, phantom=True)
+        sc.obj().create("##\n##", 5, -8, dynamic=False, solid=True)
+        seen = []
+        zone.physics.ontouch(lambda o, i: seen.append(o))
+        for _ in range(120):
+            sc.tick()
+        self.assertTrue(seen)
+
+    def test_stacked_blocks_never_gain_energy(self):
+        _, sc = make_scene()
+        sc.gravity = (0, -0.05)
+        sc.obj().create("#" * 60, -30, -30, dynamic=False, friction=0.99)
+        blocks = [sc.obj().create("\n".join(["######"] * 3), 0, -26 + i * 5, dynamic=True, friction=0.5) for i in range(3)]
+
+        def energy():
+            total = 0.0
+            for b in blocks:
+                p = b.physics
+                v = math.hypot(p.xvel / p.mass * sc.aspect, p.yvel / p.mass)
+                total += 0.5 * p.mass * v * v + p.mass * 0.05 * b.transform.extent()[1]
+            return total
+        previous = energy()
+        for _ in range(600):
+            sc.tick()
+            current = energy()
+            self.assertLessEqual(current, previous + 1e-6)
+            previous = current
+
     def test_no_gravity_means_no_motion(self):
         _, sc = make_scene()
         ball = sc.obj().create("O", 5, 0, bounciness=0)
@@ -1035,7 +1082,7 @@ class HumanoidTests(unittest.TestCase):
         for name in h:
             node = h._nodes[name]
             if node["parent"] is not None:
-                self.assertEqual(h[name].joint.kind, "hinge")
+                self.assertEqual(h[name].joint.kind, "ball")
                 ex, ey, _ = h[node["parent"]].joint.link(h[name]).error(False)
                 self.assertLess(math.hypot(ex * sc.aspect, ey), 3)
         h.ragdoll(False)
@@ -1230,6 +1277,14 @@ class HumanoidTests(unittest.TestCase):
             self.assertAlmostEqual(x, x0 + vx * t, delta=1.0)
             self.assertAlmostEqual(y, y0 + vy * t - 0.025 * t * (t + 1), delta=1.0)
 
+    def test_pose_accepts_the_name_of_a_registered_pose(self):
+        sc, _, h = self.make()
+        h.poses["wave"] = {"arm": 60}
+        h.pose("wave")
+        self.assertEqual(h.angle("left_arm"), 60)
+        with self.assertRaises(KeyError):
+            h.pose("missing")
+
     def test_ragdoll_keeps_the_designed_joint_lengths(self):
         sc, _, h = self.make(gravity=0)
         sc.tick()
@@ -1239,9 +1294,11 @@ class HumanoidTests(unittest.TestCase):
         h.ragdoll()
         for _ in range(100):
             sc.tick()
-        for name, length in designed.items():
+        for name in designed:
             link = h[h._nodes[name]["parent"]].joint.link(h[name])
-            self.assertAlmostEqual(link.pose[0], length, places=6)
+            self.assertEqual(link.pose[0], 0)
+            ex, ey, _ = link.error(False)
+            self.assertLess(math.hypot(ex * sc.aspect, ey), 1.0, name)
         h.ragdoll(False)
         for name, length in designed.items():
             link = h[h._nodes[name]["parent"]].joint.link(h[name])

@@ -652,7 +652,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self._depenskip = 4
 
     def _depenetrate(self):
-        if self.phantom:
+        if self.phantom or not self.solid:
             return
         if self._depenskip > 0:
             self._depenskip -= 1
@@ -749,7 +749,10 @@ class physics(_change_callback, _lerpable, _keyed):
                         group = self.cluster(p2, dx, dy) if p2.dynamic else None
                         point = self._contact_point(contact, -dx, -dy)
                         cn = self._contact_normal(p2, point, -dx, -dy, False)
-                        self._solve(p2, group, point, cn[0], cn[1])
+                        if self._solve(p2, group, point, cn[0], cn[1]):
+                            cells = {(p[0] + dx, p[1] + dy) for p in contact}
+                            if self._notify(obj2, cells, True) == 0:
+                                return
         self.touch = tuple(touch)
         self.sides = tuple(sides)
         if abs(self._xvel) < 1e-9: self._xvel = 0
@@ -763,8 +766,26 @@ class physics(_change_callback, _lerpable, _keyed):
         finally:
             physics._running -= 1
 
+    def _notify(self, obj2, intersection, once=False):
+        obj2p = getattr(obj2, 'physics', None)
+        if obj2p is None:
+            return 1
+        if once and id(obj2) in self._touched:
+            return 2
+        self._touched.add(id(obj2))
+        for cb in list(self._touch_callbacks):
+            cb(obj2, intersection)
+        if getattr(self.obj, 'physics', None) is not self:
+            return 0
+        for cb in list(obj2p._touch_callbacks):
+            cb(self.obj, intersection)
+        if getattr(self.obj, 'physics', None) is not self:
+            return 0
+        return 1 if getattr(obj2, 'physics', None) is not obj2p else 2
+
     def _physics(self, axises=None):
         axises = self._axises if axises is None else axises
+        self._touched = set()
         actualmass = self.mass
         gravity = self.gravity
         drag = self.drag
@@ -788,15 +809,10 @@ class physics(_change_callback, _lerpable, _keyed):
                     obj2p = getattr(obj2, 'physics', None)
                     if obj2p is None:
                         continue
-                    for cb in list(self._touch_callbacks):
-                        cb(obj2, intersection)
-                    if getattr(self.obj, 'physics', None) is not self:
+                    state = self._notify(obj2, intersection)
+                    if state == 0:
                         return
-                    for cb in list(obj2p._touch_callbacks):
-                        cb(self.obj, intersection)
-                    if getattr(self.obj, 'physics', None) is not self:
-                        return
-                    if getattr(obj2, 'physics', None) is not obj2p:
+                    if state == 1:
                         continue
                     if self.solid and not self.phantom and not obj2p.phantom and not self._ghosted(obj2, intersection):
                         physical.append((obj2, obj2p, intersection))
@@ -823,17 +839,23 @@ class physics(_change_callback, _lerpable, _keyed):
             da = degrees / pieces
             check = self.solid and not self.phantom and not self.hitbox
             for _ in range(pieces):
-                self.t.rotation += da
+                before = self.t.rotation
+                self.t.rotation = before + da
                 hit = self.overlaps() if check else None
                 if not hit:
                     continue
+                for obj2, intersection in list(hit.items()):
+                    if self._notify(obj2, intersection, True) == 0:
+                        return
                 contacts = []
                 for obj2, intersection in hit.items():
+                    if getattr(obj2, 'physics', None) is None:
+                        continue
                     mtv = self._mtv(obj2.physics.getpixels())
                     if mtv is None:
                         continue
                     contacts.append((obj2.physics, self._contact_point(intersection, mtv[1], mtv[2]), mtv[1], mtv[2]))
-                self.t.rotation -= da
+                self.t.rotation = before
                 applied = False
                 for obj2p, point, nx, ny in contacts:
                     group = [obj2p] if obj2p.dynamic else None
@@ -844,7 +866,11 @@ class physics(_change_callback, _lerpable, _keyed):
                 if contacts:
                     self.avel = 0
                     break
-                self.t.rotation += da
+                self.t.rotation = before + da
+            if not check:
+                for obj2, intersection in list(self.collides(self.scene.solids, full=True).items()):
+                    if self._notify(obj2, intersection, True) == 0:
+                        return
 
         self._depenetrate()
         self._probe()

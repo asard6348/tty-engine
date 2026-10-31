@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `humanoid.pose` accepts the name of a registered pose as well as a dict.
+- `ontouch` callbacks now fire whenever bodies really collide: after a rotation hits something, for rotating phantoms and non-solid bodies, and when the resting-contact pass applies a collision impulse. Before, a spinning body could knock another one away without either being notified.
+- Limp humanoids are articulated rigid bodies: limbs are pinned ball joints with their own inertia and angular velocity, joint limits are angular impulses, and `tether` sets the pin stiffness.
+- Rotated shapes are rasterized from the angle bucket itself, so a body's cells no longer depend on the path its rotation took, and visuals use the same angle as collisions.
+- Contact normals are fitted to the boundary cells of each surface and assigned to the face rather than the corner, so blocks slide down slopes and stay on them according to friction versus `tan(angle)`, and normals stay vertical near the ends of flat surfaces.
+- Non-solid bodies are no longer pushed out of solid objects they overlap, and a rotation that is undone restores the exact previous angle.
+
 - New `ttyengine.net` package for UDP and TCP servers, clients and peer-to-peer meshes with no dependencies. `Node` hosts, connects, relays and sends messages on named channels; `Sync` shares a session, world, scene, object or single variable with every connected node, with per-entity and per-variable ownership, reliable or latest-wins updates, late-join snapshots and `Sync.attach` to run inside the frame loop. Objects owned by another node are frozen locally (`obj._remote`) so `Scene.tick` skips their physics and joints. Nodes ignore frames from peers that have not completed the handshake, reject spoofed sender ids, cap decompressed payloads at 64 MiB, authenticate with an HMAC challenge when a password is set, and let remote peers write only the variables that were actually shared. Malformed or hostile sync operations are counted in `Sync.rejected` and kept in `Sync.errors` instead of raising. Network protocol version 2.
 - `styler.image` now defaults `shades` to a 256-step gradient from a space to `█`, so images come out as monochrome shaded text unless `color=True` is given. The new `bgcolor` argument fills every cell with a background color and blends transparent pixels into it.
 - The `rendering` component is merged into `transform`: `show`, `z`, `spaces`, `front()` and `back()` now live on `obj.transform`, and `obj.rendering` no longer exists.

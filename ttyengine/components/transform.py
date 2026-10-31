@@ -705,8 +705,12 @@ class transform(_change_callback, _lerpable, _keyed):
         return (self._fade is not None or self._fg is not None or self._bg is not None
                 or self._alpha is not None or self._bgalpha is not None)
 
+    @staticmethod
+    def _canonical(angle_degrees):
+        return round(angle_degrees * 20) / 20
+
     def _vrotate(self):
-        layout, render = self._rotator(self._rotation)
+        layout, render = self._rotator(self._canonical(self._rotation))
         plain = self._plain_layout
         if plain is None and not layout.ident and self._rtext.splitlines():
             plain = layout(self.parse_pixels(self._rtext))
@@ -717,11 +721,12 @@ class transform(_change_callback, _lerpable, _keyed):
         self._parse_pixels_val = None
 
     def rotate(self, angle_degrees, init=False):
+        rounded = self._canonical(angle_degrees)
         if not init:
-            rounded = round(angle_degrees * 20) / 20
             if self._rot_cache_angle == rounded:
                 return
             self._rot_cache_angle = rounded
+        angle_degrees = rounded
 
         layout, render = self._rotator(angle_degrees)
         plain = self._rtext

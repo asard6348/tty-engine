@@ -76,18 +76,50 @@ def _contact_point_cells(pixels, nx, ny, center):
     ys = [p[1] for p in pixels]
     return (mx, max(min(ys) - 0.5, min(max(ys) + 0.5, cy)))
 
+_REACH = 3.5
+
+def _window_cells(pixels, center, aspect):
+    cx, cy = center
+    for x in range(math.ceil(cx - _REACH / aspect), math.floor(cx + _REACH / aspect) + 1):
+        for y in range(math.ceil(cy - _REACH), math.floor(cy + _REACH) + 1):
+            if (x, y) in pixels and math.hypot((x - cx) * aspect, y - cy) <= _REACH:
+                yield x, y
+
 def _gradient_cells(pixels, center, sign, aspect):
     cx, cy = center
     sx = sy = 0.0
-    for x in range(math.ceil(cx - 2.5), math.floor(cx + 2.5) + 1):
-        for y in range(math.ceil(cy - 2.5), math.floor(cy + 2.5) + 1):
+    filled = total = 0
+    for x in range(math.ceil(cx - _REACH / aspect), math.floor(cx + _REACH / aspect) + 1):
+        for y in range(math.ceil(cy - _REACH), math.floor(cy + _REACH) + 1):
+            if math.hypot((x - cx) * aspect, y - cy) > _REACH:
+                continue
+            total += 1
             if (x, y) in pixels:
+                filled += 1
                 sx += (x - cx) * aspect
                 sy += y - cy
     length = math.hypot(sx, sy)
     if length < 1e-9:
         return None
-    return sign * sx / length, sign * sy / length
+    gx, gy = sign * sx / length, sign * sy / length
+    edge = [(x, y) for x, y in _window_cells(pixels, center, aspect)
+            if any((x + dx, y + dy) not in pixels for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))]
+    if len(edge) >= 3:
+        mx = sum(p[0] for p in edge) * aspect / len(edge)
+        my = sum(p[1] for p in edge) / len(edge)
+        sxx = sum((p[0] * aspect - mx) ** 2 for p in edge)
+        syy = sum((p[1] - my) ** 2 for p in edge)
+        sxy = sum((p[0] * aspect - mx) * (p[1] - my) for p in edge)
+        half = math.hypot((sxx - syy) / 2, sxy)
+        major = (sxx + syy) / 2 + half
+        minor = (sxx + syy) / 2 - half
+        if major > 3 * max(minor, 1e-9):
+            angle = 0.5 * math.atan2(2 * sxy, sxx - syy)
+            nx, ny = -math.sin(angle), math.cos(angle)
+            if nx * gx + ny * gy < 0:
+                nx, ny = -nx, -ny
+            gx, gy = nx, ny
+    return gx, gy, filled / total
 
 def _contact_normal_cells(mine, theirs, point, nx, ny, inside, slope, aspect):
     if not slope:
@@ -101,16 +133,13 @@ def _contact_normal_cells(mine, theirs, point, nx, ny, inside, slope, aspect):
     center = (round(cx * 2) / 2, round(cy * 2) / 2)
     go = _gradient_cells(theirs, center, -1, aspect)
     gs = _gradient_cells(mine, center, 1, aspect)
-    best = None
-    for g in (go, gs):
-        if g is None:
-            continue
-        d = g[0] * nx + g[1] * ny
-        if best is None or d > best[0]:
-            best = (d, g)
-    if best is None or best[0] < 0.25:
+    faces = [g for g in (go, gs) if g is not None and g[0] * nx + g[1] * ny >= 0.25]
+    if not faces:
         return nx, ny
-    return best[1]
+    fullest = max(g[2] for g in faces)
+    faces = [g for g in faces if g[2] >= fullest - 0.08]
+    g = max(faces, key=lambda g: g[0] * nx + g[1] * ny)
+    return g[0], g[1]
 
 def _mtv_cells(mine, other_pixels, aspect):
     best = None
