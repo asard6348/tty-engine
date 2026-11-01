@@ -316,7 +316,7 @@ class Session():
                 'region': None,
                 'fullscreen': None, 'hidecursor': None, 'no_color': None}
 
-    def __init__(self, watchfocus=True, trackmotion=True, ffmpeg=None, **kwargs):
+    def __init__(self, watchfocus=True, trackmotion=True, ffmpeg=None, backend=None, repeatdelay=None, repeatrate=None, **kwargs):
         unknown = [k for k in kwargs if k not in self.APIS and k not in self.SETTINGS and k not in self.LEGACY]
         if unknown:
             raise TypeError(f"Session() got unexpected keyword argument(s): {', '.join(unknown)}")
@@ -325,7 +325,8 @@ class Session():
         self.World = lambda front=True, **kwargs: World(session=self, autoreg=True, front=front, **kwargs)
         self.term = Terminal()
         self.apis = {name: kwargs.get(name, default) for name, default in self.APIS.items()}
-        self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion) if self.apis['inp'] else None
+        keyopts = {k: v for k, v in (('backend', backend), ('repeatdelay', repeatdelay), ('repeatrate', repeatrate)) if v is not None}
+        self.inp = inp(term=self.term, watchfocus=watchfocus, trackmotion=trackmotion, **keyopts) if self.apis['inp'] else None
         if ffmpeg:
             set_ffmpeg(ffmpeg)
         self.sound = Mixer(listener=self._listener) if self.apis['sound'] else None

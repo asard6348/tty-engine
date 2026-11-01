@@ -77,11 +77,23 @@ def _positional_count(cb):
 
 
 class _FakeKeyEvent:
-    __slots__ = ('event_type', 'name', 'ident')
-    def __init__(self, event_type, name, ident=None):
+    __slots__ = ('event_type', 'name', 'ident', 'silent')
+    def __init__(self, event_type, name, ident=None, silent=False):
         self.event_type = event_type
         self.name = name
         self.ident = ident
+        self.silent = silent
+
+
+class _TermKey:
+    __slots__ = ('last', 'nev', 'gap', 'next', 'up', 'pend')
+    def __init__(self, now, due):
+        self.last = now
+        self.nev  = 1
+        self.gap  = None
+        self.next = due
+        self.up   = False
+        self.pend = None
 
 
 class _FallbackKeyboard:
@@ -159,6 +171,11 @@ _EVDEV_NAMES.update({183 + i: 'f%d' % (i + 13) for i in range(12)})
 _CSI_RE      = re.compile(ansi.CSI_RE + r'([0-9:;<=>?]*)([ -/]*)([@-~])')
 _CSI_PARTIAL_RE = re.compile(ansi.CSI_RE + r'[0-9:;<=>?]*[ -/]*')
 _ESC_TIMEOUT = 0.05
+_REPEAT_MIN_GAP = 0.008
+_NO_REPEAT = frozenset(('shift', 'ctrl', 'alt', 'alt gr', 'windows',
+                        'caps lock', 'num lock', 'scroll lock',
+                        'left shift', 'right shift', 'left ctrl', 'right ctrl',
+                        'left alt', 'right alt', 'left windows', 'right windows'))
 
 
 class _EvdevKeyboard:
@@ -320,13 +337,23 @@ class _EvdevKeyboard:
 
 class inp():
     def __init__(self, term=None, watchfocus=True, trackmotion=False,
-                 legacy_hold=0.1, quiet=True):
+                 legacy_hold=0.1, quiet=True, repeatdelay=0.5, repeatrate=30,
+                 backend=None):
+        force = None if backend in (None, 'auto') else str(backend).lower()
+        if force == 'raw':
+            force = 'terminal'
+        if force not in (None, 'keyboard', 'evdev', 'kitty', 'terminal'):
+            raise ValueError(
+                "backend must be None, 'auto', 'keyboard', 'evdev', 'kitty' or 'terminal'")
+        self._forced      = force
         self.lock         = threading.RLock()
         self.wf           = watchfocus
         self.track_motion = trackmotion
         self.focused      = True
         self._term        = None
         self.legacy_hold  = legacy_hold
+        self.repeatdelay  = repeatdelay
+        self.repeatrate   = repeatrate
         self.quiet        = quiet
 
         # ── keyboard (library handles held/press/release natively) ────────
@@ -338,6 +365,8 @@ class inp():
         self._release_at    = {}
         self._last_press    = {}   # name -> monotonic time of last terminal press (legacy tier)
         self._delayed_rel   = {}   # (name, id(entry)) -> (name, entry, due) for onrelease(delay=...)
+        self._term_keys     = {}
+        self._krep          = {}
         self._key_cbs       = []
         self._kitty_state   = None
         self._kitty_t       = 0.0
@@ -347,22 +376,28 @@ class inp():
 
         # Tier 1: the `keyboard` library (needs root on Linux/macOS and a local
         # keyboard, so it is skipped when either is missing).
-        if keyboard is not None and self._keyboard_usable():
+        if force in (None, 'keyboard') and keyboard is not None \
+                and (force or self._keyboard_usable()):
             try:
-                self._kb_hook = keyboard.hook(self._kb_event_raw, suppress=False)
+                self._kb_hook = keyboard.hook(self._native_event, suppress=False)
                 self.keyboard = keyboard
             except Exception:
                 self.keyboard = None
+        if force == 'keyboard' and self.keyboard is None:
+            raise RuntimeError("input_handler: backend 'keyboard' is unavailable")
 
-        if self.keyboard is None and _EvdevKeyboard.accessible():
+        if self.keyboard is None and force in (None, 'evdev') \
+                and (force or _EvdevKeyboard.accessible()):
             evdev_kb = _EvdevKeyboard()
             if evdev_kb.open():
                 try:
-                    self._kb_hook = evdev_kb.hook(self._kb_event_raw, suppress=False)
+                    self._kb_hook = evdev_kb.hook(self._native_event, suppress=False)
                     self.keyboard = evdev_kb
                 except Exception:
                     evdev_kb.unhook_all()
                     self.keyboard = None
+        if force == 'evdev' and self.keyboard is None:
+            raise RuntimeError("input_handler: backend 'evdev' is unavailable")
 
         # Tier 3/4: terminal input. Kitty keyboard protocol (true press/release)
         # if the terminal answers the probe, else raw stdin (press-only, held()
@@ -371,7 +406,9 @@ class inp():
             self.keyboard = _FallbackKeyboard()
             self._kb_is_fallback = True
             self._kb_hook = self.keyboard.hook(self._kb_event_raw, suppress=False)
-            if not self.quiet:
+            if force == 'terminal':
+                self._kitty_state = 'off'
+            if not self.quiet and force is None:
                 sys.stderr.write(
                     "input_handler: low-level keyboard unavailable, using terminal "
                     "input: kitty keyboard protocol if supported, otherwise "
@@ -400,6 +437,9 @@ class inp():
         if term is None and _is_tty():
             term = Terminal()
         self.term = term # triggers setter
+        if force == 'kitty' and self._kitty_state is None:
+            self.cleanup()
+            raise RuntimeError("input_handler: backend 'kitty' needs an interactive terminal")
 
     @staticmethod
     def _keyboard_usable():
@@ -503,6 +543,30 @@ class inp():
         with self.lock:
             self._events.append((ident, event))
 
+    def _native_event(self, event):
+        ident = getattr(event, 'ident', None)
+        if ident is None:
+            ident = getattr(event, 'scan_code', None)
+        if ident is None:
+            ident = event.name
+        if event.event_type == 'down':
+            self._key_down(ident, event)
+        elif event.event_type == 'up':
+            self._key_up(ident, event)
+
+    def _key_down(self, ident, event):
+        with self.lock:
+            if ident in self._krep:
+                return
+            due = None if event.name in _NO_REPEAT else time.monotonic() + self.repeatdelay
+            self._krep[ident] = [event.name, due, event]
+            self._events.append((ident, event))
+
+    def _key_up(self, ident, event):
+        with self.lock:
+            self._krep.pop(ident, None)
+            self._events.append((ident, event))
+
     def _release_all(self):
         with self.lock:
             pending = dict(self._down)
@@ -516,26 +580,129 @@ class inp():
             self._release_at.clear()
             self._last_press.clear()
             self._delayed_rel.clear()
+            self._term_keys.clear()
+            self._krep.clear()
 
     def _legacy_mode(self):
         # True only for the last tier: terminal input without kitty's real
         # press/release events (raw stdin), where held() is emulated.
         return self._kb_is_fallback and self._kitty_state != 'on'
 
+    def _repeat_interval(self):
+        rate = self.repeatrate
+        return 1.0 / rate if rate and rate > 0 else None
+
+    def _hold_for(self, st):
+        hold = self.legacy_hold
+        if st.gap:
+            hold = max(hold, 2.5 * st.gap)
+        return hold
+
+    def _term_span(self, st):
+        if st.nev >= 2:
+            return self._hold_for(st)
+        return max(self.repeatdelay, self.legacy_hold)
+
+    def _term_emit(self, kind, name, silent=False):
+        self._kb_event_raw(_FakeKeyEvent(kind, name, ('t', name), silent))
+
+    def _term_new(self, name, now):
+        old = self._term_keys.get(name)
+        if old is not None and not old.up:
+            self._release_at.pop(name, None)
+            self._term_emit('up', name)
+        self._term_keys[name] = _TermKey(now, now + self.repeatdelay)
+        self._term_emit('down', name)
+        self._release_at[name] = now + self.legacy_hold
+
+    def _term_commit(self, name, st):
+        p = st.pend
+        if not st.up:
+            self._release_at.pop(name, None)
+            self._term_emit('up', name)
+        st.last = p
+        st.nev  = 1
+        st.gap  = None
+        st.next = p + self.repeatdelay
+        st.up   = False
+        st.pend = None
+        self._term_emit('down', name)
+        self._release_at[name] = time.monotonic() + self.legacy_hold
+
+    def _term_settle(self, name, st, now):
+        if st.pend is not None:
+            if now - st.pend <= self._hold_for(st):
+                return st
+            self._term_commit(name, st)
+        if now - st.last > self._term_span(st):
+            if not st.up:
+                self._release_at.pop(name, None)
+                self._term_emit('up', name)
+            del self._term_keys[name]
+            return None
+        return st
+
     def _term_press(self, name):
         now = time.monotonic()
-        self._kb_event_raw(_FakeKeyEvent('down', name, ('t', name)))
-        self._release_at[name] = now + self.legacy_hold
         self._last_press[name] = now
         for entry in self._release_cbs.get(name, ()):
             if entry[3] is not None:       # per-callback release delay: (re)arm
                 self._delayed_rel[(name, id(entry))] = (name, entry, now + entry[3])
+        st = self._term_keys.get(name)
+        if st is not None:
+            st = self._term_settle(name, st, now)
+        if st is None:
+            self._term_new(name, now)
+            return
+        ref = st.pend if st.pend is not None else st.last
+        gap = now - ref
+        if gap < _REPEAT_MIN_GAP:
+            if st.pend is not None:
+                self._term_commit(name, st)
+            self._term_new(name, now)
+            return
+        if st.pend is not None:
+            st.gap, st.pend, st.nev = gap, None, 3
+        elif st.nev >= 2:
+            st.gap = gap if st.gap is None else 0.5 * (st.gap + gap)
+            st.nev += 1
+        else:
+            st.pend = now
+            return
+        st.last = now
+        if st.up:
+            st.up = False
+            self._term_emit('down', name, True)
+        self._release_at[name] = now + self._hold_for(st)
+
+    def _tick_repeats(self, now):
+        interval = self._repeat_interval()
+        with self.lock:
+            for ident, rep in list(self._krep.items()):
+                due = rep[1]
+                if due is None or interval is None or now < due:
+                    continue
+                self._events.append((ident, rep[2]))
+                due += interval
+                rep[1] = due if due > now else now + interval
+        for name, st in list(self._term_keys.items()):
+            st = self._term_settle(name, st, now)
+            if st is None or interval is None or st.pend is not None or st.nev < 2:
+                continue
+            if now >= st.next and now - st.last <= self._hold_for(st):
+                self._term_emit('down', name)
+                st.next += interval
+                if st.next <= now:
+                    st.next = now + interval
 
     def _flush_releases(self, now):
         if self._release_at:
             for name, t in list(self._release_at.items()):
                 if now >= t:
                     del self._release_at[name]
+                    st = self._term_keys.get(name)
+                    if st is not None:
+                        st.up = True
                     self._kb_event_raw(_FakeKeyEvent('up', name, ('t', name)))
 
     def _stdin_press(self, name):
@@ -546,7 +713,10 @@ class inp():
         if not self._kb_is_fallback:
             return
         if self._kitty_state == 'on':
-            self._kb_event_raw(_FakeKeyEvent('up' if ev == 3 else 'down', name, ident))
+            if ev == 3:
+                self._key_up(ident, _FakeKeyEvent('up', name, ident))
+            else:
+                self._key_down(ident, _FakeKeyEvent('down', name, ident))
         elif ev != 3:
             self._term_press(name)
 
@@ -751,6 +921,10 @@ class inp():
         self._parse_input(now)
         if self._kitty_state == 'probing' and now - self._kitty_t > 1.5:
             self._kitty_state = 'off'
+            if self._forced == 'kitty':
+                raise RuntimeError(
+                    "input_handler: backend 'kitty' is unsupported by this terminal")
+        self._tick_repeats(now)
         self._flush_releases(now)
 
         with self.lock:
@@ -769,6 +943,8 @@ class inp():
         if focused:
             legacy = self._legacy_mode()
             for ident, event in events:
+                if getattr(event, 'silent', False):
+                    continue
                 down = event.event_type == 'down'
                 self._fire_key(event.name, 'press' if down else 'release')
                 table = self._press_cbs if down else self._release_cbs

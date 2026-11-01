@@ -19,8 +19,6 @@ _SPEC_KEYS = ('text', 'parent', 'at', 'pin', 'shift', 'joint', 'mirror', 'flip',
               'density', 'solid', 'z', 'physics', 'style', 'spaces')
 _INHERITED = ('text', 'solid', 'z', 'physics', 'style', 'density', 'spaces')
 _CHANNEL_KEYS = ('amp', 'shift', 'bias', 'rectify')
-_HOLD_SWEEPS = 30
-_HOLD_TOLERANCE = 0.02
 
 def _clockwise(vector, degrees):
     r = math.radians(degrees)
@@ -94,9 +92,9 @@ class humanoid:
         self._watched = set()
         self._loose = False
         self._closing = False
-        self._loose_solid = True
+        self._loose_solid = None
         self._loose_limits = True
-        self._elasticity = config.get('elasticity', 1.25)
+        self._elasticity = config.get('elasticity')
         self._breaks = []
         self._solid = config.get('solid')
         self._physics = dict(config.get('physics', {}))
@@ -251,7 +249,7 @@ class humanoid:
     def ragdolled(self):
         return self._loose
 
-    def ragdoll(self, on=True, solid=True, limits=True):
+    def ragdoll(self, on=True, solid=None, limits=True):
         if on:
             self._loose_solid = solid
             self._loose_limits = limits
@@ -721,7 +719,8 @@ class humanoid:
         else:
             value = spec.get('joint')
             shape = _preset(value if isinstance(value, str) else 'hinge')
-            shape.setdefault('elasticity', self._elasticity)
+            if self._elasticity is not None:
+                shape.setdefault('elasticity', self._elasticity)
             for group in node['groups'][1:]:
                 shape.update(self._joints.get(group, {}))
             if isinstance(value, dict):
@@ -734,7 +733,7 @@ class humanoid:
         child = self.parts[node['name']]
         px, py = node['point']
         x, y, w, h = self._nodes[node['name']]['rect']
-        child.joint.apply(kind='ball', radius=0, range=None, rest=None, elasticity=self._elasticity,
+        child.joint.apply(kind='ball', radius=0, range=None, rest=None,
                           pinx=px - x - w / 2, piny=-(py - y - h / 2))
         link = self.parts[node['parent']].joint.link(child)
         link.pose = (0.0, link.pose[1], link.pose[2])
@@ -771,59 +770,12 @@ class humanoid:
                 parent.avel -= impulse / kp * parent.mass
 
     def step(self):
-        if self._closing:
+        if self._closing or not (self._loose and self._loose_limits):
             return
-        if self._loose and self._loose_limits:
-            for name in self._order:
-                node = self._nodes[name]
-                if node['parent'] is not None and name not in self._detached and node['limits'] is not None:
-                    self._limit(node)
-        self._hold()
-
-    def _hold(self):
-        links = []
         for name in self._order:
             node = self._nodes[name]
-            if node['parent'] is None or name in self._detached:
-                continue
-            parent = self.parts[node['parent']]
-            if getattr(parent, 'joint', None) is None:
-                continue
-            edge = parent.joint._edges.get(id(self.parts[name]))
-            if edge is not None and edge.alive:
-                links.append((parent.joint, edge))
-        for _ in range(_HOLD_SWEEPS):
-            moved = False
-            for origin, edge in links:
-                if not edge.alive:
-                    continue
-                ex, ey = edge.error(False)[:2]
-                if math.hypot(ex * origin.t.aspect, ey) <= _HOLD_TOLERANCE:
-                    continue
-                child = edge.follower
-                movers = [j for j in (origin, child) if j.movable]
-                if not movers:
-                    continue
-                if len(movers) == 1:
-                    share = 1.0 if movers[0] is child else 0.0
-                else:
-                    mo, mc = origin.obj.physics.mass, child.obj.physics.mass
-                    share = mo / (mo + mc) if mo + mc else 0.5
-                rx = ry = 0.0
-                if child.movable and share:
-                    child._relax(origin, ex * share, ey * share)
-                    gx, gy = child._move(ex * share, ey * share)
-                    rx, ry = ex * share - gx, ey * share - gy
-                    moved = True
-                if origin.movable and share < 1.0:
-                    ox, oy = -ex * (1.0 - share) - rx, -ey * (1.0 - share) - ry
-                    origin._relax(child, ox, oy)
-                    origin._move(ox, oy)
-                    moved = True
-                if child._orient(edge):
-                    moved = True
-            if not moved:
-                break
+            if node['parent'] is not None and name not in self._detached and node['limits'] is not None:
+                self._limit(node)
 
     def _restore_length(self, node):
         link = self.parts[node['parent']].joint.link(self.parts[node['name']])
@@ -889,19 +841,20 @@ class humanoid:
         return doomed
 
     def _resolidify(self):
+        parents = {self._nodes[name]['parent'] for name in self._order if name not in self._detached}
         for name in self._order:
             node = self._nodes[name]
+            own = node['spec'].get('solid')
             if self._loose and self._loose_solid:
                 solid = True
-            elif 'solid' in node['spec']:
-                solid = bool(node['spec']['solid'])
+            elif own is not None:
+                solid = bool(own)
             elif self._solid is None:
-                solid = not any(
-                    self._nodes[n]['parent'] == name and self._nodes[n]['spec'].get('solid', True)
-                    for n in self._order
-                )
+                solid = True
             elif isinstance(self._solid, bool):
                 solid = self._solid
             else:
                 solid = any(group in self._solid for group in node['groups'])
+            settings = {**self._physics, **node['spec'].get('physics', {})}
             self.parts[name].physics.solid = solid
+            self.parts[name].physics.slope = settings.get('slope', True) and (self._loose or name not in parents)
