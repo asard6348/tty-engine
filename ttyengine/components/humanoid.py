@@ -16,17 +16,20 @@ _ANCHORS = {
     'bottom_right': (1.0, 1.0),
 }
 _SPEC_KEYS = ('text', 'parent', 'at', 'pin', 'shift', 'joint', 'mirror', 'flip', 'group',
-              'contact', 'density', 'solid', 'z', 'physics', 'style')
-_INHERITED = ('text', 'solid', 'z', 'physics', 'style', 'contact', 'density')
+              'density', 'solid', 'z', 'physics', 'style', 'spaces')
+_INHERITED = ('text', 'solid', 'z', 'physics', 'style', 'density', 'spaces')
 _CHANNEL_KEYS = ('amp', 'shift', 'bias', 'rectify')
+_HOLD_SWEEPS = 30
+_HOLD_TOLERANCE = 0.02
 
 def _clockwise(vector, degrees):
     r = math.radians(degrees)
     u, v = vector
     return (u * math.cos(r) + v * math.sin(r), -u * math.sin(r) + v * math.cos(r))
 
-def _extent_of(scene, text):
-    lines = scene.recomp.sub('', text).split('\n')
+def _extent_of(scene, text, spaces=False):
+    clean = scene.recomp.sub('', text)
+    lines = (clean.split('\n') if spaces else clean.splitlines()) or ['']
     return max(len(line) for line in lines), len(lines)
 
 def _pair(value, label):
@@ -53,7 +56,7 @@ def _preset(value):
 class humanoid:
     _owned = ['humanoid']
     _required = [transform, physics]
-    _keys = ('parts', 'solid', 'physics', 'style', 'joints', 'poses', 'cycles', 'axis', 'elasticity', 'snap', 'tether')
+    _keys = ('parts', 'solid', 'physics', 'style', 'joints', 'poses', 'cycles', 'axis', 'elasticity', 'spaces')
 
     def on_discard(self):
         self._closing = True
@@ -80,7 +83,7 @@ class humanoid:
         self.t = obj.transform
         self._config = config
         self.poses = dict(config.get('poses', {}))
-        self._tether = float(config.get('tether', 6.0))
+        self._spaces = bool(config.get('spaces', False))
         self.cycles = dict(config.get('cycles', {}))
         self.parts = {}
         self._nodes = {}
@@ -93,8 +96,7 @@ class humanoid:
         self._closing = False
         self._loose_solid = True
         self._loose_limits = True
-        self._elasticity = config.get('elasticity', 1)
-        self._snap = config.get('snap', 2.0)
+        self._elasticity = config.get('elasticity', 1.25)
         self._breaks = []
         self._solid = config.get('solid')
         self._physics = dict(config.get('physics', {}))
@@ -240,7 +242,7 @@ class humanoid:
             raise KeyError(name)
         for part in found:
             node = self._nodes[part]
-            if _extent_of(self.scene, text) != node['size']:
+            if _extent_of(self.scene, text, node['spec'].get('spaces', self._spaces)) != node['size']:
                 raise ValueError("text for '%s' must keep the size %dx%d" % ((part,) + node['size']))
             self.parts[part].transform.text = text
         return self
@@ -562,7 +564,7 @@ class humanoid:
     def _install(self, entries):
         ordered = self._sequence(entries)
         for node in ordered:
-            node['size'] = _extent_of(self.scene, node['spec']['text'])
+            node['size'] = _extent_of(self.scene, node['spec']['text'], node['spec'].get('spaces', self._spaces))
             node['angle'] = 0.0
             node['limits'] = None
             node['pose'] = None
@@ -720,7 +722,6 @@ class humanoid:
             value = spec.get('joint')
             shape = _preset(value if isinstance(value, str) else 'hinge')
             shape.setdefault('elasticity', self._elasticity)
-            shape.setdefault('snap', self._snap)
             for group in node['groups'][1:]:
                 shape.update(self._joints.get(group, {}))
             if isinstance(value, dict):
@@ -733,7 +734,7 @@ class humanoid:
         child = self.parts[node['name']]
         px, py = node['point']
         x, y, w, h = self._nodes[node['name']]['rect']
-        child.joint.apply(kind='ball', radius=0, range=None, rest=None, elasticity=self._tether,
+        child.joint.apply(kind='ball', radius=0, range=None, rest=None, elasticity=self._elasticity,
                           pinx=px - x - w / 2, piny=-(py - y - h / 2))
         link = self.parts[node['parent']].joint.link(child)
         link.pose = (0.0, link.pose[1], link.pose[2])
@@ -770,12 +771,59 @@ class humanoid:
                 parent.avel -= impulse / kp * parent.mass
 
     def step(self):
-        if self._closing or not (self._loose and self._loose_limits):
+        if self._closing:
             return
+        if self._loose and self._loose_limits:
+            for name in self._order:
+                node = self._nodes[name]
+                if node['parent'] is not None and name not in self._detached and node['limits'] is not None:
+                    self._limit(node)
+        self._hold()
+
+    def _hold(self):
+        links = []
         for name in self._order:
             node = self._nodes[name]
-            if node['parent'] is not None and name not in self._detached and node['limits'] is not None:
-                self._limit(node)
+            if node['parent'] is None or name in self._detached:
+                continue
+            parent = self.parts[node['parent']]
+            if getattr(parent, 'joint', None) is None:
+                continue
+            edge = parent.joint._edges.get(id(self.parts[name]))
+            if edge is not None and edge.alive:
+                links.append((parent.joint, edge))
+        for _ in range(_HOLD_SWEEPS):
+            moved = False
+            for origin, edge in links:
+                if not edge.alive:
+                    continue
+                ex, ey = edge.error(False)[:2]
+                if math.hypot(ex * origin.t.aspect, ey) <= _HOLD_TOLERANCE:
+                    continue
+                child = edge.follower
+                movers = [j for j in (origin, child) if j.movable]
+                if not movers:
+                    continue
+                if len(movers) == 1:
+                    share = 1.0 if movers[0] is child else 0.0
+                else:
+                    mo, mc = origin.obj.physics.mass, child.obj.physics.mass
+                    share = mo / (mo + mc) if mo + mc else 0.5
+                rx = ry = 0.0
+                if child.movable and share:
+                    child._relax(origin, ex * share, ey * share)
+                    gx, gy = child._move(ex * share, ey * share)
+                    rx, ry = ex * share - gx, ey * share - gy
+                    moved = True
+                if origin.movable and share < 1.0:
+                    ox, oy = -ex * (1.0 - share) - rx, -ey * (1.0 - share) - ry
+                    origin._relax(child, ox, oy)
+                    origin._move(ox, oy)
+                    moved = True
+                if child._orient(edge):
+                    moved = True
+            if not moved:
+                break
 
     def _restore_length(self, node):
         link = self.parts[node['parent']].joint.link(self.parts[node['name']])
@@ -840,15 +888,6 @@ class humanoid:
                 obj.discard()
         return doomed
 
-    def _contact(self, name):
-        node = self._nodes[name]
-        if not node['spec'].get('contact'):
-            return False
-        return not any(
-            self._nodes[n]['parent'] == name and self._nodes[n]['spec'].get('contact')
-            for n in self._order
-        )
-
     def _resolidify(self):
         for name in self._order:
             node = self._nodes[name]
@@ -857,7 +896,10 @@ class humanoid:
             elif 'solid' in node['spec']:
                 solid = bool(node['spec']['solid'])
             elif self._solid is None:
-                solid = self._contact(name)
+                solid = not any(
+                    self._nodes[n]['parent'] == name and self._nodes[n]['spec'].get('solid', True)
+                    for n in self._order
+                )
             elif isinstance(self._solid, bool):
                 solid = self._solid
             else:

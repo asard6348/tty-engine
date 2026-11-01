@@ -2,10 +2,13 @@
 
 ## Unreleased
 
-- `humanoid` joints now default to an `elasticity` of `1` instead of `1.25`, so the setting means what it says. Pass `elasticity=1.25` in the humanoid config (or `elasticity` in a part's `joint` settings) to keep the softer pull that lets a standing figure rest without jitter.
+- `humanoid` parts without a `solid` setting collide only if they are the lowest part of their chain, `solid: False` keeps a part from ever colliding and `solid: True` makes it always collide. The `contact` part setting is gone, and parts without a flag were briefly all solid.
+- The `humanoid` `tether` setting and the `snap` setting of `humanoid` and `joint` are removed: `elasticity` also sets the limp pin stiffness and defaults to `1.25` because limp pins overshoot at `1`, and joints are held together by the position pass below.
+- Part sizes in a `humanoid` layout ignore a trailing newline the way the renderer does, so a limb written as `'█\n' * 3` is three rows tall and the part hanging from it no longer starts one row too low, which left a one-cell gap between thigh and shin. The new `spaces` setting (humanoid-wide or per part, default `False`) turns this off, so `spaces=True` counts the empty last line as a row again.
+- Every tick a `humanoid` holds its joints together with a mass-weighted position pass that respects solids, so standing, walking and limp figures no longer stretch their joints, split around a platform, or jerk back every few ticks when one limb is blocked.
 - `humanoid.pose` accepts the name of a registered pose as well as a dict.
 - `ontouch` callbacks now fire whenever bodies really collide: after a rotation hits something, for rotating phantoms and non-solid bodies, and when the resting-contact pass applies a collision impulse. Before, a spinning body could knock another one away without either being notified.
-- Limp humanoids are articulated rigid bodies: limbs are pinned ball joints with their own inertia and angular velocity, joint limits are angular impulses, and `tether` sets the pin stiffness.
+- Limp humanoids are articulated rigid bodies: limbs are pinned ball joints with their own inertia and angular velocity, joint limits are angular impulses, and `elasticity` sets the pin stiffness.
 - Rotated shapes are rasterized from the angle bucket itself, so a body's cells no longer depend on the path its rotation took, and visuals use the same angle as collisions.
 - Contact normals are fitted to the boundary cells of each surface and assigned to the face rather than the corner, so blocks slide down slopes and stay on them according to friction versus `tan(angle)`, and normals stay vertical near the ends of flat surfaces.
 - Non-solid bodies are no longer pushed out of solid objects they overlap, and a rotation that is undone restores the exact previous angle.

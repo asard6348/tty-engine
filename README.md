@@ -242,7 +242,7 @@ An object starts out empty. `create()` looks at its keyword arguments, attaches 
 | `force` | `force=...` or `force={...}` | Pushes other objects, optionally limited by a radius or a filter. Settings: `strength`, `affect`, `cap`, `position`, `radius`, `torque`, `shield`. |
 | `joint` | `preset`, `joints`, `elasticity`, `kind`, ... | Links objects together as a rope, rod, spring, hinge, slider or fixed joint. |
 | `light` | `light=True` or `light={...}` | Turns the object into a light source. Settings: `color`, `alpha`, `radius`, `falloff`, `shadows`, `cone`, `direction`, `glow` and more. `scene.ambient` sets the base brightness. |
-| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`, `elasticity`, `tether`. |
+| `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`, `elasticity`, `spaces`. |
 
 Settings can be given flat, or grouped under the component's name. The two calls below are equivalent:
 
@@ -431,7 +431,7 @@ parts = {
                    'joint': 'hip', 'group': 'thigh', 'density': 10},
     'right_thigh': {'mirror': 'left_thigh', 'flip': False},
     'left_shin': {'text': '|\n|\n|', 'parent': 'left_thigh', 'joint': 'knee', 'group': 'shin',
-                  'contact': True, 'density': 10},
+                  'density': 10},
     'right_shin': {'mirror': 'left_shin', 'flip': False},
 }
 poses = {'arms_out': {'arm': 90}, 'crouch': {'thigh': -60, 'shin': 100}}
@@ -451,7 +451,7 @@ figure.ragdoll()                         # releases every joint; figure.ragdoll(
 
 **Placement.** A part is placed by two anchors that meet at its joint: `at` is a point on the parent and `pin` is a point on the part itself. An anchor is a name (`top`, `bottom`, `left`, `right`, `center`, `top_left`, `top_right`, `bottom_left`, `bottom_right`) or an `(x, y)` pair of fractions of the part's size. `at` defaults to `bottom` and `pin` defaults to the opposite point, so a part sits against the parent on the side of its anchor. `shift=(dx, dy)` moves the joint in cells. The part is snapped to whole cells and the joint sits exactly on its `pin`.
 
-**Mirroring.** `{'mirror': 'name'}` reflects another part across the vertical centre line of the root (or of the part named by the `axis` setting), inherits its text, `contact`, `density`, `solid`, `z`, `physics`, `style`, `group` and joint, and hangs from the mirror of the source's parent unless `parent` is given. A mirrored joint has its limits and rest angle reversed, and so do the angles you pass through a group name; set `flip` to `False` to keep the same direction on both sides.
+**Mirroring.** `{'mirror': 'name'}` reflects another part across the vertical centre line of the root (or of the part named by the `axis` setting), inherits its text, `density`, `solid`, `z`, `physics`, `style`, `group` and joint, and hangs from the mirror of the source's parent unless `parent` is given. A mirrored joint has its limits and rest angle reversed, and so do the angles you pass through a group name; set `flip` to `False` to keep the same direction on both sides.
 
 **Naming.** A pose, cycle, `style`, `get`, `set_text` or `remove_part` key is a part name or a `group`. Every part belongs to a group with its own name and to any `group` names it lists (a string or a list), and mirrored parts share the groups of their source. An exact part name sets the raw angle; a group name applies it with the sign flip of each member.
 
@@ -459,13 +459,13 @@ figure.ragdoll()                         # releases every joint; figure.ragdoll(
 
 **Ragdoll.** `figure.ragdoll(on=True, solid=True, limits=True)` turns every pose-driven joint into a free hinge that keeps its length, so the figure collapses under gravity and swings with impacts. `solid=True` makes every part collide with the world while it is limp, and `limits=True` keeps the joint ranges. While limp, `pose` and `animate` do nothing; `ragdoll(False)` stiffens the joints in their current angles, after which `pose` works again. `figure.ragdolled` tells the current state.
 
-**Stability.** Joints use an `elasticity` of `1` by default (the `elasticity` setting), the stiffest pull; a standing figure can jitter slightly between two rows at this value, and `1.25` lets it come to a complete rest. Values above about `3` make the figure sag. Joints also use `snap` (the `snap` setting, `2.0` cells by default): when a joint is stretched further than that, for example by dragging the figure, the part is placed back rigidly instead of being pulled back softly. The `snap` joint setting is available on every `joint`; `0` disables it.
+**Stability.** Joints use an `elasticity` of `1.25` by default (the `elasticity` setting), for standing and limp figures alike; at `1` a standing figure can jitter slightly between two rows and a limp one can overshoot, and values above about `3` make the figure sag.
 
-**Limp figures.** A ragdoll's limbs are real rigid bodies: each limb is a ball joint pinned at its attach point with its own mass, moment of inertia and angular velocity, and the joint limits are angular impulses between the two bodies, so spin and momentum are conserved and only contacts and friction remove energy. `tether` (default `6`) sets how firmly the pins pull back together: higher values pull more softly. It is a trade-off between stretch and jitter, and the best value depends on the scene.
+**Limp figures.** A ragdoll's limbs are real rigid bodies: each limb is a ball joint pinned at its attach point with its own mass, moment of inertia and angular velocity, and the joint limits are angular impulses between the two bodies, so spin and momentum are conserved and only contacts and friction remove energy. `elasticity` sets how firmly the pins pull back together, as it does for every other joint of the figure. After every tick the joints of a figure are also held together by a position pass that moves the lighter body more, stops at solids and passes what a solid blocks on to the neighbouring part, so pins never stay stretched apart, not even around a platform edge.
 
 **Cycles.** A cycle channel is `bias + amp * sin(phase + shift)`, or a bare number for `amp`; `rectify=True` clamps the sine to positive values. `figure.sample(cycle, phase, scale=1.0)` returns the angles and `figure.animate(cycle, phase, weight=1.0, scale=1.0)` applies them.
 
-**Other part settings.** `text`, `parent`, `at`, `pin`, `shift`, `joint`, `mirror`, `flip`, `group`, `contact`, `density` (mass per non-blank cell), `solid`, `z`, `physics` and `style`. With `solid=None` only the lowest part of every chain of `contact` parts collides with the world; `solid` can also be a bool or a list of part or group names. `add_part(name, spec)` and `add_parts({...})` grow a figure later.
+**Other part settings.** `text`, `parent`, `at`, `pin`, `shift`, `joint`, `mirror`, `flip`, `group`, `density` (mass per non-blank cell), `solid`, `z`, `physics`, `style` and `spaces`. `spaces` (default `False`, also a humanoid setting) makes a part's size ignore a trailing newline like the renderer does; with `spaces=True` the empty last line counts as a row, so `'█\n' * 3` is four rows tall and whatever hangs from it sits one row lower. A part's `solid` is unset by default: with the figure's `solid=None` only the lowest part of every chain of parts collides with the world, `solid=False` on a part keeps it from ever colliding and `solid=True` makes it always collide. The figure's `solid` can also be a bool or a list of part or group names. `add_part(name, spec)` and `add_parts({...})` grow a figure later.
 
 </details>
 

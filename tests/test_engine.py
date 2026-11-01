@@ -909,10 +909,10 @@ PARTS = {
                    "joint": "hip", "group": "thigh", "density": 10},
     "right_thigh": {"mirror": "left_thigh", "flip": False},
     "left_shin": {"text": "|\n|\n|", "parent": "left_thigh", "joint": "knee", "group": "shin",
-                  "contact": True, "density": 10},
+                  "density": 10},
     "right_shin": {"mirror": "left_shin", "flip": False},
     "left_foot": {"text": "__", "parent": "left_shin", "at": "bottom_left", "pin": "top", "joint": "ankle",
-                  "group": "foot", "contact": True, "density": 10},
+                  "group": "foot", "density": 10},
     "right_foot": {"mirror": "left_foot", "flip": False},
 }
 
@@ -1051,14 +1051,14 @@ class HumanoidTests(unittest.TestCase):
         self.assertLess(abs(h["right_foot"].transform.y - (-29.5)), 0.6)
         self.assertGreater(body.transform.y, h["right_foot"].transform.y)
 
-    def test_joint_elasticity_defaults_to_one_and_can_be_changed(self):
+    def test_joint_elasticity_has_a_default_and_can_be_changed(self):
         parts = {"a": "##", "b": {"text": "#", "parent": "a", "joint": "hinge"},
                  "c": {"text": "#", "parent": "b", "joint": {"kind": "hinge", "elasticity": 3}}}
         _, _, h = self.make(parts)
-        self.assertEqual(h["b"].joint.elasticity, 1)
-        self.assertEqual(h["c"].joint.elasticity, 3)
-        _, _, h = self.make(parts, elasticity=1.25)
         self.assertEqual(h["b"].joint.elasticity, 1.25)
+        self.assertEqual(h["c"].joint.elasticity, 3)
+        _, _, h = self.make(parts, elasticity=1.5)
+        self.assertEqual(h["b"].joint.elasticity, 1.5)
         self.assertEqual(h["c"].joint.elasticity, 3)
 
     def test_standing_figure_comes_to_rest_without_flicker(self):
@@ -1097,7 +1097,7 @@ class HumanoidTests(unittest.TestCase):
                 self.assertLess(math.hypot(ex * sc.aspect, ey), 3)
         h.ragdoll(False)
         self.assertFalse(h.ragdolled)
-        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["left_foot", "right_foot"])
+        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["head", "left_hand", "right_hand", "left_foot", "right_foot"])
         h.pose({"arm": 40}, reset=True)
         self.assertEqual(h.angle("left_arm"), 40)
         self.assertEqual(h.angle("right_arm"), -40)
@@ -1188,13 +1188,74 @@ class HumanoidTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             h.remove_part("torso")
 
-    def test_solid_parts_follow_contact_flags_or_settings(self):
+    def test_solid_parts_follow_chains_flags_or_settings(self):
         _, _, h = self.make()
-        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["left_foot", "right_foot"])
+        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["head", "left_hand", "right_hand", "left_foot", "right_foot"])
         _, _, h = self.make(solid=["shin"])
         self.assertEqual([n for n in h if h.parts[n].physics.solid], ["left_shin", "right_shin"])
         _, _, h = self.make(solid=True)
         self.assertTrue(all(h.parts[n].physics.solid for n in h))
+
+    def test_part_solid_defaults_to_the_lowest_of_a_chain_and_can_be_switched_off(self):
+        parts = {
+            "torso": "###\n###",
+            "head": {"text": "O", "parent": "torso", "at": "top"},
+            "leg": {"text": "|\n|", "parent": "torso", "solid": False},
+            "foot": {"text": "_", "parent": "leg"},
+        }
+        _, _, h = self.make(parts)
+        self.assertEqual([n for n in h if h.parts[n].physics.solid], ["head", "foot"])
+
+    def test_trailing_newline_does_not_add_a_row_to_a_part(self):
+        rects = self.rects({
+            "thigh": "|\n" * 3,
+            "shin": {"text": "|\n" * 3, "parent": "thigh"},
+        })
+        self.assertEqual(rects["thigh"][3], 3)
+        self.assertEqual(rects["shin"][1], rects["thigh"][1] + 3)
+
+    def test_spaces_can_be_switched_on_for_the_figure_or_a_part(self):
+        parts = {
+            "thigh": "|\n" * 3,
+            "shin": {"text": "|\n" * 3, "parent": "thigh"},
+        }
+        _, _, h = self.make(parts, spaces=True)
+        self.assertEqual(h._nodes["thigh"]["size"][1], 4)
+        self.assertEqual(h._nodes["shin"]["rect"][1], h._nodes["thigh"]["rect"][1] + 4)
+        parts["shin"]["spaces"] = False
+        _, _, h = self.make(parts, spaces=True)
+        self.assertEqual(h._nodes["thigh"]["size"][1], 4)
+        self.assertEqual(h._nodes["shin"]["size"][1], 3)
+        _, _, h = self.make({"thigh": "|\n" * 3, "shin": {"text": "|\n" * 3, "parent": "thigh", "spaces": True}})
+        self.assertEqual(h._nodes["thigh"]["size"][1], 3)
+        self.assertEqual(h._nodes["shin"]["size"][1], 4)
+
+    def test_joints_stay_together_while_walking(self):
+        sc, body, h = self.make(cycles=CYCLES)
+        for i in range(120):
+            h.animate("walk", math.sin(i / 4))
+            sc.tick()
+            for name in h:
+                node = h._nodes[name]
+                if node["parent"] is not None:
+                    ex, ey, _ = h[node["parent"]].joint.link(h[name]).error(False)
+                    self.assertLess(math.hypot(ex * sc.aspect, ey), 0.5)
+
+    def test_limp_figure_is_not_split_around_a_thin_platform(self):
+        _, sc = make_scene()
+        sc.gravity = (0, -0.05)
+        sc.obj().create("#" * 60, -30, -30, dynamic=False)
+        body = sc.obj().create(None, 0, -5, humanoid=dict(parts=PARTS))
+        h = body.humanoid
+        h.ragdoll()
+        h.push(0.15)
+        for _ in range(400):
+            sc.tick()
+            for name in h:
+                node = h._nodes[name]
+                if node["parent"] is not None:
+                    ex, ey, _ = h[node["parent"]].joint.link(h[name]).error(False)
+                    self.assertLess(math.hypot(ex * sc.aspect, ey), 1.5)
 
     def momentum(self, h):
         px = py = 0.0
