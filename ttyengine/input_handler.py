@@ -367,6 +367,8 @@ class inp():
         self._delayed_rel   = {}   # (name, id(entry)) -> (name, entry, due) for onrelease(delay=...)
         self._term_keys     = {}
         self._krep          = {}
+        self._os_delay      = None
+        self._os_gap        = None
         self._key_cbs       = []
         self._kitty_state   = None
         self._kitty_t       = 0.0
@@ -593,15 +595,29 @@ class inp():
         return 1.0 / rate if rate and rate > 0 else None
 
     def _hold_for(self, st):
-        hold = self.legacy_hold
-        if st.gap:
-            hold = max(hold, 2.5 * st.gap)
-        return hold
+        gap = st.gap or self._os_gap
+        return max(self.legacy_hold, 2.5 * gap) if gap else self.legacy_hold
+
+    def _pend_wait(self):
+        if self._os_gap:
+            return max(self.legacy_hold, 2.5 * self._os_gap)
+        return max(self.legacy_hold, 0.15)
+
+    def _first_window(self):
+        d = self._os_delay
+        if d:
+            return 0.6 * d, 1.5 * d
+        return 0.2, 1.2
+
+    def _learn_gap(self, st, gap):
+        if gap >= _REPEAT_MIN_GAP:
+            st.gap = gap if st.gap is None else 0.5 * (st.gap + gap)
+            self._os_gap = gap if self._os_gap is None else 0.5 * (self._os_gap + gap)
 
     def _term_span(self, st):
         if st.nev >= 2:
             return self._hold_for(st)
-        return max(self.repeatdelay, self.legacy_hold)
+        return self._first_window()[1]
 
     def _term_emit(self, kind, name, silent=False):
         self._kb_event_raw(_FakeKeyEvent(kind, name, ('t', name), silent))
@@ -631,7 +647,7 @@ class inp():
 
     def _term_settle(self, name, st, now):
         if st.pend is not None:
-            if now - st.pend <= self._hold_for(st):
+            if now - st.pend <= self._pend_wait():
                 return st
             self._term_commit(name, st)
         if now - st.last > self._term_span(st):
@@ -654,19 +670,21 @@ class inp():
         if st is None:
             self._term_new(name, now)
             return
-        ref = st.pend if st.pend is not None else st.last
-        gap = now - ref
-        if gap < _REPEAT_MIN_GAP:
-            if st.pend is not None:
-                self._term_commit(name, st)
-            self._term_new(name, now)
-            return
         if st.pend is not None:
-            st.gap, st.pend, st.nev = gap, None, 3
+            if st.pend - st.last >= 0.2:
+                self._os_delay = st.pend - st.last
+            self._learn_gap(st, now - st.pend)
+            st.pend = None
+            st.nev = 3
         elif st.nev >= 2:
-            st.gap = gap if st.gap is None else 0.5 * (st.gap + gap)
+            self._learn_gap(st, now - st.last)
             st.nev += 1
         else:
+            gap = now - st.last
+            lo, hi = self._first_window()
+            if gap < _REPEAT_MIN_GAP or self._pend_wait() < gap < lo:
+                self._term_new(name, now)
+                return
             st.pend = now
             return
         st.last = now
