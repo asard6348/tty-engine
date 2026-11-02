@@ -240,7 +240,7 @@ An object starts out empty. `create()` looks at its keyword arguments, attaches 
 | `physics` | `xvel`, `yvel`, `bounciness`, `gravity`, `friction`, `mass`, `phantom`, ... | Velocity, collisions, bouncing, friction and touch callbacks. |
 | `pen` | `pen={...}` | Paints characters at a point relative to the object. Settings: `char`, `x`, `y`, `radius`, `shape`. |
 | `force` | `force=...` or `force={...}` | Pushes other objects, optionally limited by a radius or a filter. Settings: `strength`, `affect`, `cap`, `position`, `radius`, `torque`, `shield`. |
-| `joint` | `preset`, `joints`, `elasticity`, `kind`, ... | Links objects together as a rope, rod, spring, hinge, slider or fixed joint. |
+| `joint` | `preset`, `joints`, `elasticity`, `kind`, `limit`, `target`, ... | Links objects together as a rope, rod, spring, hinge, slider or fixed joint. A pinned `ball` joint can also limit and motor the follower's rotation with `limit`, `target`, `gain` and `effort`. |
 | `light` | `light=True` or `light={...}` | Turns the object into a light source. Settings: `color`, `alpha`, `radius`, `falloff`, `shadows`, `cone`, `direction`, `glow` and more. `scene.ambient` sets the base brightness. |
 | `humanoid` | `humanoid={'parts': {...}}` | Builds a posable figure from a graph of parts, with the object as its root part. Settings: `parts`, `solid`, `physics`, `style`, `joints`, `poses`, `cycles`, `axis`, `elasticity`, `spaces`. |
 

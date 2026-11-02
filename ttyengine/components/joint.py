@@ -63,6 +63,27 @@ def _check_slide(value):
     values = list(value)
     return (min(values), max(values))
 
+def _check_limit(value):
+    if value is None:
+        return None
+    values = [float(v) for v in value]
+    if len(values) != 2:
+        raise ValueError('limit must be a (low, high) pair of angles')
+    return (min(values), max(values))
+
+def _check_target(value):
+    return None if value is None else float(value)
+
+def _check_gain(value):
+    if not 0 < value <= 1:
+        raise ValueError('gain must be above 0 and at most 1')
+    return value
+
+def _check_effort(value):
+    if value is not None and value < 0:
+        raise ValueError('effort must not be negative')
+    return value
+
 def _check_elasticity(value):
     if value <= 0:
         raise ValueError('elasticity must be positive')
@@ -89,6 +110,10 @@ _PARAMS = {
     'slide': (None, _check_slide),
     'pinx': (0, None),
     'piny': (0, None),
+    'limit': (None, _check_limit),
+    'target': (None, _check_target),
+    'gain': (0.5, _check_gain),
+    'effort': (None, _check_effort),
 }
 _GEOMETRY = frozenset(('xoffset', 'yoffset', 'pinx', 'piny', 'radius', 'range', 'physical', 'kind', 'rest', 'axis', 'slide'))
 _POSE = frozenset(('xoffset', 'yoffset', 'pinx', 'piny', 'kind', 'axis'))
@@ -280,6 +305,55 @@ class _edge():
         self.pose = (dist, rel, _wrap(self.follower.t.rotation - rotation))
         return self.pose
 
+    def twist(self):
+        pose = self.pose or self.capture()
+        return _wrap(self.follower.t.rotation - self.origin.t.rotation - pose[2])
+
+    def _bodies(self):
+        found = []
+        for comp in (self.origin, self.follower):
+            p = getattr(comp.obj, 'physics', None)
+            if p is not None and p.dynamic:
+                found.append((p, p.mass * p.body()[2] * math.pi / 180))
+            else:
+                found.append((None, None))
+        return found
+
+    def rotate(self):
+        f = self.follower
+        if f.limit is None and f.target is None:
+            return
+        (parent, kp), (child, kc) = self._bodies()
+        if parent is None and child is None:
+            return
+        inverse = (1 / kp if parent else 0.0) + (1 / kc if child else 0.0)
+        def relative():
+            wp = parent.avel / parent.mass if parent else 0.0
+            wc = child.avel / child.mass if child else 0.0
+            return wc - wp
+        def apply(impulse):
+            if child:
+                child.avel += impulse / kc * child.mass
+            if parent:
+                parent.avel -= impulse / kp * parent.mass
+        angle = self.twist()
+        if f.limit is not None:
+            low, high = f.limit
+            over = angle - high if angle > high else angle - low if angle < low else 0.0
+            if over:
+                speed = relative()
+                want = -0.2 * over
+                if speed * over > 0 or abs(want) > abs(speed):
+                    apply((want - speed) / inverse)
+        if f.target is not None:
+            goal = f.target
+            if f.limit is not None:
+                goal = max(f.limit[0], min(f.limit[1], goal))
+            impulse = (f.gain * _wrap(goal - angle) - relative()) / inverse
+            if f.effort is not None:
+                impulse = max(-f.effort, min(f.effort, impulse))
+            apply(impulse)
+
     def error(self, motor):
         f = self.follower
         pose = self.pose or self.capture()
@@ -415,12 +489,14 @@ class _edge():
 
 @_withparams
 class joint(_lerpable, _keyed):
-    _angles = frozenset(('rest', 'axis'))
+    _angles = frozenset(('rest', 'axis', 'target'))
     _owned = ['joints', 'xoffset', 'yoffset', 'pinx', 'piny', 'jradius', 'range', 'elasticity',
-              'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide', 'preset']
+              'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide', 'preset',
+              'limit', 'target', 'gain', 'effort']
     _required = [transform]
     _settings = ('preset', 'joints', 'xoffset', 'yoffset', 'pinx', 'piny', 'radius', 'range', 'elasticity',
-                 'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide')
+                 'durability', 'physical', 'vel', 'collide', 'kind', 'rest', 'axis', 'slide',
+                 'limit', 'target', 'gain', 'effort')
     _aliases = {'radius': 'jradius'}
     _watch = frozenset(('x', 'y', 'rotation', 'text'))
     _active = False
@@ -518,6 +594,10 @@ class joint(_lerpable, _keyed):
             spec['axis'] = -spec['axis']
         if spec.get('xoffset'):
             spec['xoffset'] = -spec['xoffset']
+        if spec.get('limit') is not None:
+            spec['limit'] = tuple(-v for v in spec['limit'])
+        if spec.get('target') is not None:
+            spec['target'] = -spec['target']
         return spec
 
     @property
@@ -1163,6 +1243,7 @@ class joint(_lerpable, _keyed):
                         edge.engaged = False
                         edge.pull(0.0, 0.0)
                     f._orient(edge)
+                    edge.rotate()
         tick = self.scene._ticks
         if self._stamp != tick and any(e.alive and not e.physical for e in owned):
             self._settle(motor=True, stamp=tick)

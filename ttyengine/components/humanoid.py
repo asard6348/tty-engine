@@ -734,48 +734,16 @@ class humanoid:
         px, py = node['point']
         x, y, w, h = self._nodes[node['name']]['rect']
         child.joint.apply(kind='ball', radius=0, range=None, rest=None,
-                          pinx=px - x - w / 2, piny=-(py - y - h / 2))
+                          pinx=px - x - w / 2, piny=-(py - y - h / 2),
+                          limit=node['limits'] if self._loose_limits else None)
         link = self.parts[node['parent']].joint.link(child)
-        link.pose = (0.0, link.pose[1], link.pose[2])
+        link.pose = (0.0, link.pose[1], node['pose'][2])
 
     def _stiffen(self, node):
         child = self.parts[node['name']]
-        child.joint.apply(kind='fixed', pinx=0, piny=0)
+        child.joint.apply(kind='fixed', pinx=0, piny=0, limit=None)
         link = self._restore_length(node)
         node['angle'] = _wrap(link.pose[1] - node['pose'][1])
-
-    def _limit(self, node):
-        lo, hi = node['limits']
-        parent = self.parts[node['parent']].physics
-        child = self.parts[node['name']].physics
-        if not (parent.dynamic or child.dynamic):
-            return
-        angle = _wrap(self.parts[node['name']].transform.rotation - self.parts[node['parent']].transform.rotation - node['pose'][2])
-        over = angle - hi if angle > hi else angle - lo if angle < lo else 0.0
-        if not over:
-            return
-        kp = parent.mass * parent.body()[2] * math.pi / 180 if parent.dynamic else None
-        kc = child.mass * child.body()[2] * math.pi / 180 if child.dynamic else None
-        inverse = (1 / kp if kp else 0.0) + (1 / kc if kc else 0.0)
-        wp = parent.avel / parent.mass if parent.dynamic else 0.0
-        wc = child.avel / child.mass if child.dynamic else 0.0
-        relative = wc - wp
-        outward = relative * over > 0
-        want = -0.2 * over
-        if outward or abs(want) > abs(relative):
-            impulse = (want - relative) / inverse
-            if kc:
-                child.avel += impulse / kc * child.mass
-            if kp:
-                parent.avel -= impulse / kp * parent.mass
-
-    def step(self):
-        if self._closing or not (self._loose and self._loose_limits):
-            return
-        for name in self._order:
-            node = self._nodes[name]
-            if node['parent'] is not None and name not in self._detached and node['limits'] is not None:
-                self._limit(node)
 
     def _restore_length(self, node):
         link = self.parts[node['parent']].joint.link(self.parts[node['name']])

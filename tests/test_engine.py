@@ -15,6 +15,7 @@ os.environ.setdefault("COLUMNS", "100")
 os.environ.setdefault("LINES", "40")
 
 from ttyengine import ansi, ascii_styler, compositor, errors, figlet, image_reader, launcher, region, terminal
+from ttyengine.components import joint
 from ttyengine.launcher import Session
 from ttyengine.sound import Sound, find_ffmpeg
 
@@ -134,6 +135,52 @@ class JointTests(unittest.TestCase):
         for _ in range(300):
             sc.tick()
         self.assertGreater(dist(anchor, body), 10)
+
+    def pivot(self, dynamic=False, **settings):
+        _, sc = make_scene()
+        sc.gravity = (0, 0)
+        parent = sc.obj().create("###\n###\n###", 0, 0, dynamic=dynamic, xvel=0)
+        child = sc.obj().create("|\n|\n|\n|", 1, -3, xvel=0)
+        parent.set(joint)
+        parent.joint.attach(child, dict(kind="ball", radius=0, yoffset=-1.5, piny=2, **settings))
+        return sc, parent, child, parent.joint.link(child)
+
+    def test_joint_motor_turns_the_follower_to_its_target(self):
+        sc, _, _, link = self.pivot(target=40)
+        for _ in range(40):
+            sc.tick()
+        self.assertAlmostEqual(link.twist(), 40, delta=1)
+
+    def test_joint_motor_effort_caps_how_fast_it_turns(self):
+        sc, _, _, free = self.pivot(target=40)
+        sc2, _, _, weak = self.pivot(target=40, effort=0.2)
+        for _ in range(6):
+            sc.tick()
+            sc2.tick()
+        self.assertLess(weak.twist(), free.twist() / 2)
+
+    def test_joint_limit_stops_a_spinning_follower(self):
+        sc, _, child, link = self.pivot(limit=(-30, 30))
+        child.physics.avel = 40 * child.physics.mass
+        for _ in range(60):
+            sc.tick()
+        self.assertLess(link.twist(), 40)
+        self.assertGreater(link.twist(), 0)
+
+    def test_joint_motor_exchanges_equal_angular_momentum(self):
+        sc, parent, child, link = self.pivot(dynamic=True, target=40)
+        def momentum(o):
+            p = o.physics
+            return p.mass * p.body()[2] * math.radians(p.avel / p.mass)
+        link.rotate()
+        self.assertGreater(momentum(child), 0)
+        self.assertAlmostEqual(momentum(child) + momentum(parent), 0, places=9)
+
+    def test_joint_motor_settings_are_validated(self):
+        _, _, _, link = self.pivot()
+        for name, value in (("gain", 0), ("gain", 2), ("effort", -1), ("limit", (1, 2, 3))):
+            with self.assertRaises(ValueError, msg=name):
+                setattr(link.follower, name, value)
 
 
 @unittest.skipIf(sys.platform == "win32", "terminal input needs a console")
