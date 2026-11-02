@@ -30,6 +30,32 @@ if _WINDOWS:
     _WIN_SCAN = {'H': ansi.csi('', 'A'), 'P': ansi.csi('', 'B'), 'M': ansi.csi('', 'C'), 'K': ansi.csi('', 'D'),
                  'G': ansi.csi('', 'H'), 'O': ansi.csi('', 'F'), 'I': ansi.csi('5', '~'), 'Q': ansi.csi('6', '~'),
                  'R': ansi.csi('2', '~'), 'S': ansi.csi('3', '~')}
+    _kernel32.GetModuleHandleW.restype  = wintypes.HMODULE
+    _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    _kernel32.GetCurrentThreadId.restype  = wintypes.DWORD
+    _kernel32.GetCurrentThreadId.argtypes = []
+    _user32 = ctypes.WinDLL('user32', use_last_error=True)
+    _HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+    class _KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [('vkCode', wintypes.DWORD), ('scanCode', wintypes.DWORD),
+                    ('flags', wintypes.DWORD), ('time', wintypes.DWORD),
+                    ('dwExtraInfo', ctypes.c_size_t)]
+
+    _user32.SetWindowsHookExW.restype    = wintypes.HHOOK
+    _user32.SetWindowsHookExW.argtypes   = [ctypes.c_int, _HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
+    _user32.CallNextHookEx.restype       = ctypes.c_ssize_t
+    _user32.CallNextHookEx.argtypes      = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+    _user32.UnhookWindowsHookEx.restype  = wintypes.BOOL
+    _user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+    _user32.GetMessageW.restype          = wintypes.BOOL
+    _user32.GetMessageW.argtypes         = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    _user32.PeekMessageW.restype         = wintypes.BOOL
+    _user32.PeekMessageW.argtypes        = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+    _user32.PostThreadMessageW.restype   = wintypes.BOOL
+    _user32.PostThreadMessageW.argtypes  = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    _WH_KEYBOARD_LL = 13
+    _WM_QUIT        = 0x0012
 else:
     import select
 
@@ -40,6 +66,39 @@ if _LINUX:
         import grp
     except ImportError:
         grp = None
+
+_DARWIN = sys.platform == 'darwin'
+_CG = _CF = None
+if _DARWIN:
+    import ctypes
+    _TAP_CB = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                               ctypes.c_void_p, ctypes.c_void_p)
+    try:
+        _CG = ctypes.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+        _CF = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+        _CG.CGEventTapCreate.restype  = ctypes.c_void_p
+        _CG.CGEventTapCreate.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+                                         ctypes.c_uint64, _TAP_CB, ctypes.c_void_p]
+        _CG.CGEventTapEnable.restype  = None
+        _CG.CGEventTapEnable.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+        _CG.CGEventGetIntegerValueField.restype  = ctypes.c_int64
+        _CG.CGEventGetIntegerValueField.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        _CF.CFMachPortCreateRunLoopSource.restype  = ctypes.c_void_p
+        _CF.CFMachPortCreateRunLoopSource.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
+        _CF.CFRunLoopGetCurrent.restype  = ctypes.c_void_p
+        _CF.CFRunLoopGetCurrent.argtypes = []
+        _CF.CFRunLoopAddSource.restype  = None
+        _CF.CFRunLoopAddSource.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        _CF.CFRunLoopRunInMode.restype  = ctypes.c_int32
+        _CF.CFRunLoopRunInMode.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_ubyte]
+        _CF.CFMachPortInvalidate.restype  = None
+        _CF.CFMachPortInvalidate.argtypes = [ctypes.c_void_p]
+        _CF.CFRelease.restype  = None
+        _CF.CFRelease.argtypes = [ctypes.c_void_p]
+        _CF_COMMON  = ctypes.c_void_p.in_dll(_CF, 'kCFRunLoopCommonModes').value
+        _CF_DEFAULT = ctypes.c_void_p.in_dll(_CF, 'kCFRunLoopDefaultMode').value
+    except Exception:
+        _CG = _CF = None
 
 
 def _is_tty():
@@ -167,6 +226,42 @@ _EVDEV_NAMES  = {1: 'esc', 2: '1', 3: '2', 4: '3', 5: '4', 6: '5', 7: '6', 8: '7
                  119: 'pause', 125: 'windows', 126: 'windows', 127: 'menu'}
 _EVDEV_NAMES.update({59 + i: 'f%d' % (i + 1) for i in range(10)})
 _EVDEV_NAMES.update({183 + i: 'f%d' % (i + 13) for i in range(12)})
+
+_WIN_NAMES = {0x08: 'backspace', 0x09: 'tab', 0x0D: 'enter', 0x10: 'shift', 0x11: 'ctrl',
+              0x12: 'alt', 0x13: 'pause', 0x14: 'caps lock', 0x1B: 'esc', 0x20: 'space',
+              0x21: 'page up', 0x22: 'page down', 0x23: 'end', 0x24: 'home', 0x25: 'left',
+              0x26: 'up', 0x27: 'right', 0x28: 'down', 0x2C: 'print screen', 0x2D: 'insert',
+              0x2E: 'delete', 0x5B: 'windows', 0x5C: 'windows', 0x5D: 'menu',
+              0x6A: '*', 0x6B: '+', 0x6D: '-', 0x6E: '.', 0x6F: '/',
+              0x90: 'num lock', 0x91: 'scroll lock',
+              0xA0: 'shift', 0xA1: 'shift', 0xA2: 'ctrl', 0xA3: 'ctrl', 0xA4: 'alt', 0xA5: 'alt',
+              0xBA: ';', 0xBB: '=', 0xBC: ',', 0xBD: '-', 0xBE: '.', 0xBF: '/', 0xC0: '`',
+              0xDB: '[', 0xDC: '\\', 0xDD: ']', 0xDE: "'"}
+_WIN_NAMES.update({0x30 + i: str(i) for i in range(10)})
+_WIN_NAMES.update({0x60 + i: str(i) for i in range(10)})
+_WIN_NAMES.update({0x41 + i: chr(97 + i) for i in range(26)})
+_WIN_NAMES.update({0x70 + i: 'f%d' % (i + 1) for i in range(24)})
+_WIN_ALTGR_CTRL = 0x21D
+
+_MAC_NAMES = {0: 'a', 1: 's', 2: 'd', 3: 'f', 4: 'h', 5: 'g', 6: 'z', 7: 'x', 8: 'c', 9: 'v',
+              11: 'b', 12: 'q', 13: 'w', 14: 'e', 15: 'r', 16: 'y', 17: 't', 18: '1', 19: '2',
+              20: '3', 21: '4', 22: '6', 23: '5', 24: '=', 25: '9', 26: '7', 27: '-', 28: '8',
+              29: '0', 30: ']', 31: 'o', 32: 'u', 33: '[', 34: 'i', 35: 'p', 36: 'enter',
+              37: 'l', 38: 'j', 39: "'", 40: 'k', 41: ';', 42: '\\', 43: ',', 44: '/',
+              45: 'n', 46: 'm', 47: '.', 48: 'tab', 49: 'space', 50: '`', 51: 'backspace',
+              53: 'esc', 54: 'windows', 55: 'windows', 56: 'shift', 57: 'caps lock',
+              58: 'alt', 59: 'ctrl', 60: 'shift', 61: 'alt', 62: 'ctrl',
+              64: 'f17', 65: '.', 67: '*', 69: '+', 71: 'num lock', 75: '/', 76: 'enter',
+              78: '-', 79: 'f18', 80: 'f19', 81: '=', 82: '0', 83: '1', 84: '2', 85: '3',
+              86: '4', 87: '5', 88: '6', 89: '7', 90: 'f20', 91: '8', 92: '9',
+              96: 'f5', 97: 'f6', 98: 'f7', 99: 'f3', 100: 'f8', 101: 'f9', 103: 'f11',
+              105: 'f13', 106: 'f16', 107: 'f14', 109: 'f10', 110: 'menu', 111: 'f12',
+              113: 'f15', 114: 'insert', 115: 'home', 116: 'page up', 117: 'delete',
+              118: 'f4', 119: 'end', 120: 'f2', 121: 'page down', 122: 'f1',
+              123: 'left', 124: 'right', 125: 'down', 126: 'up'}
+_MAC_CAPS       = 57
+_MAC_TAP_MASK   = (1 << 10) | (1 << 11) | (1 << 12)
+_MAC_TAP_OFF    = (0xFFFFFFFE, 0xFFFFFFFF)
 
 _CSI_RE      = re.compile(ansi.CSI_RE + r'([0-9:;<=>?]*)([ -/]*)([@-~])')
 _CSI_PARTIAL_RE = re.compile(ansi.CSI_RE + r'[0-9:;<=>?]*[ -/]*')
@@ -335,6 +430,229 @@ class _EvdevKeyboard:
         self._ignored.clear()
 
 
+class _WinKeyboard:
+    def __init__(self):
+        self._cb     = None
+        self._held   = set()
+        self._thread = None
+        self._tid    = 0
+        self._proc   = None
+        self._hook   = None
+        self._ok     = False
+
+    @staticmethod
+    def accessible():
+        return _WINDOWS
+
+    def _emit(self, kind, ident, name):
+        cb = self._cb
+        if cb and name:
+            cb(_FakeKeyEvent(kind, name, ('k', ident)))
+
+    def _on_key(self, ncode, wparam, lparam):
+        if ncode == 0:
+            try:
+                info = _KBDLLHOOKSTRUCT.from_address(lparam)
+                vk = info.vkCode
+                if not (vk == 0xA2 and info.scanCode == _WIN_ALTGR_CTRL):
+                    ident = vk | ((info.flags & 1) << 8)
+                    name = _WIN_NAMES.get(vk)
+                    if wparam in (0x100, 0x104):
+                        if ident not in self._held:
+                            self._held.add(ident)
+                            self._emit('down', ident, name)
+                    elif wparam in (0x101, 0x105):
+                        self._held.discard(ident)
+                        self._emit('up', ident, name)
+            except Exception:
+                pass
+        return _user32.CallNextHookEx(None, ncode, wparam, lparam)
+
+    def _run(self, ready):
+        msg = wintypes.MSG()
+        try:
+            self._tid = _kernel32.GetCurrentThreadId()
+            _user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+            self._proc = _HOOKPROC(self._on_key)
+            self._hook = _user32.SetWindowsHookExW(
+                _WH_KEYBOARD_LL, self._proc, _kernel32.GetModuleHandleW(None), 0)
+            self._ok = bool(self._hook)
+        except Exception:
+            self._ok = False
+        ready.set()
+        if not self._ok:
+            return
+        while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            pass
+        _user32.UnhookWindowsHookEx(self._hook)
+        self._hook = None
+
+    def open(self):
+        if self._thread and self._thread.is_alive():
+            return self._ok
+        ready = threading.Event()
+        self._ok = False
+        self._thread = threading.Thread(target=self._run, args=(ready,), daemon=True)
+        self._thread.start()
+        ready.wait(2.0)
+        if not self._ok:
+            self.unhook_all()
+        return self._ok
+
+    def hook(self, callback, suppress=False):
+        self._cb = callback
+        if not (self._thread and self._thread.is_alive()):
+            self.open()
+        return callback
+
+    def unhook_all(self):
+        self._cb = None
+        thread, self._thread = self._thread, None
+        if thread and thread is not threading.current_thread():
+            if self._ok:
+                _user32.PostThreadMessageW(self._tid, _WM_QUIT, 0, 0)
+            thread.join(1.0)
+        self._ok = False
+        self._held.clear()
+
+
+class _MacKeyboard:
+    def __init__(self):
+        self._cb     = None
+        self._held   = set()
+        self._stop   = threading.Event()
+        self._thread = None
+        self._tap    = None
+        self._ref    = None
+        self._ok     = False
+
+    @staticmethod
+    def _secure_input():
+        try:
+            carbon = ctypes.CDLL('/System/Library/Frameworks/Carbon.framework/Carbon')
+            carbon.IsSecureEventInputEnabled.restype  = ctypes.c_ubyte
+            carbon.IsSecureEventInputEnabled.argtypes = []
+            return bool(carbon.IsSecureEventInputEnabled())
+        except Exception:
+            return False
+
+    @staticmethod
+    def accessible():
+        if not _DARWIN or _CG is None:
+            return False
+        if os.environ.get('SSH_CONNECTION') or os.environ.get('SSH_TTY'):
+            return False
+        check = getattr(_CG, 'CGPreflightListenEventAccess', None)
+        if check is not None:
+            check.restype  = ctypes.c_bool
+            check.argtypes = []
+            try:
+                if not check():
+                    return False
+            except Exception:
+                return False
+        return not _MacKeyboard._secure_input()
+
+    def _emit(self, kind, code):
+        cb = self._cb
+        name = _MAC_NAMES.get(code)
+        if cb and name:
+            cb(_FakeKeyEvent(kind, name, ('k', code)))
+
+    def _on_tap(self, proxy, etype, event, refcon):
+        try:
+            if etype in _MAC_TAP_OFF:
+                _CG.CGEventTapEnable(self._tap, True)
+            elif etype in (10, 11, 12):
+                code = _CG.CGEventGetIntegerValueField(event, 9)
+                if etype == 12:
+                    if code == _MAC_CAPS:
+                        self._emit('down', code)
+                        self._emit('up', code)
+                    elif code in self._held:
+                        self._held.discard(code)
+                        self._emit('up', code)
+                    else:
+                        self._held.add(code)
+                        self._emit('down', code)
+                elif etype == 10:
+                    if code not in self._held:
+                        self._held.add(code)
+                        self._emit('down', code)
+                else:
+                    self._held.discard(code)
+                    self._emit('up', code)
+        except Exception:
+            pass
+        return event
+
+    def _run(self, ready):
+        src = None
+        try:
+            self._ref = _TAP_CB(self._on_tap)
+            self._tap = _CG.CGEventTapCreate(1, 0, 1, _MAC_TAP_MASK, self._ref, None)
+            if self._tap:
+                src = _CF.CFMachPortCreateRunLoopSource(None, self._tap, 0)
+                if src:
+                    _CF.CFRunLoopAddSource(_CF.CFRunLoopGetCurrent(), src, _CF_COMMON)
+                    _CG.CGEventTapEnable(self._tap, True)
+                    self._ok = True
+        except Exception:
+            self._ok = False
+        ready.set()
+        stop = self._stop
+        while self._ok and not stop.is_set():
+            _CF.CFRunLoopRunInMode(_CF_DEFAULT, 0.1, 0)
+        try:
+            if self._tap:
+                _CF.CFMachPortInvalidate(self._tap)
+            if src:
+                _CF.CFRelease(src)
+            if self._tap:
+                _CF.CFRelease(self._tap)
+        except Exception:
+            pass
+        self._tap = None
+
+    def open(self):
+        if self._thread and self._thread.is_alive():
+            return self._ok
+        ready = threading.Event()
+        self._ok = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, args=(ready,), daemon=True)
+        self._thread.start()
+        ready.wait(2.0)
+        if not self._ok:
+            self.unhook_all()
+        return self._ok
+
+    def hook(self, callback, suppress=False):
+        self._cb = callback
+        if not (self._thread and self._thread.is_alive()):
+            self.open()
+        return callback
+
+    def unhook_all(self):
+        self._cb = None
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread and thread is not threading.current_thread():
+            thread.join(1.0)
+        self._ok = False
+        self._held.clear()
+
+
+def _kernel_keyboard():
+    if _LINUX:
+        return _EvdevKeyboard()
+    if _WINDOWS:
+        return _WinKeyboard()
+    if _DARWIN:
+        return _MacKeyboard()
+    return None
+
+
 class inp():
     def __init__(self, term=None, watchfocus=True, trackmotion=False,
                  legacy_hold=0.1, quiet=True, repeatdelay=0.5, repeatrate=30,
@@ -342,9 +660,11 @@ class inp():
         force = None if backend in (None, 'auto') else str(backend).lower()
         if force == 'raw':
             force = 'terminal'
-        if force not in (None, 'keyboard', 'evdev', 'kitty', 'terminal'):
+        if force == 'evdev':
+            force = 'kernel'
+        if force not in (None, 'keyboard', 'kitty', 'kernel', 'terminal'):
             raise ValueError(
-                "backend must be None, 'auto', 'keyboard', 'evdev', 'kitty' or 'terminal'")
+                "backend must be None, 'auto', 'keyboard', 'kitty', 'kernel' (or 'evdev') or 'terminal'")
         self._forced      = force
         self.lock         = threading.RLock()
         self.wf           = watchfocus
@@ -388,22 +708,13 @@ class inp():
         if force == 'keyboard' and self.keyboard is None:
             raise RuntimeError("input_handler: backend 'keyboard' is unavailable")
 
-        if self.keyboard is None and force in (None, 'evdev') \
-                and (force or _EvdevKeyboard.accessible()):
-            evdev_kb = _EvdevKeyboard()
-            if evdev_kb.open():
-                try:
-                    self._kb_hook = evdev_kb.hook(self._native_event, suppress=False)
-                    self.keyboard = evdev_kb
-                except Exception:
-                    evdev_kb.unhook_all()
-                    self.keyboard = None
-        if force == 'evdev' and self.keyboard is None:
-            raise RuntimeError("input_handler: backend 'evdev' is unavailable")
+        if force == 'kernel' and not self._open_kernel(True):
+            raise RuntimeError("input_handler: backend 'kernel' is unavailable")
 
-        # Tier 3/4: terminal input. Kitty keyboard protocol (true press/release)
-        # if the terminal answers the probe, else raw stdin (press-only, held()
-        # is emulated and only stays True while key repeats keep arriving).
+        # Tier 2-4: terminal input. Kitty keyboard protocol (true press/release)
+        # if the terminal answers the probe, else the kernel tier (evdev / Windows
+        # hook / macOS event tap), else raw stdin (press-only, held() is emulated
+        # and only stays True while key repeats keep arriving).
         if self.keyboard is None:
             self.keyboard = _FallbackKeyboard()
             self._kb_is_fallback = True
@@ -412,9 +723,9 @@ class inp():
                 self._kitty_state = 'off'
             if not self.quiet and force is None:
                 sys.stderr.write(
-                    "input_handler: low-level keyboard unavailable, using terminal "
-                    "input: kitty keyboard protocol if supported, otherwise "
-                    "raw stdin (press-only, held() needs key repeat).\n"
+                    "input_handler: `keyboard` unavailable, trying kitty keyboard "
+                    "protocol, then kernel input, then raw stdin "
+                    "(press-only, held() needs key repeat).\n"
                 )
 
         # ── mouse (raw VT sequence parser) ────────────────────────────────
@@ -442,6 +753,30 @@ class inp():
         if force == 'kitty' and self._kitty_state is None:
             self.cleanup()
             raise RuntimeError("input_handler: backend 'kitty' needs an interactive terminal")
+        if force is None and self._kb_is_fallback and self._kitty_state is None:
+            self._fall_to_kernel()
+
+    def _open_kernel(self, force=False):
+        kb = _kernel_keyboard()
+        if kb is None or not (force or kb.accessible()) or not kb.open():
+            return False
+        try:
+            self._kb_hook = kb.hook(self._native_event, suppress=False)
+        except Exception:
+            kb.unhook_all()
+            return False
+        self.keyboard = kb
+        return True
+
+    def _fall_to_kernel(self):
+        if not self._kb_is_fallback or self._forced is not None:
+            return
+        old = self.keyboard
+        if not self._open_kernel():
+            return
+        self._release_all()
+        old.unhook_all()
+        self._kb_is_fallback = False
 
     @staticmethod
     def _keyboard_usable():
@@ -460,7 +795,11 @@ class inp():
     @property
     def backend(self):
         if not self._kb_is_fallback:
-            return 'evdev' if isinstance(self.keyboard, _EvdevKeyboard) else 'keyboard'
+            if isinstance(self.keyboard, _EvdevKeyboard):
+                return 'evdev'
+            if isinstance(self.keyboard, (_WinKeyboard, _MacKeyboard)):
+                return 'kernel'
+            return 'keyboard'
         if self._kitty_state == 'on':
             return 'kitty'
         return 'terminal'
@@ -841,6 +1180,7 @@ class inp():
                 self._write(ansi.csi('>11', 'u'))
             elif final == 'c' and self._kitty_state == 'probing':
                 self._kitty_state = 'off'
+                self._fall_to_kernel()
             return
         if final == 'Z':
             self._term_event('tab', ('t', 'tab'), 1)
@@ -942,6 +1282,7 @@ class inp():
             if self._forced == 'kitty':
                 raise RuntimeError(
                     "input_handler: backend 'kitty' is unsupported by this terminal")
+            self._fall_to_kernel()
         self._tick_repeats(now)
         self._flush_releases(now)
 
@@ -1022,7 +1363,7 @@ class inp():
         # release events and held() is emulated from key-repeat. It replaces
         # legacy_hold for this call, so a developer can bridge the OS
         # repeat-start gap (often 250-600 ms) for actions like a persistent jump.
-        # Ignored by the `keyboard`, evdev and kitty tiers, which report real releases.
+        # Ignored by the `keyboard`, kitty and kernel tiers, which report real releases.
         if not self.focused:
             return False
         pressed = self._pressed_keys
@@ -1067,7 +1408,7 @@ class inp():
         # delay: seconds after the key's last press before the callback fires.
         # Only used in the last tier (terminal fallback without kitty), where the
         # release is emulated; it replaces legacy_hold for this callback and
-        # matches held(key, delay=...). Ignored by the keyboard, evdev and kitty tiers.
+        # matches held(key, delay=...). Ignored by the keyboard, kitty and kernel tiers.
         accepts = _accepts_arg(callback)
         token = object() if once else None
         if caps:
