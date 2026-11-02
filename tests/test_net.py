@@ -451,13 +451,13 @@ class SyncTests(unittest.TestCase):
 
     def test_unreliable_state_converges_under_loss(self):
         host, guest, hs, gs = self.pair("udp", resync=0.05)
-        for endpoint in list(host._udp.values()) + [guest._client_endpoint(2)]:
-            endpoint.loss = 0.3
         a, b = engine_scene.Scene(), engine_scene.Scene()
         hs.share(a, "arena", reliable=False)
         gs.share(b, "arena", reliable=False)
         items = [a.obj().create("o", i, 0) for i in range(30)]
         self.connect(host, guest, "udp")
+        for endpoint in list(host._udp.values()) + [guest._client_endpoint(2)]:
+            endpoint.loss = 0.3
         self.assertTrue(pump(self.syncs, lambda: len(b.objs) == 30, timeout=15))
         for step in range(5):
             for i, item in enumerate(items):

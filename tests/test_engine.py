@@ -187,7 +187,7 @@ class JointTests(unittest.TestCase):
 class InputTests(unittest.TestCase):
     def setUp(self):
         from ttyengine.input_handler import inp
-        self.inp = inp(watchfocus=False, trackmotion=False, quiet=True)
+        self.inp = inp(watchfocus=False, trackmotion=False, quiet=True, backend="terminal")
 
     def tearDown(self):
         self.inp.cleanup()
