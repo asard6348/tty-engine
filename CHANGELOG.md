@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - `joint` gains angular settings for pinned joints: `limit` is a `(low, high)` range of the follower's rotation relative to its origin, `target` turns the follower toward an angle with a motor, `gain` (default `0.5`) is the share of the remaining angle the motor closes per tick, and `effort` caps the angular impulse per tick (unset means unlimited). Limits and motor exchange equal and opposite angular impulses between the two bodies, so angular momentum is conserved.
 - Limp `humanoid` joint limits are enforced by the `joint` `limit` setting instead of by the humanoid itself, and `humanoid` no longer has a per-tick step.
