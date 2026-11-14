@@ -56,6 +56,7 @@ class transform(_change_callback, _lerpable, _keyed):
         self._htext = ctext
         self._rotation = kwargs.get('rotation', 0)
         self._rot_cache_angle = None
+        self._rot_memo = {}
         self._aspect = kwargs.get('aspect', None)
         self._flip = kwargs.get('flip', None)
         self._shadow = _check_shadow(kwargs.get('shadow', None))
@@ -577,11 +578,14 @@ class transform(_change_callback, _lerpable, _keyed):
                         for nx in range(gx - reach_x, gx + reach_x + 1):
                             if (nx, ny) in placed:
                                 continue
+                            base = ((nx - fx) * ASPECT) ** 2 + (ny - fy) ** 2 - 0.02 * (nx - fx) * ASPECT
+                            if best is not None and round(base, 6) > best[0]:
+                                continue
                             rx = (nx - cx) * ASPECT
                             ry = ny - cy
                             hit = (floor((rx * ja + ry * jb) / ASPECT + cx + 0.5 + 1e-7),
                                    floor(rx * jc + ry * jd + cy + 0.5 + 1e-7)) in source
-                            cost = ((nx - fx) * ASPECT) ** 2 + (ny - fy) ** 2 - 0.02 * (nx - fx) * ASPECT + (0 if hit else 1)
+                            cost = base + (0 if hit else 1)
                             key = (round(cost, 6), ny, -nx)
                             if best is None or key < best:
                                 best = key
@@ -720,6 +724,44 @@ class transform(_change_callback, _lerpable, _keyed):
         self._parse_pixels_key = None
         self._parse_pixels_val = None
 
+    def _memo_key(self, angle):
+        rtext = self._rtext
+        solo = len(rtext) == 1 and len(self._htext) == 1
+        mark = (angle % 360 == 0 and self._flip is None) if solo else angle
+        return (solo, mark, rtext, self._vrtext, self._htext, self._flip, self.aspect, self._keeps_layout())
+
+    def _memo_room(self):
+        return max(2, min(128, 120000 // (len(self._rtext) + len(self._vrtext) + 1)))
+
+    def _memo_put(self, key):
+        memo = self._rot_memo
+        if key in memo:
+            del memo[key]
+        elif len(memo) >= self._memo_room():
+            del memo[next(iter(memo))]
+        memo[key] = (self._plain_layout, self._text, self._rotmap, self._rotsize, self._rotorigin,
+                     self.vtext, self._ptext, self._pvx, self._pvy, self._pkey)
+
+    def _memo_use(self, key, angle):
+        memo = self._rot_memo
+        found = memo.pop(key, None)
+        if found is None:
+            return False
+        memo[key] = found
+        (self._plain_layout, self._text, self._rotmap, self._rotsize, self._rotorigin,
+         self.vtext, self._ptext, self._pvx, self._pvy, self._pkey) = found
+        self._rotangle = angle
+        self._rotcells_v = {}
+        self._rotsrc_v = {}
+        self._rotmaps_ok = not self._text
+        self._xlen_cache = None
+        self._ylen_cache = None
+        self._parse_pixels_key = None
+        self._parse_pixels_val = None
+        self.vx = self._rotorigin[0]
+        self.vy = -self._rotorigin[1]
+        return True
+
     def rotate(self, angle_degrees, init=False):
         rounded = self._canonical(angle_degrees)
         if not init:
@@ -727,6 +769,11 @@ class transform(_change_callback, _lerpable, _keyed):
                 return
             self._rot_cache_angle = rounded
         angle_degrees = rounded
+        key = None
+        if not init:
+            key = self._memo_key(angle_degrees)
+            if self._memo_use(key, angle_degrees):
+                return
 
         layout, render = self._rotator(angle_degrees)
         plain = self._rtext
@@ -755,6 +802,8 @@ class transform(_change_callback, _lerpable, _keyed):
         self._parse_pixels_key = None
         self._parse_pixels_val = None
 
+        if key is not None:
+            self._memo_put(key)
         self.vx = self._rotorigin[0]
         self.vy = -self._rotorigin[1]
 

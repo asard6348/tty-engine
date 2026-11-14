@@ -1,7 +1,12 @@
 import math
+import re
+from itertools import repeat
 from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _mtv_cells, _offsets
 from .inherit import _change_callback, _keyed, _lerpable
 from .transform import transform
+
+_RUN = re.compile(r'[^ ]+')
+
 
 class physics(_change_callback, _lerpable, _keyed):
     _owned = [
@@ -84,6 +89,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self._bounds_cache = None
         self._body_cache = None
         self._ext_cache = None
+        self._span_cache = None
         self._good = None
         self._depenskip = 0
         def dirty(attr):
@@ -206,6 +212,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self._body_cache = None
         if attr != 'x' and attr != 'y':
             self._ext_cache = None
+        self.scene._broad.stale.add(self.obj)
 
     def _extent(self):
         ext = self._ext_cache
@@ -249,6 +256,83 @@ class physics(_change_callback, _lerpable, _keyed):
         ry = round(y + oy)
         return (rx + ext[0], rx + ext[1], ry - ext[3], ry - ext[2])
 
+    def _turn_clear(self):
+        b = self.bounds()
+        if b is None:
+            return False
+        A = self.t.aspect
+        radius = math.hypot((b[1] - b[0] + 1) * A, b[3] - b[2] + 1)
+        rx = int(radius / A) + 3
+        ry = int(radius) + 3
+        return not self.scene._broad.near(b[0] - rx, b[1] + rx, b[2] - ry, b[3] + ry, self.obj)
+
+    def _lane(self, axis):
+        ext = self._extent()
+        if not ext:
+            return None
+        t = self.t
+        if self.hitbox:
+            ox = oy = 0
+        else:
+            ox, oy = t._pvx, t._pvy
+        if axis == 'x':
+            base = t._x + ox
+            row = round(t._y + oy)
+            return base, ext[0], ext[1], row - ext[3], row - ext[2]
+        base = t._y + oy
+        col = round(t._x + ox)
+        return base, -ext[3], -ext[2], col + ext[0], col + ext[1]
+
+    def _sweep(self, axis, direction, distance):
+        lane = self._lane(axis)
+        if lane is None:
+            return []
+        base, lo_off, hi_off, cross_lo, cross_hi = lane
+        end = base + direction * distance
+        lo = min(round(base), round(end)) - 1
+        hi = max(round(base), round(end)) + 1
+        if axis == 'x':
+            return self.scene._broad.near(lo + lo_off, hi + hi_off, cross_lo, cross_hi, self.obj)
+        return self.scene._broad.near(cross_lo, cross_hi, lo + lo_off, hi + hi_off, self.obj)
+
+    def _free(self, pool, axis, direction):
+        if not pool:
+            return math.inf
+        lane = self._lane(axis)
+        if lane is None:
+            return math.inf
+        base, lo_off, hi_off, cross_lo, cross_hi = lane
+        here = round(base)
+        low, high = here + lo_off, here + hi_off
+        room = math.inf
+        for obj2 in pool:
+            p2 = getattr(obj2, 'physics', None)
+            if p2 is None:
+                continue
+            b2 = p2.bounds()
+            if b2 is None:
+                continue
+            if axis == 'x':
+                m0, m1, c0, c1 = b2[0], b2[1], b2[2], b2[3]
+            else:
+                m0, m1, c0, c1 = b2[2], b2[3], b2[0], b2[1]
+            if c1 < cross_lo or c0 > cross_hi:
+                continue
+            if m1 >= low and m0 <= high:
+                return 0.0
+            if direction > 0:
+                if m1 < low:
+                    continue
+                reach = (m0 - hi_off) - 0.5 - base
+            else:
+                if m0 > high:
+                    continue
+                reach = base - ((m1 - lo_off) + 0.5)
+            reach -= 1.0
+            if reach < room:
+                room = reach
+        return room
+
     def ontouch(self, callback, when=None, once=False):
         l = _argslen(callback)
         fired = [False]
@@ -274,6 +358,23 @@ class physics(_change_callback, _lerpable, _keyed):
         if not any(g is other for g in self.obj._ghosts):
             self.obj._ghosts.append(other)
 
+    def _spans(self, text, hitbox):
+        cached = self._span_cache
+        if cached is not None and cached[1] is text and cached[0] == hitbox:
+            return cached[2]
+        rows = []
+        for i, row in enumerate(text.splitlines()):
+            if hitbox:
+                if row:
+                    rows.append((i, ((0, len(row)),)))
+            else:
+                spans = tuple(m.span() for m in _RUN.finditer(row))
+                if spans:
+                    rows.append((i, spans))
+        rows = tuple(rows)
+        self._span_cache = (hitbox, text, rows)
+        return rows
+
     def getpixels(self, x=None, y=None, text=None):
         default_call = x is None and y is None and text is None
         if default_call and self._pixel_cache is not None:
@@ -292,10 +393,14 @@ class physics(_change_callback, _lerpable, _keyed):
         rx = round(x + ox)
         ry = round(y + oy)
         pixels = set()
-        for i, row in enumerate(text.splitlines()):
-            for j, char in enumerate(row):
-                if (char != ' ' and char != '\n' and not self.hitbox) or self.hitbox:
-                    pixels.add((rx + j, ry - i))
+        for i, spans in self._spans(text, self.hitbox):
+            y = ry - i
+            for a, b in spans:
+                if b - a > 4:
+                    pixels.update(zip(range(rx + a, rx + b), repeat(y)))
+                else:
+                    for x in range(rx + a, rx + b):
+                        pixels.add((x, y))
 
         if default_call:
             self._pixel_cache = pixels
@@ -333,7 +438,9 @@ class physics(_change_callback, _lerpable, _keyed):
                 return {}
             b1 = self.bounds(pixels1)
 
-        if not isinstance(objs, list):
+        if objs is self.scene.solids:
+            objs = self.scene._broad.near(b1[0], b1[1], b1[2], b1[3], self.obj)
+        elif not isinstance(objs, list):
             objs = [objs]
 
         result = {}
@@ -358,9 +465,7 @@ class physics(_change_callback, _lerpable, _keyed):
         found = {}
         if b1 is None:
             return found
-        for obj2 in self.scene.solids:
-            if obj2 is self.obj:
-                continue
+        for obj2 in self.scene._broad.near(b1[0], b1[1], b1[2], b1[3], self.obj):
             p2 = getattr(obj2, 'physics', None)
             if p2 is None or p2.phantom or not p2.solid:
                 continue
@@ -447,8 +552,8 @@ class physics(_change_callback, _lerpable, _keyed):
         if b is None:
             return hits
         shifted = None
-        for obj2 in self.scene.solids:
-            if obj2 is self.obj or obj2 in exclude:
+        for obj2 in self.scene._broad.near(b[0] + dx, b[1] + dx, b[2] + dy, b[3] + dy, self.obj):
+            if obj2 in exclude:
                 continue
             p2 = getattr(obj2, 'physics', None)
             if p2 is None or p2.phantom or not p2.solid:
@@ -799,10 +904,30 @@ class physics(_change_callback, _lerpable, _keyed):
             ch = abs(self[a + 'vel']) / actualmass
             d = (c, 0) if ia == 0 else (0, c)
 
+            pool = None
             while ch > 0:
+                if pool is None:
+                    pool = self._sweep(a, c, ch)
+                free = self._free(pool, a, c)
+                if free >= precision:
+                    pos = self.t[a]
+                    went = 0.0
+                    while ch > 0:
+                        step = min(precision, ch)
+                        if went + step > free:
+                            break
+                        pos += c * step
+                        ch -= step
+                        went += step
+                    if went:
+                        self.t[a] = pos
+                    if ch <= 0:
+                        break
                 step = min(precision, ch)
                 t = {a: self.t[a] + c * step}
-                collisions = self.collides(self.scene.solids, full=True, **t)
+                collisions = self.collides(pool, full=True, **t)
+                if collisions:
+                    pool = None
 
                 physical = []
                 for obj2, intersection in list(collisions.items()):
@@ -838,6 +963,12 @@ class physics(_change_callback, _lerpable, _keyed):
             pieces = max(1, int(math.ceil(abs(degrees) / self._rprecision)))
             da = degrees / pieces
             check = self.solid and not self.phantom and not self.hitbox
+            if pieces > 1 and (not check or self._turn_clear()):
+                angle = self.t.rotation
+                for _ in range(pieces):
+                    angle = angle + da
+                self.t.rotation = angle
+                pieces = 0
             for _ in range(pieces):
                 before = self.t.rotation
                 self.t.rotation = before + da

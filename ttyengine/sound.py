@@ -9,6 +9,9 @@ _NOTE_RE = re.compile(r'^([A-Ga-g])([#b]?)(-?\d+)?$')
 _SEMITONES = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11}
 _RESTS = ('', 'R', 'REST', '-', '_')
 _FLIP = bytes(b ^ 0x80 for b in range(256))
+_LANES = sys.byteorder == 'little' and array('I').itemsize == 4
+_GAIN_LIMIT = 1 << 15
+_lane_cache = {}
 
 
 def _locate(spec):
@@ -411,6 +414,30 @@ def _resample(chan, src, dst):
         else:
             out[k] = int(chan[i] + (chan[i + 1] - chan[i]) * (p - i))
     return out
+
+
+def _lanes(frames):
+    found = _lane_cache.get(frames)
+    if found is None:
+        if len(_lane_cache) > 16:
+            _lane_cache.clear()
+        found = _lane_cache[frames] = (b'\x00\x80\x00\x00' * frames, int.from_bytes(b'\xff\xff\xff\x00' * frames, 'little'))
+    return found
+
+
+def _lift(chan, start, end, at, frames, gain):
+    neutral, mask = _lanes(frames)
+    raw = chan[start:end].tobytes()
+    lanes = bytearray(neutral)
+    lanes[4 * at:4 * (at + end - start):4] = raw[0::2]
+    lanes[4 * at + 1:4 * (at + end - start):4] = raw[1::2].translate(_FLIP)
+    return ((int.from_bytes(lanes, 'little') * gain) >> 8) & mask
+
+
+def _lowered(total, frames):
+    lanes = array('I')
+    lanes.frombytes(total.to_bytes(4 * frames, 'little'))
+    return lanes
 
 
 def _clip(values):
@@ -1335,6 +1362,8 @@ class Mixer:
             voices = list(self._voices)
         left = [0] * frames
         right = [0] * frames
+        lane_left = lane_right = 0
+        bias_left = bias_right = 0
         dt = frames / float(self.rate)
         master = self._volume
         ended = []
@@ -1395,9 +1424,17 @@ class Mixer:
                     take = min(limit - start, frames - n)
                     end = start + take
                     if gl:
-                        left[n:n + take] = [m + ((s * gl) >> 8) for m, s in zip(left[n:n + take], snd.left[start:end])]
+                        if _LANES and 0 < gl < _GAIN_LIMIT and type(snd.left) is array and snd.left.typecode == 'h':
+                            lane_left += _lift(snd.left, start, end, n, frames, gl)
+                            bias_left += 128 * gl
+                        else:
+                            left[n:n + take] = [m + ((s * gl) >> 8) for m, s in zip(left[n:n + take], snd.left[start:end])]
                     if gr:
-                        right[n:n + take] = [m + ((s * gr) >> 8) for m, s in zip(right[n:n + take], snd.right[start:end])]
+                        if _LANES and 0 < gr < _GAIN_LIMIT and type(snd.right) is array and snd.right.typecode == 'h':
+                            lane_right += _lift(snd.right, start, end, n, frames, gr)
+                            bias_right += 128 * gr
+                        else:
+                            right[n:n + take] = [m + ((s * gr) >> 8) for m, s in zip(right[n:n + take], snd.right[start:end])]
                     v._pos = end
                     n += take
                 else:
@@ -1436,4 +1473,12 @@ class Mixer:
                         _call(v.on_end, v)
                     except Exception:
                         pass
+        if lane_left:
+            left = [a + b - bias_left for a, b in zip(left, _lowered(lane_left, frames))]
+        elif bias_left:
+            left = [a - bias_left for a in left]
+        if lane_right:
+            right = [a + b - bias_right for a, b in zip(right, _lowered(lane_right, frames))]
+        elif bias_right:
+            right = [a - bias_right for a in right]
         return _pack(left, right)

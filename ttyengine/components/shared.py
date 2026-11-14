@@ -141,11 +141,35 @@ def _contact_normal_cells(mine, theirs, point, nx, ny, inside, slope, aspect):
     g = max(faces, key=lambda g: g[0] * nx + g[1] * ny)
     return g[0], g[1]
 
+def _rowmasks(pixels, origin):
+    rows = {}
+    for x, y in pixels:
+        rows[y] = rows.get(y, 0) | (1 << (x - origin))
+    return rows
+
 def _mtv_cells(mine, other_pixels, aspect):
+    if not mine or not other_pixels:
+        best = None
+        for dx, dy, cost in ((1, 0, aspect), (-1, 0, aspect), (0, 1, 1.0), (0, -1, 1.0)):
+            score = cost - (0.01 if dy == 1 else 0)
+            if best is None or score < best[0]:
+                best = (score, dx, dy, 1)
+        return best
+    origin = min(min(p[0] for p in mine), min(p[0] for p in other_pixels))
+    mrows = _rowmasks(mine, origin)
+    orows = _rowmasks(other_pixels, origin)
     best = None
     for dx, dy, cost in ((1, 0, aspect), (-1, 0, aspect), (0, 1, 1.0), (0, -1, 1.0)):
         for k in range(1, 64):
-            if not ({(p[0] + dx * k, p[1] + dy * k) for p in mine} & other_pixels):
+            sx = dx * k
+            sy = dy * k
+            hit = False
+            for y, m in mrows.items():
+                o = orows.get(y + sy)
+                if o and ((m << sx) if sx >= 0 else (m >> -sx)) & o:
+                    hit = True
+                    break
+            if not hit:
                 score = k * cost - (0.01 if dy == 1 else 0)
                 if best is None or score < best[0]:
                     best = (score, dx, dy, k)

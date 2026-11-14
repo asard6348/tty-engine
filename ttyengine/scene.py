@@ -19,6 +19,7 @@ from . import region as _regions
 from . import components as _components
 from .ascii_styler import Styler
 from .compositor import Compositor
+from .broadphase import Broadphase
 _comps = []
 _attrs = {}
 _temps = []
@@ -285,6 +286,7 @@ class Scene:
         self._last = {}
         self._getlast(True)
         self.solids = []
+        self._broad = Broadphase(self)
         self.gravity = (0, 0)
         self.drag = 1
         self.precision = 0.5
