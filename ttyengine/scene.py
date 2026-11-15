@@ -1,7 +1,15 @@
 import inspect
+_ARGS = {}
 def _argslen(cb):
-    params = inspect.signature(cb).parameters
-    return len(params)
+    try:
+        found = _ARGS.get(cb)
+    except TypeError:
+        return len(inspect.signature(cb).parameters)
+    if found is None:
+        if len(_ARGS) >= 256:
+            _ARGS.clear()
+        found = _ARGS[cb] = len(inspect.signature(cb).parameters)
+    return found
 def get_components(module):
     return [
         cls for _, cls in inspect.getmembers(module, inspect.isclass)

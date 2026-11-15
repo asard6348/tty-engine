@@ -5,6 +5,22 @@ from .inherit import _keyed, _lerpable
 from .transform import transform
 from .force import _matches
 
+_STYLES = {}
+
+def _style_parts(style):
+    fa, back, ba = _ALPHAS(style) if style else (None, False, None)
+    fgm = _FGCODE.search(style)
+    bgm = _BGCODE.search(style)
+    parts = (fa, back, ba,
+             tuple(int(g) for g in fgm.groups()) if fgm else None,
+             fgm.group(0) if fgm else None,
+             tuple(int(g) for g in bgm.groups()) if bgm else None,
+             _BGCODE.sub('', _FGCODE.sub('', style)))
+    if len(_STYLES) >= 8192:
+        _STYLES.clear()
+    _STYLES[style] = parts
+    return parts
+
 class light(_lerpable, _keyed):
     _angles = frozenset(('direction',))
     _colors = frozenset(('color',))
@@ -326,7 +342,17 @@ class light(_lerpable, _keyed):
         hit = False
         first = 1.0
         last = 0.0
+        if dx < 0:
+            sx0, sx1 = cx - 1e-6, ox + 1e-6
+        else:
+            sx0, sx1 = ox - 1e-6, cx + 1e-6
+        if dy < 0:
+            sy0, sy1 = cy - 1e-6, oy + 1e-6
+        else:
+            sy0, sy1 = oy - 1e-6, cy + 1e-6
         for bx0, bx1, by0, by1 in self._boxes:
+            if bx1 + 1 < sx0 or bx0 > sx1 or by1 < sy0 or by0 - 1 > sy1:
+                continue
             lo = 0.0
             hi = 1.0
             if dx:
@@ -363,11 +389,15 @@ class light(_lerpable, _keyed):
         me = id(self.obj)
         thin = self._thin
         crossed = None
+        floor = math.floor
+        ceil = math.ceil
+        get = occ.get
+        selfshadow = self._selfshadow
         for i in range(max(1, int(first * n) - 1), min(n, int(last * n) + 3)):
             f = i / n
-            key = (math.floor(ox + (cx - ox) * f), math.ceil(oy + (cy - oy) * f))
-            who = occ.get(key)
-            if who is not None and who != me and (self._selfshadow or who != owner):
+            key = (floor(ox + (cx - ox) * f), ceil(oy + (cy - oy) * f))
+            who = get(key)
+            if who is not None and who != me and (selfshadow or who != owner):
                 opacity = thin.get(key)
                 if opacity is None:
                     return 1.0
@@ -529,6 +559,24 @@ class light(_lerpable, _keyed):
         t = obj.transform
         pixels = t.parse_pixels(text)
         ox, oy = t._origin()
+        if lights and pixels:
+            cols = [k[0] for k in pixels]
+            rows = [k[1] for k in pixels]
+            left = ox + min(cols)
+            right = ox + max(cols) + 1
+            top = oy - min(rows)
+            bottom = oy - max(rows) - 1
+            reaching = []
+            for l in lights:
+                if l._occ is None:
+                    l._prepare()
+                lx, ly = l._origin
+                span = l._radius + l._length / 2
+                reach = span / l.t.aspect + 1
+                if right < lx - reach or left > lx + reach or top < ly - span - 1 or bottom > ly + span + 1:
+                    continue
+                reaching.append(l)
+            lights = reaching
         fgdef = tuple(scene.fgcolor)
         bgdef = tuple(scene.bgcolor)
         owner = id(obj)
@@ -567,14 +615,14 @@ class light(_lerpable, _keyed):
                     out = [out[k] + (tint[k] - out[k]) * amount for k in range(3)]
                 return tuple(max(0, min(255, int(round(v)))) for v in out)
 
-            fa, back, ba = _ALPHAS(style) if style else (None, False, None)
-            fgm = _FGCODE.search(style)
-            fg = tuple(int(g) for g in fgm.groups()) if fgm else fgdef
-            newstyle = _BGCODE.sub('', _FGCODE.sub('', style))
-            bgm = _BGCODE.search(style)
+            parts = _STYLES.get(style)
+            if parts is None:
+                parts = _style_parts(style)
+            fa, back, ba, fgfound, fgtext, bgfound, newstyle = parts
+            fg = fgfound if fgfound is not None else fgdef
             bgold = bgnew = bgdef
-            if bgm:
-                bgold = tuple(int(g) for g in bgm.groups())
+            if bgfound is not None:
+                bgold = bgfound
                 if ba is not None:
                     bgnew = _rebake(bgdef, blend(_unbake(bgold, bgdef, ba)), ba)
                 else:
@@ -582,13 +630,13 @@ class light(_lerpable, _keyed):
                 newstyle += ansi.bg(*bgnew)
             if char != ' ':
                 if fa is not None:
-                    refold, refnew = (bgdef, bgdef) if back or not bgm else (bgold, bgnew)
+                    refold, refnew = (bgdef, bgdef) if back or bgfound is None else (bgold, bgnew)
                     fgnew = _rebake(refnew, blend(_unbake(fg, refold, fa)), fa)
                 else:
                     fgnew = blend(fg)
                 newstyle += ansi.fg(*fgnew)
-            elif fgm:
-                newstyle += fgm.group(0)
+            elif fgtext is not None:
+                newstyle += fgtext
             shaded[(ci, ri)] = (char, newstyle)
             changed = True
         if not changed:

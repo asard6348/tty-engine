@@ -108,31 +108,42 @@ def _is_tty():
         return False
 
 
-def _accepts_arg(cb):
+_SHAPES = {}
+
+
+def _shape(cb):
+    try:
+        found = _SHAPES.get(cb)
+    except TypeError:
+        return _measure(cb)
+    if found is None:
+        if len(_SHAPES) >= 256:
+            _SHAPES.clear()
+        found = _SHAPES[cb] = _measure(cb)
+    return found
+
+
+def _measure(cb):
     try:
         sig = inspect.signature(cb)
     except (TypeError, ValueError):
-        return True
+        return True, None
+    count = 0
+    var = False
     for p in sig.parameters.values():
         if p.kind == p.VAR_POSITIONAL:
-            return True
-    positional = [p for p in sig.parameters.values()
-                  if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-    return len(positional) >= 1
+            var = True
+        elif p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            count += 1
+    return var or count >= 1, (None if var else count)
+
+
+def _accepts_arg(cb):
+    return _shape(cb)[0]
 
 
 def _positional_count(cb):
-    try:
-        sig = inspect.signature(cb)
-    except (TypeError, ValueError):
-        return None
-    count = 0
-    for p in sig.parameters.values():
-        if p.kind == p.VAR_POSITIONAL:
-            return None
-        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
-            count += 1
-    return count
+    return _shape(cb)[1]
 
 
 class _FakeKeyEvent:

@@ -37,12 +37,27 @@ def _locate(spec):
     raise TypeError(f'cannot derive a position from {spec!r}')
 
 
+_WANTS = {}
+
+
 def _call(cb, arg):
     try:
-        params = inspect.signature(cb).parameters.values()
-        wants = any(p.kind in (p.VAR_POSITIONAL, p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params)
-    except (TypeError, ValueError):
-        wants = True
+        wants = _WANTS.get(cb)
+    except TypeError:
+        wants = None
+        cb_key = None
+    else:
+        cb_key = cb
+    if wants is None:
+        try:
+            params = inspect.signature(cb).parameters.values()
+            wants = any(p.kind in (p.VAR_POSITIONAL, p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params)
+        except (TypeError, ValueError):
+            wants = True
+        if cb_key is not None:
+            if len(_WANTS) >= 256:
+                _WANTS.clear()
+            _WANTS[cb_key] = wants
     if wants:
         cb(arg)
     else:

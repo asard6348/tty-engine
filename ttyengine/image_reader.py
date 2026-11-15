@@ -81,6 +81,9 @@ def _is_png(d):
 def _png_unfilter(raw, pos, stride, bpp, rows):
     prev = bytearray(stride)
     out = []
+    low = int.from_bytes(b'\x7f' * stride, 'little')
+    high = low ^ int.from_bytes(b'\xff' * stride, 'little')
+    full = (1 << (8 * stride)) - 1
     for _ in range(rows):
         ft = raw[pos]
         line = bytearray(raw[pos + 1:pos + 1 + stride])
@@ -88,24 +91,36 @@ def _png_unfilter(raw, pos, stride, bpp, rows):
             raise ImageError('truncated PNG data')
         pos += 1 + stride
         if ft == 1:
-            for i in range(bpp, stride):
-                line[i] = (line[i] + line[i - bpp]) & 255
+            x = int.from_bytes(line, 'little')
+            k = bpp
+            while k < stride:
+                y = (x << (8 * k)) & full
+                x = ((x & low) + (y & low)) ^ ((x ^ y) & high)
+                k *= 2
+            line = bytearray(x.to_bytes(stride, 'little'))
         elif ft == 2:
-            for i in range(stride):
-                line[i] = (line[i] + prev[i]) & 255
+            x = int.from_bytes(line, 'little')
+            y = int.from_bytes(prev, 'little')
+            line = bytearray((((x & low) + (y & low)) ^ ((x ^ y) & high)).to_bytes(stride, 'little'))
         elif ft == 3:
-            for i in range(stride):
-                left = line[i - bpp] if i >= bpp else 0
-                line[i] = (line[i] + ((left + prev[i]) >> 1)) & 255
+            for i in range(min(bpp, stride)):
+                line[i] = (line[i] + (prev[i] >> 1)) & 255
+            for i in range(bpp, stride):
+                line[i] = (line[i] + ((line[i - bpp] + prev[i]) >> 1)) & 255
         elif ft == 4:
-            for i in range(stride):
-                a = line[i - bpp] if i >= bpp else 0
+            for i in range(min(bpp, stride)):
+                line[i] = (line[i] + prev[i]) & 255
+            for i in range(bpp, stride):
+                a = line[i - bpp]
                 b = prev[i]
-                c = prev[i - bpp] if i >= bpp else 0
-                p = a + b - c
-                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-                pr = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
-                line[i] = (line[i] + pr) & 255
+                c = prev[i - bpp]
+                pa = b - c
+                pb = a - c
+                pc = pa + pb
+                if pa < 0: pa = -pa
+                if pb < 0: pb = -pb
+                if pc < 0: pc = -pc
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))) & 255
         elif ft != 0:
             raise ImageError('invalid PNG filter')
         out.append(line)
@@ -164,6 +179,10 @@ def _png(data):
            for i in range(0, len(plte) - 2, 3)]
     bpp = max(1, channels * depth // 8)
     fast = ctype == 6 and depth == 8 and not interlace
+    simple = depth == 8 and not interlace and keyed is None and ctype != 6
+    tables = None
+    if simple and ctype == 3:
+        tables = [bytes(pal[i][k] if i < len(pal) else (0, 0, 0, 255)[k] for i in range(256)) for k in range(4)]
     black = (0, 0, 0, 255)
     pos = 0
     for x0, y0, dx, dy in (_ADAM7 if interlace else ((0, 0, 1, 1),)):
@@ -177,6 +196,28 @@ def _png(data):
             if fast:
                 o = j * w * 4
                 out[o:o + w * 4] = line
+                continue
+            if simple:
+                o = j * w * 4
+                end = o + w * 4
+                if ctype == 2:
+                    out[o:end:4] = line[0::3]
+                    out[o + 1:end:4] = line[1::3]
+                    out[o + 2:end:4] = line[2::3]
+                    out[o + 3:end:4] = b'\xff' * w
+                elif ctype == 0:
+                    out[o:end:4] = line
+                    out[o + 1:end:4] = line
+                    out[o + 2:end:4] = line
+                    out[o + 3:end:4] = b'\xff' * w
+                elif ctype == 4:
+                    out[o:end:4] = line[0::2]
+                    out[o + 1:end:4] = line[0::2]
+                    out[o + 2:end:4] = line[0::2]
+                    out[o + 3:end:4] = line[1::2]
+                else:
+                    for k in range(4):
+                        out[o + k:end:4] = line.translate(tables[k])
                 continue
             s = _png_samples(line, pw * channels, depth)
             k = s
@@ -448,6 +489,8 @@ _ZIGZAG = (
     58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 )
 _IDCT = [[(1 / sqrt(2) if u == 0 else 1.0) / 2 * cos((2 * x + 1) * u * pi / 16) for u in range(8)] for x in range(8)]
+_IDCT_COLS = [[row[u] for row in _IDCT] for u in range(8)]
+_IDCT_FLAT = [[_IDCT[y][v] for y in range(8) for _ in range(8)] for v in range(8)]
 _CLIP = bytes(400) + bytes(range(256)) + b'\xff' * 400
 _CR_R = [int(round(1.402 * (i - 128))) for i in range(256)]
 _CB_B = [int(round(1.772 * (i - 128))) for i in range(256)]
@@ -655,6 +698,7 @@ def _jpeg_plane(c):
     q = c['q']
     coef = c['coef']
     zeros = [0.0] * 8
+    zeros64 = [0.0] * 64
     for by in range(bh):
         for bx in range(bw):
             base = (by * bw + bx) * 64
@@ -666,14 +710,22 @@ def _jpeg_plane(c):
                     plane[o:o + 8] = bytes((v,)) * 8
                 continue
             blk = [a * b for a, b in zip(blk, q)]
-            tmp = []
+            acc = zeros64
             for v in range(8):
                 r = blk[v * 8:v * 8 + 8]
-                tmp.append([sum(m * f for m, f in zip(row, r)) for row in _IDCT] if any(r) else zeros)
-            cols = [[sum(m * tmp[v][x] for v, m in enumerate(row)) for x in range(8)] for row in _IDCT]
+                if not any(r):
+                    continue
+                row = zeros
+                for u in range(8):
+                    f = r[u]
+                    if f:
+                        row = [a + m * f for a, m in zip(row, _IDCT_COLS[u])]
+                acc = [a + m * t for a, m, t in zip(acc, _IDCT_FLAT[v], row * 8)]
+            vals = bytes([0 if k < 0 else 255 if k > 255 else k for k in [int(s + 128.5) for s in acc]])
+            o = by * 8 * pw + bx * 8
             for y in range(8):
-                o = (by * 8 + y) * pw + bx * 8
-                plane[o:o + 8] = bytes(min(255, max(0, int(s + 128.5))) for s in cols[y])
+                plane[o:o + 8] = vals[y * 8:y * 8 + 8]
+                o += pw
     return plane, pw
 
 

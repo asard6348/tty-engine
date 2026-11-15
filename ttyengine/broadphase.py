@@ -3,10 +3,6 @@ LIMIT = 64
 SCAN = 4096
 
 
-def _hits(box, x0, x1, y0, y1):
-    return box is not None and not (box[1] < x0 or box[0] > x1 or box[3] < y0 or box[2] > y1)
-
-
 class Broadphase:
     def __init__(self, scene):
         self.scene = scene
@@ -109,22 +105,36 @@ class Broadphase:
             self._refresh()
 
     def near(self, x0, x1, y0, y1, skip=None):
-        self.sync()
+        solids = self.scene.solids
+        if self.stale or solids is not self.source or len(solids) != self.count:
+            self.sync()
+        cells = self.cells
+        large = self.large
+        if not cells and not large:
+            return []
         boxes = self.boxes
         cx0, cx1, cy0, cy1 = x0 >> SHIFT, x1 >> SHIFT, y0 >> SHIFT, y1 >> SHIFT
-        if (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > SCAN:
-            found = [o for o in self.order if _hits(boxes.get(o), x0, x1, y0, y1) and o is not skip]
+        if cx0 == cx1 and cy0 == cy1:
+            pool = cells.get((cx0, cy0))
+            if large:
+                pool = large | pool if pool else large
+            if not pool:
+                return []
+        elif (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > SCAN:
+            pool = self.order
         else:
-            seen = set()
-            cells = self.cells
+            pool = set(large)
             for cx in range(cx0, cx1 + 1):
                 for cy in range(cy0, cy1 + 1):
                     bucket = cells.get((cx, cy))
                     if bucket:
-                        seen.update(bucket)
-            if self.large:
-                seen.update(self.large)
-            found = [o for o in seen if o is not skip and _hits(boxes.get(o), x0, x1, y0, y1)]
+                        pool.update(bucket)
+        found = []
+        for o in pool:
+            box = boxes.get(o)
+            if box is None or o is skip or box[1] < x0 or box[0] > x1 or box[3] < y0 or box[2] > y1:
+                continue
+            found.append(o)
         if len(found) > 1:
             found.sort(key=self.order.__getitem__)
         return found

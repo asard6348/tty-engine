@@ -7,6 +7,11 @@
 - Rotation sub-steps are skipped when nothing is within reach of the rotating body, and the results of `transform.rotate` are memoized per angle bucket and shape, so spinning bodies reuse their rasterized layout.
 - Collision pixels are built from per-row spans instead of per-character loops, and penetration depth is found with per-row bit masks instead of repeated set intersections.
 - The mixer sums plain-speed voices as packed integer lanes instead of per-sample Python lists, which is several times faster with many voices and produces identical output.
+- The broadphase query has a single-cell fast path and sorts only when needed, and a body's probe runs one query for its whole reach instead of one per direction.
+- Callback signature inspection is cached per callable in the scene, shared helpers, sound and input handler, so dispatching callbacks no longer calls `inspect.signature` every time.
+- Stacked colour codes are collapsed to the last foreground and background before output, so styles that accumulate escape codes no longer make frames grow quadratically. Terminal output looks the same.
+- Lights skip cells outside their reach, shadow rays test only the solids overlapping the ray, and light style strings are parsed once and cached.
+- JPEG decoding skips zero coefficients in the inverse DCT and PNG decoding unfilters Up and Sub rows with packed integer lanes and converts whole rows at once for 8-bit non-interlaced images. Decoded pixels are identical.
 
 ## 0.2.0
 

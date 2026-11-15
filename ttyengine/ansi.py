@@ -198,4 +198,22 @@ def strip_color(text):
     return SGR.sub(_drop_color, text)
 
 
+_SGR_PLAIN = re.compile(CSI_RE + r'([0-9;]*)m')
+_FG_CODE = re.compile(r'(?:3[0-79]|9[0-7]|38;2;\d+;\d+;\d+|38;5;\d+)\Z')
+_BG_CODE = re.compile(r'(?:4[0-79]|10[0-7]|48;2;\d+;\d+;\d+|48;5;\d+)\Z')
+
+
+def collapse_color(text):
+    params = _SGR_PLAIN.findall(text)
+    if len(params) < 3 or _SGR_PLAIN.sub('', text):
+        return text
+    fg = [i for i, p in enumerate(params) if _FG_CODE.match(p)]
+    bg = [i for i, p in enumerate(params) if _BG_CODE.match(p)]
+    if len(fg) < 2 and len(bg) < 2:
+        return text
+    drop = set(fg[:-1])
+    drop.update(bg[:-1])
+    return ''.join(CSI + p + 'm' for i, p in enumerate(params) if i not in drop)
+
+
 set_wrapper()

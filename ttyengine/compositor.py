@@ -681,7 +681,7 @@ class Compositor:
         if found is None:
             if len(self.emitted) > 50000:
                 self.emitted.clear()
-            found = self.emitted[key] = ansi.wrap(ansi.RESET) + ansi.wrap_all(ansi.strip_color(style) if plain else style)
+            found = self.emitted[key] = ansi.wrap(ansi.RESET) + ansi.wrap_all(ansi.strip_color(style) if plain else ansi.collapse_color(style))
         return found
 
     def compose(self, items, active, region, bounds, outer, autobg):

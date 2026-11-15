@@ -546,13 +546,15 @@ class physics(_change_callback, _lerpable, _keyed):
                 return True
         return False
 
-    def _blocked(self, dx, dy, exclude=()):
+    def _blocked(self, dx, dy, exclude=(), pool=None):
         b = self.bounds()
         hits = []
         if b is None:
             return hits
         shifted = None
-        for obj2 in self.scene._broad.near(b[0] + dx, b[1] + dx, b[2] + dy, b[3] + dy, self.obj):
+        if pool is None:
+            pool = self.scene._broad.near(b[0] + dx, b[1] + dx, b[2] + dy, b[3] + dy, self.obj)
+        for obj2 in pool:
             if obj2 in exclude:
                 continue
             p2 = getattr(obj2, 'physics', None)
@@ -836,10 +838,14 @@ class physics(_change_callback, _lerpable, _keyed):
         sides = [False, False, False, False]
         if self.solid and not self.phantom:
             mine = None
+            reach = self.bounds()
+            pool = None
+            if reach is not None:
+                pool = self.scene._broad.near(reach[0] - 1, reach[1] + 1, reach[2] - 1, reach[3] + 1, self.obj)
             for ia in (0, 1):
                 for s in (1, -1):
                     dx, dy = (s, 0) if ia == 0 else (0, s)
-                    for obj2 in self._blocked(dx, dy):
+                    for obj2 in (self._blocked(dx, dy, pool=pool) if pool is None or pool else ()):
                         p2 = obj2.physics
                         theirs = p2.getpixels()
                         if mine is None:
@@ -858,6 +864,7 @@ class physics(_change_callback, _lerpable, _keyed):
                             cells = {(p[0] + dx, p[1] + dy) for p in contact}
                             if self._notify(obj2, cells, True) == 0:
                                 return
+                            pool = None
         self.touch = tuple(touch)
         self.sides = tuple(sides)
         if abs(self._xvel) < 1e-9: self._xvel = 0
