@@ -332,7 +332,7 @@ class light(_lerpable, _keyed):
             self._sig = sig
             self._touch()
 
-    def _shadowed(self, cx, cy, owner, origin=None):
+    def _shadowed(self, cx, cy, owner, origin=None, boxes=None):
         occ = self._occ
         if not occ:
             return 0.0
@@ -350,7 +350,7 @@ class light(_lerpable, _keyed):
             sy0, sy1 = cy - 1e-6, oy + 1e-6
         else:
             sy0, sy1 = oy - 1e-6, cy + 1e-6
-        for bx0, bx1, by0, by1 in self._boxes:
+        for bx0, bx1, by0, by1 in (self._boxes if boxes is None else boxes):
             if bx1 + 1 < sx0 or bx0 > sx1 or by1 < sy0 or by0 - 1 > sy1:
                 continue
             lo = 0.0
@@ -395,7 +395,7 @@ class light(_lerpable, _keyed):
         selfshadow = self._selfshadow
         for i in range(max(1, int(first * n) - 1), min(n, int(last * n) + 3)):
             f = i / n
-            key = (floor(ox + (cx - ox) * f), ceil(oy + (cy - oy) * f))
+            key = (floor(ox + dx * f), ceil(oy + dy * f))
             who = get(key)
             if who is not None and who != me and (selfshadow or who != owner):
                 opacity = thin.get(key)
@@ -536,14 +536,25 @@ class light(_lerpable, _keyed):
             if self._occ:
                 cy = gy + j - 0.5
                 base = gx + i0 + lo
-                softened = []
-                for k, a in enumerate(amounts):
-                    if a:
-                        blocked = self._shadowed(base + k + 0.5, cy, None,
-                                                 self._source((base + k + 0.5 - origin[0]) * aspect, j, origin))
-                        if blocked:
-                            a *= 1 - self._shadowalpha * blocked
-                    softened.append(a)
+                rowboxes = None
+                if not self._length:
+                    oy = origin[1]
+                    if cy - oy < 0:
+                        sy0, sy1 = cy - 1e-6, oy + 1e-6
+                    else:
+                        sy0, sy1 = oy - 1e-6, cy + 1e-6
+                    rowboxes = [b for b in self._boxes if not (b[3] < sy0 or b[2] - 1 > sy1)]
+                if rowboxes is not None and not rowboxes:
+                    softened = list(amounts)
+                else:
+                    softened = []
+                    for k, a in enumerate(amounts):
+                        if a:
+                            blocked = self._shadowed(base + k + 0.5, cy, None,
+                                                     self._source((base + k + 0.5 - origin[0]) * aspect, j, origin), rowboxes)
+                            if blocked:
+                                a *= 1 - self._shadowalpha * blocked
+                        softened.append(a)
                 amounts = softened
             out.append((y, x, amounts))
         self._glowkey = key

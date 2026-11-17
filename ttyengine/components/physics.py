@@ -86,6 +86,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self.sides = (False, False, False, False)
         self._touch_callbacks = []
         self._pixel_cache = None
+        self._rows_cache = None
         self._bounds_cache = None
         self._body_cache = None
         self._ext_cache = None
@@ -208,6 +209,7 @@ class physics(_change_callback, _lerpable, _keyed):
 
     def _dirty(self, attr=None):
         self._pixel_cache = None
+        self._rows_cache = None
         self._bounds_cache = None
         self._body_cache = None
         if attr != 'x' and attr != 'y':
@@ -406,6 +408,27 @@ class physics(_change_callback, _lerpable, _keyed):
             self._pixel_cache = pixels
             self._bounds_cache = None
         return pixels
+
+    def rowmask(self):
+        cached = self._rows_cache
+        if cached is None:
+            t = self.t
+            if self.hitbox:
+                text = t._htext
+                ox = oy = 0
+            else:
+                text = t._ptext
+                ox, oy = t._pvx, t._pvy
+            rx = round(t.x + ox)
+            ry = round(t.y + oy)
+            rows = {}
+            for i, spans in self._spans(text, self.hitbox):
+                bits = 0
+                for a, b in spans:
+                    bits |= ((1 << (b - a)) - 1) << a
+                rows[ry - i] = bits
+            cached = self._rows_cache = (rx, rows, (rx, tuple(rows.items())))
+        return cached
 
     def bounds(self, pixels=None):
         if pixels is None:
@@ -687,7 +710,7 @@ class physics(_change_callback, _lerpable, _keyed):
         return _contact_point_cells(pixels, nx, ny, self.body()[:2])
 
     def _contact_normal(self, other, point, nx, ny, inside):
-        return _contact_normal_cells(self.getpixels(), other.getpixels(), point, nx, ny, inside,
+        return _contact_normal_cells(self.rowmask(), other.rowmask(), point, nx, ny, inside,
                                      self.slope and other.slope, self.t.aspect)
 
     def normal(self, other, local=None):

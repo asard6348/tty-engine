@@ -95,9 +95,40 @@ def _comname(c):
         return c
     return c.__name__ if inspect.isclass(c) else type(c).__name__
 
+_names = frozenset(_cls.__name__ for _cls in _allcomps)
+_versions = [0]
+
+
+class _ObjList(list):
+    rev = 0
+
+
+def _tracked(name):
+    base = getattr(list, name)
+    def method(self, *args, **kwargs):
+        self.rev += 1
+        return base(self, *args, **kwargs)
+    method.__name__ = name
+    return method
+
+
+for _name in ('append', 'extend', 'insert', 'remove', 'pop', 'clear', 'sort', 'reverse',
+              '__setitem__', '__delitem__', '__iadd__', '__imul__'):
+    setattr(_ObjList, _name, _tracked(_name))
+
 
 class obj:
     __iter__ = None
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name in _names:
+            _versions[0] += 1
+
+    def __delattr__(self, name):
+        object.__delattr__(self, name)
+        if name in _names:
+            _versions[0] += 1
 
     def __init__(self, scene):
         self.scene = scene
@@ -275,6 +306,36 @@ class obj:
 
 
 class Scene:
+    @property
+    def objs(self):
+        return self._objs
+
+    @objs.setter
+    def objs(self, value):
+        self._objs = value if isinstance(value, _ObjList) else _ObjList(value)
+        self._roster_cache = None
+
+    def _roster(self):
+        key = (self._objs.rev, _versions[0])
+        found = self._roster_cache
+        if found is None or found[0] != key:
+            snap = tuple(self._objs)
+            phys = []
+            trans = []
+            joints = []
+            tfs = []
+            for i, o in enumerate(snap):
+                if getattr(o, 'physics', None) is not None:
+                    phys.append(i)
+                tf = getattr(o, 'transform', None)
+                if tf is not None:
+                    trans.append(i)
+                    tfs.append(tf)
+                if getattr(o, 'joint', None) is not None or getattr(o, 'light', None) is not None:
+                    joints.append(i)
+            found = self._roster_cache = (key, snap, phys, trans, joints, tfs)
+        return found
+
     def __init__(self):
         self.objs = []
         self.dinfo = []
@@ -447,24 +508,54 @@ class Scene:
                 cb()
 
     def tick(self, physics=True):
+        objs = self._objs
         if physics:
-            for o in list(self.objs):
+            key, snap, phys = self._roster()[:3]
+            for n, i in enumerate(phys):
+                o = snap[i]
                 phy = getattr(o, 'physics', None)
                 if phy is not None and phy.dynamic and not o._remote:
                     phy.physics()
+                    if (objs.rev, _versions[0]) != key:
+                        for o in snap[i + 1:]:
+                            phy = getattr(o, 'physics', None)
+                            if phy is not None and phy.dynamic and not o._remote:
+                                phy.physics()
+                        break
         self._ticks += 1
         self._tickfade()
-        for o in list(self.objs):
-            tf = getattr(o, 'transform', None)
+        key, snap, _, trans, _, tfs = self._roster()
+        for n, i in enumerate(trans):
+            tf = tfs[n]
+            if tf._fade is None and tf._anim is None:
+                continue
+            tf = getattr(snap[i], 'transform', None)
             if tf is not None:
                 tf._tick()
-        for o in list(self.objs):
+                if (objs.rev, _versions[0]) != key:
+                    for o in snap[i + 1:]:
+                        tf = getattr(o, 'transform', None)
+                        if tf is not None:
+                            tf._tick()
+                    break
+        key, snap, _, _, joints, _ = self._roster()
+        for i in joints:
+            o = snap[i]
             jnt = getattr(o, 'joint', None)
             if physics and jnt is not None and not o._remote:
                 jnt.step()
             lgt = getattr(o, 'light', None)
             if lgt is not None:
                 lgt.step()
+            if (objs.rev, _versions[0]) != key:
+                for o in snap[i + 1:]:
+                    jnt = getattr(o, 'joint', None)
+                    if physics and jnt is not None and not o._remote:
+                        jnt.step()
+                    lgt = getattr(o, 'light', None)
+                    if lgt is not None:
+                        lgt.step()
+                break
 
     @property
     def compositor(self):

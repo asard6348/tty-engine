@@ -1,3 +1,5 @@
+from itertools import chain
+
 SHIFT = 3
 LIMIT = 64
 SCAN = 4096
@@ -117,7 +119,7 @@ class Broadphase:
         if cx0 == cx1 and cy0 == cy1:
             pool = cells.get((cx0, cy0))
             if large:
-                pool = large | pool if pool else large
+                pool = chain(large, pool) if pool else large
             if not pool:
                 return []
         elif (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > SCAN:

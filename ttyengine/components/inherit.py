@@ -67,8 +67,9 @@ class _change_callback(metaclass=_metainit, init='_chinit'):
         self._onchangecb = {f:par for f,par in self._onchangecb.items() if f is not cb}
 
     def _change(self, attr, old):
-        internal = self._changing
-        self._changing = True
+        state = self.__dict__
+        internal = state['_changing']
+        state['_changing'] = True
         try:
             for cb, l in list(self._onchangecb.items()):
                 if l > 2:
@@ -80,7 +81,7 @@ class _change_callback(metaclass=_metainit, init='_chinit'):
                 else:
                     cb()
         finally:
-            self._changing = internal
+            state['_changing'] = internal
 
 
 class _lerpable:

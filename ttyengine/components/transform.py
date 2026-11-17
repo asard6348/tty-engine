@@ -1,10 +1,29 @@
 import math
+import threading
 from .. import ansi
 from ..ascii_styler import alphamark
 from .shared import _ALPHAS, _BGCODE, _NEIGHBOURS4, _NEIGHBOURS8, _NEIGHBOURS_HALF, _SGR, _argslen, _check_shadow, _contact_normal_cells, _contact_point_cells, _easing, _footprint, _mtv_cells, _styleprop
 from .inherit import _change_callback, _keyed, _lerpable
 
+_ROTATIONS = {}
+_rotation_lock = threading.Lock()
+_MEMO_FIELDS = ('_plain_layout', '_text', '_rotmap', '_rotsize', '_rotorigin', 'vtext', '_ptext', '_pvx', '_pvy', '_pkey')
+_ROTATION_BUDGET = 8000000
+_rotation_cost = [0]
+
+def _rotation_forget(key):
+    entry = _ROTATIONS.pop(key, None)
+    if entry is not None:
+        _rotation_cost[0] -= entry[0]
+
+
 class transform(_change_callback, _lerpable, _keyed):
+    _rev = 0
+
+    def __setattr__(self, name, value, _set=object.__setattr__):
+        _set(self, name, value)
+        self.__dict__['_rev'] = self._rev + 1
+
     _angles = frozenset(('rotation',))
     _colors = frozenset(('fg', 'bg'))
     _owned = [
@@ -56,7 +75,6 @@ class transform(_change_callback, _lerpable, _keyed):
         self._htext = ctext
         self._rotation = kwargs.get('rotation', 0)
         self._rot_cache_angle = None
-        self._rot_memo = {}
         self._aspect = kwargs.get('aspect', None)
         self._flip = kwargs.get('flip', None)
         self._shadow = _check_shadow(kwargs.get('shadow', None))
@@ -65,8 +83,8 @@ class transform(_change_callback, _lerpable, _keyed):
         self._onsplit = {}
         self._xlen_cache = None
         self._ylen_cache = None
-        self._parse_pixels_key = None
-        self._parse_pixels_val = None
+        self.__dict__['_parse_pixels_key'] = None
+        self.__dict__['_parse_pixels_val'] = None
         self._centroid_cache = {}
         self._bg_cache = {}
         self._rotmap = None
@@ -92,8 +110,8 @@ class transform(_change_callback, _lerpable, _keyed):
     def _invalidate(self):
         self._xlen_cache = None
         self._ylen_cache = None
-        self._parse_pixels_key = None
-        self._parse_pixels_val = None
+        self.__dict__['_parse_pixels_key'] = None
+        self.__dict__['_parse_pixels_val'] = None
         self._centroid_cache = {}
         self._rot_cache_angle = None
 
@@ -368,8 +386,8 @@ class transform(_change_callback, _lerpable, _keyed):
                     for char in part:
                         pixels[(ci, ri)] = (char, current_style)
                         ci += 1
-        self._parse_pixels_key = text
-        self._parse_pixels_val = pixels
+        self.__dict__['_parse_pixels_key'] = text
+        self.__dict__['_parse_pixels_val'] = pixels
         return pixels
 
     def build_rows(self, pixels, min_x, max_x, min_y, max_y):
@@ -684,9 +702,10 @@ class transform(_change_callback, _lerpable, _keyed):
                         if px is not None and px[0] == ' ' and px[1] and self._has_background(px[1]):
                             new_pixels[(nx, ny)] = px
             if record:
-                self._rotmap = (cx, cy, min_x, min_y, ASPECT, ja, jb, jc, jd)
-                self._rotsize = size
-                self._rotorigin = (min_x, min_y)
+                state = self.__dict__
+                state['_rotmap'] = (cx, cy, min_x, min_y, ASPECT, ja, jb, jc, jd)
+                state['_rotsize'] = size
+                state['_rotorigin'] = (min_x, min_y)
                 if maps:
                     self._rotcells_v = cells
                     self._rotsrc_v = sources
@@ -696,6 +715,7 @@ class transform(_change_callback, _lerpable, _keyed):
         return layout, render
 
     def _vrender(self, layout, render, plain_layout):
+        d = self.__dict__
         styled_source = self.parse_pixels(self._vrtext)
         if plain_layout is None:
             styled_layout = layout(styled_source) if self._vrtext.splitlines() else None
@@ -703,7 +723,7 @@ class transform(_change_callback, _lerpable, _keyed):
             styled_layout = plain_layout
         else:
             styled_layout = layout(styled_source)
-        self.vtext = render(styled_source, styled_layout) if styled_layout is not None else ''
+        d['vtext'] = render(styled_source, styled_layout) if styled_layout is not None else ''
 
     def _keeps_layout(self):
         return (self._fade is not None or self._fg is not None or self._bg is not None
@@ -714,60 +734,66 @@ class transform(_change_callback, _lerpable, _keyed):
         return round(angle_degrees * 20) / 20
 
     def _vrotate(self):
+        d = self.__dict__
         layout, render = self._rotator(self._canonical(self._rotation))
         plain = self._plain_layout
         if plain is None and not layout.ident and self._rtext.splitlines():
             plain = layout(self.parse_pixels(self._rtext))
             if self._keeps_layout():
-                self._plain_layout = plain
+                d['_plain_layout'] = plain
         self._vrender(layout, render, plain)
-        self._parse_pixels_key = None
-        self._parse_pixels_val = None
-
+        self.__dict__['_parse_pixels_key'] = None
+        self.__dict__['_parse_pixels_val'] = None
+        self._rev += 1
     def _memo_key(self, angle):
         rtext = self._rtext
         solo = len(rtext) == 1 and len(self._htext) == 1
         mark = (angle % 360 == 0 and self._flip is None) if solo else angle
         return (solo, mark, rtext, self._vrtext, self._htext, self._flip, self.aspect, self._keeps_layout())
 
-    def _memo_room(self):
-        return max(2, min(128, 120000 // (len(self._rtext) + len(self._vrtext) + 1)))
-
     def _memo_put(self, key):
-        memo = self._rot_memo
-        if key in memo:
-            del memo[key]
-        elif len(memo) >= self._memo_room():
-            del memo[next(iter(memo))]
-        memo[key] = (self._plain_layout, self._text, self._rotmap, self._rotsize, self._rotorigin,
-                     self.vtext, self._ptext, self._pvx, self._pvy, self._pkey)
+        cost = len(self._rtext) + len(self._vrtext) + len(self._text) + len(self.vtext) + len(self._ptext) + 64
+        value = (cost, (self._plain_layout, self._text, self._rotmap, self._rotsize, self._rotorigin,
+                        self.vtext, self._ptext, self._pvx, self._pvy, self._pkey))
+        memo = _ROTATIONS
+        spent = _rotation_cost
+        with _rotation_lock:
+            _rotation_forget(key)
+            while memo and spent[0] + cost > _ROTATION_BUDGET:
+                _rotation_forget(next(iter(memo)))
+            if cost > _ROTATION_BUDGET:
+                return
+            memo[key] = value
+            spent[0] += cost
 
     def _memo_use(self, key, angle):
-        memo = self._rot_memo
-        found = memo.pop(key, None)
-        if found is None:
+        with _rotation_lock:
+            entry = _ROTATIONS.pop(key, None)
+            if entry is not None:
+                _ROTATIONS[key] = entry
+        if entry is None:
             return False
-        memo[key] = found
-        (self._plain_layout, self._text, self._rotmap, self._rotsize, self._rotorigin,
-         self.vtext, self._ptext, self._pvx, self._pvy, self._pkey) = found
+        self.__dict__.update(zip(_MEMO_FIELDS, entry[1]))
+        self._rev += 1
         self._rotangle = angle
         self._rotcells_v = {}
         self._rotsrc_v = {}
         self._rotmaps_ok = not self._text
         self._xlen_cache = None
         self._ylen_cache = None
-        self._parse_pixels_key = None
-        self._parse_pixels_val = None
+        self.__dict__['_parse_pixels_key'] = None
+        self.__dict__['_parse_pixels_val'] = None
         self.vx = self._rotorigin[0]
         self.vy = -self._rotorigin[1]
         return True
 
     def rotate(self, angle_degrees, init=False):
+        d = self.__dict__
         rounded = self._canonical(angle_degrees)
         if not init:
             if self._rot_cache_angle == rounded:
                 return
-            self._rot_cache_angle = rounded
+            d['_rot_cache_angle'] = rounded
         angle_degrees = rounded
         key = None
         if not init:
@@ -780,54 +806,56 @@ class transform(_change_callback, _lerpable, _keyed):
         crows = plain.splitlines()
         plain_source = self.parse_pixels(plain)
         plain_layout = layout(plain_source) if crows else None
-        self._plain_layout = plain_layout if not layout.ident and self._keeps_layout() else None
-        self._rotangle = angle_degrees
+        d['_plain_layout'] = plain_layout if not layout.ident and self._keeps_layout() else None
+        d['_rotangle'] = angle_degrees
         self._vrender(layout, render, plain_layout)
         if plain_layout is not None:
-            self._text = render(plain_source, plain_layout, True, (max(len(r) for r in crows), len(crows)))
-            self._rotcells_v = {}
-            self._rotsrc_v = {}
-            self._rotmaps_ok = False
+            d['_text'] = render(plain_source, plain_layout, True, (max(len(r) for r in crows), len(crows)))
+            d['_rotcells_v'] = {}
+            d['_rotsrc_v'] = {}
+            d['_rotmaps_ok'] = False
         else:
-            self._text = ''
-            self._rotmap = None
-            self._rotcells_v = {}
-            self._rotsrc_v = {}
-            self._rotmaps_ok = True
-            self._rotsize = (0, 0)
-            self._rotorigin = (0, 0)
-        self._xlen_cache = None
-        self._ylen_cache = None
+            d['_text'] = ''
+            d['_rotmap'] = None
+            d['_rotcells_v'] = {}
+            d['_rotsrc_v'] = {}
+            d['_rotmaps_ok'] = True
+            d['_rotsize'] = (0, 0)
+            d['_rotorigin'] = (0, 0)
+        d['_xlen_cache'] = None
+        d['_ylen_cache'] = None
         self._protate(angle_degrees, layout, render)
-        self._parse_pixels_key = None
-        self._parse_pixels_val = None
+        self.__dict__['_parse_pixels_key'] = None
+        self.__dict__['_parse_pixels_val'] = None
 
         if key is not None:
             self._memo_put(key)
+        self._rev += 1
         self.vx = self._rotorigin[0]
         self.vy = -self._rotorigin[1]
 
     def _protate(self, angle_degrees, layout, render):
+        d = self.__dict__
         if self._htext == self._rtext:
-            self._ptext = self._text
-            self._pvx = self._rotorigin[0]
-            self._pvy = -self._rotorigin[1]
-            self._pkey = None
+            d['_ptext'] = self._text
+            d['_pvx'] = self._rotorigin[0]
+            d['_pvy'] = -self._rotorigin[1]
+            d['_pkey'] = None
             return
         key = (angle_degrees, self._htext, self._flip, self.aspect)
         if self._pkey == key:
             return
-        self._pkey = key
+        d['_pkey'] = key
         source = self.parse_pixels(self._htext)
         lay = layout(source) if self._htext.splitlines() else None
         if lay is None:
-            self._ptext = ''
-            self._pvx = 0
-            self._pvy = 0
+            d['_ptext'] = ''
+            d['_pvx'] = 0
+            d['_pvy'] = 0
         else:
-            self._ptext = render(source, lay)
-            self._pvx = lay[5]
-            self._pvy = -lay[7]
+            d['_ptext'] = render(source, lay)
+            d['_pvx'] = lay[5]
+            d['_pvy'] = -lay[7]
 
     def _rotmaps(self):
         if self._rotmaps_ok:

@@ -1,4 +1,4 @@
-import os, sys, time, threading, traceback, contextlib, inspect, ctypes, socket, subprocess, tempfile, shlex
+import os, sys, time, gc, threading, traceback, contextlib, inspect, ctypes, socket, subprocess, tempfile, shlex
 from types import SimpleNamespace
 from . import ansi
 from .errors import attempt, highlight_traceback, capture, pending, raise_pending
@@ -612,6 +612,10 @@ class Session():
             for world in self.worlds:
                 self._fit(world.scene, world)
             with contextlib.ExitStack() as main_stack:
+                thresholds = gc.get_threshold()
+                if thresholds == (700, 10, 10):
+                    gc.set_threshold(20000, 20, 20)
+                    main_stack.callback(gc.set_threshold, *thresholds)
                 main_stack.enter_context(capture(self._wake))
                 opt_stack = main_stack.enter_context(contextlib.ExitStack())
                 is_optimized = False

@@ -203,6 +203,32 @@ _FG_CODE = re.compile(r'(?:3[0-79]|9[0-7]|38;2;\d+;\d+;\d+|38;5;\d+)\Z')
 _BG_CODE = re.compile(r'(?:4[0-79]|10[0-7]|48;2;\d+;\d+;\d+|48;5;\d+)\Z')
 
 
+def color_state(text):
+    params = _SGR_PLAIN.findall(text)
+    if _SGR_PLAIN.sub('', text):
+        return None
+    fg = bg = None
+    for p in params:
+        if _FG_CODE.match(p):
+            fg = p
+        elif _BG_CODE.match(p):
+            bg = p
+        else:
+            return None
+    return (fg, bg)
+
+
+def color_step(old, new):
+    parts = []
+    if new[0] != old[0]:
+        parts.append(new[0] or '39')
+    if new[1] != old[1]:
+        parts.append(new[1] or '49')
+    if not parts:
+        return ''
+    return CSI + ';'.join(parts) + 'm'
+
+
 def collapse_color(text):
     params = _SGR_PLAIN.findall(text)
     if len(params) < 3 or _SGR_PLAIN.sub('', text):

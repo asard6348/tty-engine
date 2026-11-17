@@ -6,7 +6,7 @@ import time
 import shutil
 import subprocess
 from itertools import groupby
-from operator import itemgetter
+from operator import itemgetter, ne
 from . import ansi
 from .ascii_styler import alphamark, alphaparse, bgrecomp, fgrecomp
 
@@ -143,12 +143,16 @@ class Compositor:
         self.width = 0
         self.height = 0
         self.known = {}
+        self.envs = {}
+        self.layered = {}
         self.glows = {}
         self.styles = {}
         self.bgfound = {}
         self.palettes = {}
         self.glasses = {}
         self.emitted = {}
+        self.stepped = {}
+        self.coloring = {}
         self.region = None
         self.rotated = {}
         self._monochrome = None
@@ -494,9 +498,11 @@ class Compositor:
         seen = set()
         glowing = set()
         known = self.known
+        layered = self.layered
         for w in items:
             sc = scene_of(w)
             live = w in active
+            same = False
             if live:
                 ir = sc.iround
                 camx = ir(sc.camx)
@@ -504,32 +510,64 @@ class Compositor:
                 xoff = sc.dimxoffset
                 yoff = sc.dimyoffset
                 bgcolor = sc.bgcolor
-            for o in sc.objs:
-                t = getattr(o, 'transform', None)
-                if t is None:
-                    continue
-                seen.add(t)
-                if not live or not t.rtext:
-                    continue
-                state = known.get(t)
-                if state is None:
-                    state = known[t] = [(0, 0, '', 0, 0), None, [], 0]
-                current = t.state(camx, camy, xoff, yoff)
-                previous = state[0]
-                if previous == current:
-                    continue
-                if previous[2]:
-                    x, y, _, xo, yo = previous
-                    rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
-                if current[2]:
-                    key = (current[2], t.renderspaces, bgcolor)
-                    if state[1] != key:
-                        state[1] = key
-                        state[2] = self.parse(sc, current[2], t.renderspaces)
-                        state[3] = max(row[0] for row in state[2])
-                    x, y, _, xo, yo = current
-                    rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
-                state[0] = current
+                lights = sc.lights
+                env = (camx, camy, xoff, yoff, bgcolor, sc.fgcolor, sc.ambient,
+                       tuple([(id(l), l._version, l.on) for l in lights]) if lights else ())
+                before = self.envs.get(sc)
+                same = before == env
+                self.envs[sc] = env
+                if not same:
+                    layered.pop(sc, None)
+                    if before is not None and before[4] != bgcolor:
+                        rects.append(self.view(sc, width, height))
+            tfs = sc._roster()[5]
+            seen.update(tfs)
+            if live:
+                for t in tfs:
+                    state = known.get(t)
+                    if state is not None and same and state[4] == t._rev:
+                        continue
+                    if not t.rtext:
+                        continue
+                    if state is None:
+                        state = known[t] = [(0, 0, '', 0, 0), None, [], 0, -1, 0]
+                        layered.pop(sc, None)
+                    current = t.state(camx, camy, xoff, yoff)
+                    state[4] = t._rev
+                    previous = state[0]
+                    z = t.z
+                    if z != state[5]:
+                        state[5] = z
+                        layered.pop(sc, None)
+                        if previous[2]:
+                            x, y, _, xo, yo = previous
+                            rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
+                    if previous == current:
+                        if state[1] is not None and state[1] != (current[2], t.renderspaces, bgcolor):
+                            layered.pop(sc, None)
+                        continue
+                    if previous[2]:
+                        x, y, _, xo, yo = previous
+                        rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
+                    if current[2]:
+                        key = (current[2], t.renderspaces, bgcolor)
+                        if state[1] != key:
+                            state[1] = key
+                            state[2] = self.parse(sc, current[2], t.renderspaces)
+                            state[3] = max(row[0] for row in state[2])
+                        x, y, _, xo, yo = current
+                        rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
+                    state[0] = current
+                    cache = layered.get(sc)
+                    if cache is not None:
+                        if bool(previous[2]) != bool(current[2]):
+                            del layered[sc]
+                        elif current[2]:
+                            slot = cache[2].get(t)
+                            if slot is None:
+                                del layered[sc]
+                            else:
+                                cache[1][slot] = (x + xo, y - yo, state[2])
             if live:
                 view = self.view(sc, width, height)
                 for light in sc.lights:
@@ -548,11 +586,13 @@ class Compositor:
                 glowing.update(light for light in sc.lights if light in self.glows)
         for light in [light for light in self.glows if light not in glowing]:
             rects.append(self.glows.pop(light)[1])
-        for t in [t for t in known if t not in seen]:
-            state = known.pop(t)
-            if state[0][2]:
-                x, y, _, xo, yo = state[0]
-                rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
+        if not seen.issuperset(known):
+            for t in [t for t in known if t not in seen]:
+                state = known.pop(t)
+                if state[0][2]:
+                    x, y, _, xo, yo = state[0]
+                    rects.append((x + xo, y - yo, x + xo + state[3], y - yo + len(state[2])))
+            layered.clear()
         return rects
 
     def layers(self, items, width, height, autobg):
@@ -562,18 +602,26 @@ class Compositor:
             view = self.view(sc, width, height)
             ext = self.extent(sc, view) if sc.camrotation % 360.0 else view
             bg = self.bgstyle(sc.bgcolor) if autobg and getattr(w, 'autobg', True) else None
-            sprites = []
-            for t in sorted([o.transform for o in sc.objs if hasattr(o, 'transform')], key=lambda t: t.z):
-                state = self.known.get(t)
-                if state is None or not state[0][2]:
-                    continue
-                key = (state[0][2], t.renderspaces, sc.bgcolor)
-                if state[1] != key:
-                    state[1] = key
-                    state[2] = self.parse(sc, state[0][2], t.renderspaces)
-                    state[3] = max(row[0] for row in state[2])
-                x, y, _, xo, yo = state[0]
-                sprites.append((x + xo, y - yo, state[2]))
+            roster = sc._roster()
+            cache = self.layered.get(sc)
+            if cache is None or cache[0] != roster[0] or cache[3] != sc.bgcolor:
+                sprites = []
+                slot = {}
+                for t in sorted(roster[5], key=lambda t: t.z):
+                    state = self.known.get(t)
+                    if state is None or not state[0][2]:
+                        continue
+                    key = (state[0][2], t.renderspaces, sc.bgcolor)
+                    if state[1] != key:
+                        state[1] = key
+                        state[2] = self.parse(sc, state[0][2], t.renderspaces)
+                        state[3] = max(row[0] for row in state[2])
+                    x, y, _, xo, yo = state[0]
+                    slot[t] = len(sprites)
+                    sprites.append((x + xo, y - yo, state[2]))
+                    state[5] = t.z
+                cache = self.layered[sc] = (roster[0], sprites, slot, sc.bgcolor)
+            sprites = cache[1]
             lit = []
             if view[0] < view[2] and view[1] < view[3]:
                 camx = sc.iround(sc.camx)
@@ -656,6 +704,10 @@ class Compositor:
         cy = (vy0 + vy1) / 2
         ew = ex1 - ex0
         eh = ey1 - ey0
+        floor = math.floor
+        dxs = [(x + 0.5 - cx) * aspect for x in range(vx0, vx1)]
+        dxc = [d * cos_a for d in dxs]
+        dxn = [d * sin_a for d in dxs]
         for y, (lo, hi) in spans.items():
             if y < vy0 or y >= vy1:
                 continue
@@ -665,10 +717,12 @@ class Compositor:
                 continue
             line = back[y]
             dy = y + 0.5 - cy
+            ys = dy * sin_a
+            yc = dy * cos_a
             for x in range(a, b):
-                dx = (x + 0.5 - cx) * aspect
-                sx = int(math.floor((dx * cos_a - dy * sin_a) / aspect + cx)) - ex0
-                sy = int(math.floor(dx * sin_a + dy * cos_a + cy)) - ey0
+                i = x - vx0
+                sx = floor((dxc[i] - ys) / aspect + cx) - ex0
+                sy = floor(dxn[i] + yc + cy) - ey0
                 if sx < 0 or sx >= ew or sy < 0 or sy >= eh:
                     continue
                 cell = local[sy][sx]
@@ -682,6 +736,29 @@ class Compositor:
             if len(self.emitted) > 50000:
                 self.emitted.clear()
             found = self.emitted[key] = ansi.wrap(ansi.RESET) + ansi.wrap_all(ansi.strip_color(style) if plain else ansi.collapse_color(style))
+        return found
+
+    def colors(self, style, plain):
+        key = (style, plain)
+        found = self.coloring.get(key, False)
+        if found is False:
+            if len(self.coloring) > 50000:
+                self.coloring.clear()
+            text = ansi.strip_color(style) if plain else ansi.collapse_color(style)
+            found = self.coloring[key] = ansi.color_state(text)
+        return found
+
+    def step(self, old, style, plain):
+        if len(self.stepped) > 50000:
+            self.stepped.clear()
+        before = self.colors(old, plain)
+        after = self.colors(style, plain)
+        found = self.emit(style, plain)
+        if before is not None and after is not None:
+            short = ansi.color_step(before, after)
+            if len(short) < len(found):
+                found = short
+        self.stepped[(old, style, plain)] = found
         return found
 
     def compose(self, items, active, region, bounds, outer, autobg):
@@ -758,20 +835,25 @@ class Compositor:
         out = []
         style = None
         wrap = ansi.wrap
+        stepped = None if ansi.wrapped() else self.stepped
         for y in sorted(spans):
             lo, hi = spans[y]
             new = back[y][lo:hi]
             old = self.front[y][lo:hi]
             if new == old:
                 continue
-            mask = bytes([a != b for a, b in zip(new, old)])
+            mask = bytes(map(ne, new, old))
             for run in self.runs.finditer(mask):
                 start, end = run.span()
                 out.append(wrap(ansi.move(regy + y + 1, regx + lo + start + 1)))
                 for cellstyle, group in groupby(new[start:end], key=itemgetter(1)):
                     if cellstyle != style:
+                        if stepped is None or style is None:
+                            out.append(self.emit(cellstyle, plain))
+                        else:
+                            found = stepped.get((style, cellstyle, plain))
+                            out.append(found if found is not None else self.step(style, cellstyle, plain))
                         style = cellstyle
-                        out.append(self.emit(style, plain))
                     out.append(''.join([cell[0] for cell in group]))
                 self.front[y][lo + start:lo + end] = new[start:end]
         if not out:
