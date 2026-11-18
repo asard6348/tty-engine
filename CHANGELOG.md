@@ -22,6 +22,7 @@
 - Fixed: changing `scene.bgcolor` now repaints the view; before, already drawn cells kept the old background until something else redrew them, which also left background fades stuck.
 - Fixed: changing an object's `z` (`front()`, `back()`, `z =`) now repaints the object; before, the new stacking order only appeared after something else redrew that area.
 - JPEG decoding skips zero coefficients in the inverse DCT and PNG decoding unfilters Up and Sub rows with packed integer lanes and converts whole rows at once for 8-bit non-interlaced images. Decoded pixels are identical.
+- New `handle.wait(duration)` pauses the `start`, `update` or `final` function that calls it for `duration` seconds and continues from the next line, while the engine and the handle's other functions keep running. It sleeps and blocks when called outside such a function, or from a helper they call. Functions that never mention `wait` run exactly as before. `handle.cancel()` also stops any function that is waiting.
 
 ## 0.2.0
 

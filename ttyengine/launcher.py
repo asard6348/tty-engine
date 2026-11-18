@@ -149,6 +149,15 @@ def handle_class(handle, state='start'):
         '__module__': getattr(handle, '__module__', __name__),
     })
 
+class _Cancelled(BaseException):
+    pass
+
+_local = threading.local()
+
+def _uses_wait(fu):
+    code = getattr(getattr(fu, '__func__', fu), '__code__', None)
+    return code is None or 'wait' in code.co_names
+
 #WORLD CLASS
 class World():
     def __init__(self, session=None, autoreg=True, front=True, **kwargs):
@@ -197,6 +206,7 @@ class World():
         def __init__(self, handle, world):
             self.world = world
             self.pause = False
+            self._tasks = {}
             self.handleargs = {
                 'scene': self.world.scene,
                 'handle': self,
@@ -211,12 +221,13 @@ class World():
             start = getattr(self.handle, 'start', None)
             self.startargs = getargs(start, self.handleargs)
             self.world.handles.append(self)
-            result = start(**self.startargs) if start else None
+            self._started(self._run('start', start, self.startargs) if start else None)
+        def _started(self, result):
             if getattr(self.handle, '_factory', False) and is_handle(result):
                 self.handle = result
                 start = getattr(result, 'start', None)
                 self.startargs = getargs(start, self.handleargs)
-                if start: start(**self.startargs)
+                if start: self._run('start', start, self.startargs)
         @property
         def priority(self):
             return getattr(self.handle, 'priority', 0)
@@ -224,6 +235,8 @@ class World():
         def priority(self, value):
             self.handle.priority = value
         def func(self, key: str):
+            if key != 'start' and 'start' in self._tasks:
+                self._started(self._run('start', None, None))
             fu = getattr(self.handle, key, None)
             method_cache_attr = f"_{key}_method"
             args_cache_attr = f"{key}args"
@@ -236,10 +249,60 @@ class World():
                     if hasattr(self, args_cache_attr):
                         delattr(self, args_cache_attr)
             if fu:
-                return lambda: fu(**getattr(self, args_cache_attr))
+                return lambda: self._run(key, fu, getattr(self, args_cache_attr))
             return None
         def cancel(self):
+            for task in list(self._tasks.values()):
+                if not task.done:
+                    task.cancelled = True
+                    task.resume.set()
             self.world.handles = [h for h in self.world.handles if h is not self]
+
+        def _run(self, key, fu, kwargs):
+            task = self._tasks.get(key)
+            if task is None and not _uses_wait(fu):
+                return fu(**kwargs)
+            if task is None:
+                task = self._tasks[key] = SimpleNamespace(
+                    thread=None, until=0.0, result=None, error=None, done=False, cancelled=False,
+                    resume=threading.Event(), yielded=threading.Event())
+                def target():
+                    _local.task = task
+                    try:
+                        task.result = fu(**kwargs)
+                    except _Cancelled:
+                        pass
+                    except BaseException as e:
+                        task.error = e
+                    finally:
+                        task.done = True
+                        task.yielded.set()
+                task.thread = threading.Thread(target=target, daemon=True)
+                task.thread.start()
+            else:
+                if time.perf_counter() < task.until:
+                    return None
+                task.yielded.clear()
+                task.resume.set()
+            task.yielded.wait()
+            if task.done:
+                self._tasks.pop(key, None)
+                if task.error is not None:
+                    raise task.error
+                return task.result
+            return None
+
+        def wait(self, duration):
+            task = getattr(_local, 'task', None)
+            if task is None:
+                time.sleep(duration)
+                return
+            task.until = time.perf_counter() + duration
+            task.yielded.set()
+            task.resume.wait()
+            task.resume.clear()
+            if task.cancelled:
+                raise _Cancelled()
 
     def ordered_handles(self):
         return sorted(self.handles, key=lambda h: -h.priority)

@@ -294,6 +294,35 @@ class main:
 
 </details>
 
+<details>
+<summary><b>Waiting inside a handle</b></summary>
+
+&nbsp;
+
+`handle.wait(duration)` pauses the function that calls it for `duration` seconds. The rest of that function does not run until the time is up, then it carries on from the next line. Everything else keeps going meanwhile: the frame loop, physics, rendering, input, and the handle's other functions.
+
+```python
+def final(self, scene, handle):
+    if self.scored():
+        self.reset_ball()       # runs now
+        handle.wait(1)          # this function stops here for one second
+        self.release_ball()     # runs one second later
+```
+
+Request the `handle` argument like any other (see the table above). A few things to know:
+
+- `start`, `update` and `final` each wait on their own. A `wait` in `final` does not stop `update`, so players can keep moving while the ball is held.
+- While a function is waiting, the world does not call it again. It is called normally once it has finished.
+- `start` can wait too. Its code resumes on the following frames, and a function used as a handle (see [A function works too](#quick-start)) can wait the same way.
+- Write `handle.wait(...)` directly in `start`, `update` or `final`. If it is inside a helper that one of them calls, it cannot suspend the caller and just sleeps, which blocks the whole engine for that time.
+- Called from anywhere else, such as an input callback, `wait` also just sleeps and blocks.
+- Resuming happens on a frame, so the delay is accurate to one frame time. A paused handle (`handle.pause = True`) is not resumed until it is unpaused.
+- `handle.cancel()` stops a waiting function for good: the code after its `wait` never runs.
+- Only one piece of your code runs at a time, so a waiting function never runs at the same moment as the frame loop and needs no locking.
+- An error raised after a `wait` is reported like any other error inside a handle.
+
+</details>
+
 <sub>[↑ Back to top](#top)</sub>
 
 ## Usage guide
