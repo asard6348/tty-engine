@@ -295,11 +295,13 @@ class main:
 </details>
 
 <details>
-<summary><b>Waiting inside a handle</b></summary>
+<summary><b>Waiting, timers and tasks</b></summary>
 
 &nbsp;
 
-`handle.wait(duration)` pauses the function that calls it for `duration` seconds. The rest of that function does not run until the time is up, then it carries on from the next line. Everything else keeps going meanwhile: the frame loop, physics, rendering, input, and the handle's other functions.
+A handle can pause its own code, or schedule code to run later, without stopping anything else. The frame loop, physics, rendering, input and the handle's other functions keep running. Request the `handle` argument like any other (see the table above).
+
+**`handle.wait(duration, frames=False)`** suspends the function that calls it. The rest of that function runs once `duration` seconds have passed, or `duration` frames with `frames=True`:
 
 ```python
 def final(self, scene, handle):
@@ -309,17 +311,43 @@ def final(self, scene, handle):
         self.release_ball()     # runs one second later
 ```
 
-Request the `handle` argument like any other (see the table above). A few things to know:
+**`handle.until(condition, timeout=None, frames=False)`** suspends until `condition()` returns true. It returns `True` when the condition was met and `False` when `timeout` ran out first:
+
+```python
+def start(self, handle, session):
+    if not handle.until(lambda: session.inp.held('space'), timeout=5):
+        print('nobody pressed space')
+```
+
+**`handle.after(delay, fn, frames=False)`** and **`handle.every(interval, fn, frames=False, delay=None)`** run `fn` later, once or repeatedly. `fn` receives the same arguments as `start`, `update` and `final` (`scene`, `handle` and so on, matched by name), and `every` first fires after `delay`, which defaults to `interval`. Both work from anywhere, including input callbacks and helper functions, and both return a `Task`:
+
+```python
+blink = handle.every(0.5, lambda scene: scene.obj().create('*', 2, -2))
+handle.after(10, blink.cancel)
+```
+
+**`Task`** is one scheduled callback or one suspended function. It is created by `after` and `every`, or directly with `Task(handle, fn, delay=0.0, interval=None, frames=False)`, and `from ttyengine import Task` imports it. A task is cancelled the same way as a handle:
+
+| Member | Meaning |
+|---|---|
+| `task.cancel()` | Stops the task. A function suspended in `wait` or `until` never runs the code after it, and a repeating task stops repeating. `world.cancel(task)` does the same. |
+| `task.done` | `True` once the callback has finished (a repeating task never is). |
+| `task.cancelled` | `True` after `cancel()`. |
+| `task.result` | The return value of the last run. |
+
+`handle.tasks` lists every live task of the handle: its timers and its suspended `start`, `update` and `final` calls. `handle.cancel()` cancels all of them, and cancelling one task leaves the handle and its other tasks running, so a "skip the cutscene" button is `for task in handle.tasks: task.cancel()`.
+
+Things to know:
 
 - `start`, `update` and `final` each wait on their own. A `wait` in `final` does not stop `update`, so players can keep moving while the ball is held.
 - While a function is waiting, the world does not call it again. It is called normally once it has finished.
 - `start` can wait too. Its code resumes on the following frames, and a function used as a handle (see [A function works too](#quick-start)) can wait the same way.
-- Write `handle.wait(...)` directly in `start`, `update` or `final`. If it is inside a helper that one of them calls, it cannot suspend the caller and just sleeps, which blocks the whole engine for that time.
-- Called from anywhere else, such as an input callback, `wait` also just sleeps and blocks.
-- Resuming happens on a frame, so the delay is accurate to one frame time. A paused handle (`handle.pause = True`) is not resumed until it is unpaused.
-- `handle.cancel()` stops a waiting function for good: the code after its `wait` never runs.
-- Only one piece of your code runs at a time, so a waiting function never runs at the same moment as the frame loop and needs no locking.
-- An error raised after a `wait` is reported like any other error inside a handle.
+- Write `wait` and `until` directly in `start`, `update`, `final` or the function you pass to `after` or `every`. Inside a helper they cannot suspend the caller: `wait` just sleeps, which blocks the whole engine for that time, and `until` raises a `RuntimeError`. Called from an input callback, `wait` also just sleeps.
+- Everything is checked once per frame, so a delay is accurate to one frame time.
+- While a handle is paused (`handle.pause = True`), its world is paused or the session is paused, the clock of its waits and timers stands still, and frame counts only advance on frames the handle actually ran. Time spent paused does not count towards a delay.
+- Only one piece of your code runs at a time, so a waiting function never runs at the same moment as the frame loop and needs no locking. An error raised after a `wait` is reported like any other error inside a handle.
+
+`pause` is a property on handles, worlds and the session, as are `pausephysics` and `pauserendering` on worlds and the session. They accept any truthy or falsy value and store a bool.
 
 </details>
 

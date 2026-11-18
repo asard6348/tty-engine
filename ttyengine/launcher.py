@@ -154,9 +154,113 @@ class _Cancelled(BaseException):
 
 _local = threading.local()
 
+_WAITERS = frozenset(('wait', 'until'))
+
 def _uses_wait(fu):
     code = getattr(getattr(fu, '__func__', fu), '__code__', None)
-    return code is None or 'wait' in code.co_names
+    return code is None or not _WAITERS.isdisjoint(code.co_names)
+
+def _flag(name):
+    private = '_' + name
+    def get(self):
+        return getattr(self, private)
+    def set(self, value):
+        setattr(self, private, bool(value))
+    return property(get, set)
+
+class Task:
+    def __init__(self, handle, fn, delay=0.0, interval=None, frames=False, kwargs=None, key=None):
+        self.handle = handle
+        self.fn = fn
+        self.kwargs = getargs(fn, handle.handleargs) if kwargs is None else kwargs
+        self.interval = interval
+        self.frames = frames
+        self.key = key
+        self.result = None
+        self.flag = None
+        self.done = False
+        self.cancelled = False
+        self._thread = None
+        self._finished = False
+        self._error = None
+        self._outcome = None
+        self._resume = threading.Event()
+        self._yielded = threading.Event()
+        self._due = handle._now(frames) + delay
+        self._wake = self._reached
+        handle._tasks.append(self)
+
+    def _reached(self):
+        return self.handle._now(self.frames) >= self._due
+
+    def _ready(self):
+        return self._wake is None or self._wake()
+
+    def _suspend(self, ready):
+        self._wake = ready
+        self._yielded.set()
+        self._resume.wait()
+        self._resume.clear()
+        if self.cancelled:
+            raise _Cancelled()
+
+    def _target(self):
+        _local.task = self
+        try:
+            self._outcome = self.fn(**self.kwargs)
+        except _Cancelled:
+            pass
+        except BaseException as e:
+            self._error = e
+        finally:
+            self._finished = True
+            self._yielded.set()
+
+    def _advance(self):
+        self._wake = None
+        if self._thread is None:
+            if not _uses_wait(self.fn):
+                try:
+                    outcome = self.fn(**self.kwargs)
+                except BaseException:
+                    self.handle._drop(self)
+                    raise
+                return self._complete(outcome)
+            self._thread = threading.Thread(target=self._target, daemon=True)
+            self._thread.start()
+        else:
+            self._yielded.clear()
+            self._resume.set()
+        self._yielded.wait()
+        if not self._finished:
+            return None
+        error, outcome = self._error, self._outcome
+        self._thread = None
+        self._finished = False
+        self._error = self._outcome = None
+        if error is not None:
+            self.handle._drop(self)
+            raise error
+        return self._complete(outcome)
+
+    def _complete(self, outcome):
+        self.result = outcome
+        if self.interval is not None and not self.cancelled:
+            now = self.handle._now(self.frames)
+            self._due = max(self._due + self.interval, now)
+            self._wake = self._reached
+            return outcome
+        self.done = True
+        self.handle._drop(self)
+        return outcome
+
+    def cancel(self):
+        if self.cancelled or self.done:
+            return
+        self.cancelled = True
+        if self._thread is not None:
+            self._resume.set()
+        self.handle._drop(self)
 
 #WORLD CLASS
 class World():
@@ -166,7 +270,7 @@ class World():
         self.scene = scene.Scene()
         self._layer = 0
         self.last_tick = time.perf_counter()
-        self.pause = False
+        self._pause = False
         self.pausephysics = False
         self.pauserendering = False
         self.autoterm = True
@@ -198,6 +302,20 @@ class World():
         self._layer = value
         self.sort()
 
+    @property
+    def pause(self):
+        return self._pause
+    @pause.setter
+    def pause(self, value):
+        value = bool(value)
+        if value != self._pause:
+            self._pause = value
+            for handle in list(self.handles):
+                handle._hold(value)
+
+    pausephysics = _flag('pausephysics')
+    pauserendering = _flag('pauserendering')
+
     def sort(self, layer=None):
         if self.session is not None:
             self.session.worlds = sorted(list(self.session.worlds), key=lambda w: getattr(w, '_layer', 0) if w is not self or layer is None else layer)
@@ -205,8 +323,14 @@ class World():
     class Handle():
         def __init__(self, handle, world):
             self.world = world
-            self.pause = False
-            self._tasks = {}
+            self._pause = False
+            self._holds = 0
+            self._hold_start = 0.0
+            self._lost = 0.0
+            self._frames = 0
+            self._tasks = []
+            self._runs = {}
+            if getattr(world, 'pause', False): self._hold(True)
             self.handleargs = {
                 'scene': self.world.scene,
                 'handle': self,
@@ -234,8 +358,39 @@ class World():
         @priority.setter
         def priority(self, value):
             self.handle.priority = value
+        @property
+        def pause(self):
+            return self._pause
+        @pause.setter
+        def pause(self, value):
+            value = bool(value)
+            if value != self._pause:
+                self._pause = value
+                self._hold(value)
+        @property
+        def tasks(self):
+            return list(self._tasks)
+        def _hold(self, on):
+            if on:
+                if self._holds == 0: self._hold_start = time.perf_counter()
+                self._holds += 1
+            elif self._holds:
+                self._holds -= 1
+                if self._holds == 0: self._lost += time.perf_counter() - self._hold_start
+        def _now(self, frames=False):
+            if frames: return self._frames
+            now = time.perf_counter()
+            return now - self._lost - ((now - self._hold_start) if self._holds else 0.0)
+        def _drop(self, task):
+            if task in self._tasks: self._tasks.remove(task)
+            if task.key is not None and self._runs.get(task.key) is task: del self._runs[task.key]
+        def step(self):
+            self._frames += 1
+            for task in list(self._tasks):
+                if task.key is None and not task.cancelled and task._ready():
+                    task._advance()
         def func(self, key: str):
-            if key != 'start' and 'start' in self._tasks:
+            if key != 'start' and 'start' in self._runs:
                 self._started(self._run('start', None, None))
             fu = getattr(self.handle, key, None)
             method_cache_attr = f"_{key}_method"
@@ -252,57 +407,51 @@ class World():
                 return lambda: self._run(key, fu, getattr(self, args_cache_attr))
             return None
         def cancel(self):
-            for task in list(self._tasks.values()):
-                if not task.done:
-                    task.cancelled = True
-                    task.resume.set()
+            for task in list(self._tasks):
+                task.cancel()
             self.world.handles = [h for h in self.world.handles if h is not self]
 
         def _run(self, key, fu, kwargs):
-            task = self._tasks.get(key)
-            if task is None and not _uses_wait(fu):
-                return fu(**kwargs)
+            task = self._runs.get(key)
             if task is None:
-                task = self._tasks[key] = SimpleNamespace(
-                    thread=None, until=0.0, result=None, error=None, done=False, cancelled=False,
-                    resume=threading.Event(), yielded=threading.Event())
-                def target():
-                    _local.task = task
-                    try:
-                        task.result = fu(**kwargs)
-                    except _Cancelled:
-                        pass
-                    except BaseException as e:
-                        task.error = e
-                    finally:
-                        task.done = True
-                        task.yielded.set()
-                task.thread = threading.Thread(target=target, daemon=True)
-                task.thread.start()
-            else:
-                if time.perf_counter() < task.until:
-                    return None
-                task.yielded.clear()
-                task.resume.set()
-            task.yielded.wait()
-            if task.done:
-                self._tasks.pop(key, None)
-                if task.error is not None:
-                    raise task.error
-                return task.result
-            return None
+                if not _uses_wait(fu):
+                    return fu(**kwargs)
+                task = self._runs[key] = Task(self, fu, kwargs=kwargs, key=key)
+            elif not task._ready():
+                return None
+            return task._advance()
 
-        def wait(self, duration):
+        def after(self, delay, fn, frames=False):
+            return Task(self, fn, delay, None, frames)
+
+        def every(self, interval, fn, frames=False, delay=None):
+            return Task(self, fn, interval if delay is None else delay, interval, frames)
+
+        def wait(self, duration, frames=False):
             task = getattr(_local, 'task', None)
             if task is None:
-                time.sleep(duration)
+                time.sleep(duration / self.world.scene.framerate if frames else duration)
                 return
-            task.until = time.perf_counter() + duration
-            task.yielded.set()
-            task.resume.wait()
-            task.resume.clear()
-            if task.cancelled:
-                raise _Cancelled()
+            owner = task.handle
+            due = owner._now(frames) + duration
+            task._suspend(lambda: owner._now(frames) >= due)
+
+        def until(self, condition, timeout=None, frames=False):
+            task = getattr(_local, 'task', None)
+            if task is None:
+                raise RuntimeError("until() must be called directly inside start, update, final or a task callback")
+            owner = task.handle
+            due = None if timeout is None else owner._now(frames) + timeout
+            def ready():
+                if condition():
+                    task.flag = True
+                    return True
+                if due is not None and owner._now(frames) >= due:
+                    task.flag = False
+                    return True
+                return False
+            task._suspend(ready)
+            return task.flag
 
     def ordered_handles(self):
         return sorted(self.handles, key=lambda h: -h.priority)
@@ -315,7 +464,10 @@ class World():
                 if safe else self.Handle(cls, self))
 
     def cancel(self, handle):
-        self.handles = [h for h in self.handles if h is not handle]
+        if isinstance(handle, (Task, World.Handle)):
+            handle.cancel()
+        else:
+            self.handles = [h for h in self.handles if h is not handle]
 
     def register(self, front=True):
         if self.session is not None:
@@ -558,10 +710,18 @@ class Session():
         return self._pause
     @pause.setter
     def pause(self, value):
+        value = bool(value)
+        if value != self._pause:
+            for world in self.worlds:
+                for handle in world.handles:
+                    handle._hold(value)
         self._pause = value
         if not value:
             with self._resume:
                 self._resume.notify_all()
+
+    pausephysics = _flag('pausephysics')
+    pauserendering = _flag('pauserendering')
 
     @property
     def latency(self):
@@ -741,6 +901,7 @@ class Session():
 
                             for handle in world.ordered_handles():
                                 if handle.pause: continue
+                                handle.step()
                                 update = handle.func('update')
                                 if update:
                                     update()

@@ -35,13 +35,13 @@ def _installed_version():
 
 __version__ = _installed_version() or _pyproject_version() or "0+unknown"
 
-__all__ = ["Session", "World", "Simulation", "start", "net", "__version__"]
+__all__ = ["Session", "World", "Simulation", "Task", "start", "net", "__version__"]
 
 
 import importlib
 
 def __getattr__(name):
-    if name in ("Session", "World", "Simulation", "start"):
+    if name in ("Session", "World", "Simulation", "Task", "start"):
         submod = importlib.import_module(".launcher", __name__)
         return getattr(submod, name)
     if name == "net":
