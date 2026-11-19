@@ -1,3 +1,4 @@
+import hashlib
 import math
 import os
 import random
@@ -313,6 +314,207 @@ class RotationMemoTests(unittest.TestCase):
                 self.assertLessEqual(transform_mod._rotation_cost[0], 4000)
         finally:
             transform_mod._ROTATION_BUDGET = saved
+
+class RotationRasterTests(unittest.TestCase):
+    @staticmethod
+    def fingerprints():
+        rng = random.Random(4242)
+        out = []
+        texts = []
+        for _ in range(36):
+            k = rng.randint(0, 6)
+            w, h = rng.randint(2, 22), rng.randint(2, 9)
+            if k == 0:
+                texts.append("\n".join(["#" * w] * h))
+            elif k == 1:
+                texts.append("\n".join("".join(rng.choice("#@ .") for _ in range(w)) for _ in range(h)).replace("\n ", "\n#"))
+            elif k == 2:
+                texts.append("\n".join("#" * (i + 1) for i in range(h)))
+            elif k == 3:
+                texts.append("\n".join([" " * i + "##" for i in range(h)]))
+            elif k == 4:
+                texts.append("\n".join(["#" * w] + ["#" + " " * max(0, w - 2) + "#"] * max(0, h - 2) + ["#" * w]))
+            elif k == 5:
+                texts.append("\n".join(" " * rng.randint(0, 9) + "".join(rng.choice("xyz") for _ in range(rng.randint(1, 8))) for _ in range(h)))
+            else:
+                texts.append("#" * w)
+        for text in texts:
+            if not text.strip():
+                continue
+            sc = make_scene()
+            o = sc.obj().create(text, 0, 0, dynamic=False, solid=False)
+            t = o.transform
+            t.aspect = rng.choice([0.5, 0.5, 0.45, 1.0, 0.7])
+            if rng.random() < 0.3:
+                t.flip = rng.uniform(0, 180)
+            for _ in range(2):
+                t.rotation = rng.uniform(-400, 400)
+                record = [t.vtext, t._text, t._ptext, t.vx, t.vy, repr(t._rotmap)]
+                record.append(repr(sorted((repr(a), repr(b)) for a, b in t._rotsrc.items())))
+                record.append(repr(t._rotcells))
+                out.append(hashlib.md5(repr(record).encode()).hexdigest()[:12])
+        return out
+
+    EXPECTED = ['eb0e477e6926', 'e5a76a87f380', '8dac4af66411', 'af9daaba3768', '69161f214f38', 'afabdec219c5', 'e8098e42971f', '5dd17febfee4', 'eb631a133733', '11d8ee9e7642', 'e655fe1f73da', 'a7c08ea6d350', '65221fe3a4ec', 'b0cb10ce5feb', '85e213bb2b7b', '4c3c816cd1ad', '96735f47724b', '1545c8d4b3d1', 'f1f1a11f0b81', '5fde65bd3c2f', '0f410b018fd7', '1291b8f1775c', '322aec372fd5', '4300d46ae9ac', 'ffadc79c8090', '99ce2c658945', 'e331e00755a7', '88368537d364', '063da2975a88', '363b80fa5afe', '11890687b98b', '24320d72f90b', 'cf51f6e588ec', 'a170bb955918', '0f1cc730097b', 'deeb055a5165', '7a89cd743bbd', '4b076201a07e', '5ac7cad2b356', 'f7dd9d84db41', 'd2a13512bc75', '169dbdd724df', 'aed0c1441533', 'a2eed47ace03', 'e2b14c6ed413', 'ac9f7fbe5fff', '4179b63e3b71', '40a40f4c7bce', '9a490528f95c', '55788faa7f61', 'aef35e72e58e', '5deec36d864d', '5608e288dde8', '460f45577ea8', '9f468d6ecee3', 'cd0cb99ec7ab', '6adc24aa817d', '2c519daae3e3', '955ca61e0176', '84ebe3c31dea', 'dd5d9edd72b9', 'a859adde5ba9', '4cc63ce8ddcc', '1c436cf2bf40', '5f1106daf488', '6a45de74f61c', '5a9cf48452bc', '7fd1d203513a', '36b0abceef3a', 'a320bbfd35f8', 'cb81b849001c', '17078fc1654a']
+
+    def test_rasterization_matches_the_original_algorithm(self):
+        self.assertEqual(self.fingerprints(), self.EXPECTED)
+
+    def test_single_glyph_coefficients_follow_the_current_angle(self):
+        sc = make_scene()
+        a = sc.obj().create('#', 0, 0, dynamic=False, solid=False)
+        b = sc.obj().create('#', 5, 0, dynamic=False, solid=False)
+        a.transform.rotation = 30
+        a.transform.rotation = 100
+        b.transform.rotation = 100
+        self.assertEqual(a.transform._rotmap[5:], b.transform._rotmap[5:])
+        self.assertAlmostEqual(math.degrees(math.atan2(a.transform._rotmap[6], a.transform._rotmap[5])), 100, places=6)
+        fresh = sc.obj().create('#', 9, 0, dynamic=False, solid=False)
+        fresh.transform.rotation = 250
+        a.transform.rotation = 250
+        self.assertEqual(a.transform._rotmap[5:], fresh.transform._rotmap[5:])
+
+
+class TurnTests(unittest.TestCase):
+    def sprite(self, rng):
+        kind = rng.randint(0, 5)
+        w, h = rng.randint(1, 24), rng.randint(1, 9)
+        if kind == 0:
+            return "\n".join(["#" * w] * h)
+        if kind == 1:
+            return "\n".join("#" * (i + 1) for i in range(h))
+        if kind == 2:
+            return "#" * w
+        if kind == 3:
+            return "\n".join(" " * i + "##" for i in range(h))
+        if kind == 4:
+            return "\n".join(["#" * w] + ["#" + " " * max(0, w - 2) + "#"] * max(0, h - 2) + ["#" * w])
+        return "\n".join("".join(rng.choice("## ") for _ in range(w)) for _ in range(h)).replace("\n ", "\n#") or "#"
+
+    def test_clear_turns_never_hit_when_taken_piece_by_piece(self):
+        rng = random.Random(21)
+        clear = 0
+        for _ in range(260):
+            sc = make_scene()
+            o = sc.obj().create(self.sprite(rng), rng.randint(-8, 8) + rng.choice([0, 0.5]), rng.randint(-4, 4), dynamic=True, solid=True)
+            p = o.physics
+            for _ in range(rng.randint(1, 4)):
+                w, h = rng.randint(1, 10), rng.randint(1, 5)
+                sc.obj().create("\n".join(["#" * w] * h), rng.randint(-26, 26), rng.randint(-12, 12), dynamic=False, solid=True)
+            if p.overlaps() or not p._turn_clear():
+                continue
+            clear += 1
+            degrees = rng.uniform(-180, 180)
+            pieces = max(1, int(math.ceil(abs(degrees) / 3)))
+            for _ in range(pieces):
+                o.transform.rotation = o.transform.rotation + degrees / pieces
+                self.assertFalse(p.overlaps())
+        self.assertGreater(clear, 40)
+
+    def test_rotated_cells_stay_inside_the_swept_disc(self):
+        rng = random.Random(8)
+        for _ in range(160):
+            sc = make_scene()
+            o = sc.obj().create(self.sprite(rng), 0, 0, dynamic=True, solid=True)
+            p = o.physics
+            o.transform.rotation = rng.choice([0, rng.uniform(0, 360)])
+            pivot = p._pivot()
+            if pivot is None:
+                continue
+            cx, cy, far = pivot[:3]
+            aspect = o.transform.aspect
+            for _ in range(6):
+                o.transform.rotation = rng.uniform(-720, 720)
+                ox, rows = p.rowmask()[:2]
+                for y, mask in rows.items():
+                    k = 0
+                    while mask:
+                        if mask & 1:
+                            self.assertLessEqual(math.hypot((ox + k - cx) * aspect, y - cy), far + 2.8)
+                        mask >>= 1
+                        k += 1
+
+    def test_nearby_solids_keep_the_careful_path(self):
+        sc = make_scene()
+        o = sc.obj().create("####\n####", 0, 0, dynamic=True, solid=True)
+        self.assertTrue(o.physics._turn_clear())
+        sc.obj().create("#" * 30, -15, -3, dynamic=False, solid=True)
+        self.assertFalse(o.physics._turn_clear())
+        far = make_scene()
+        p = far.obj().create("####\n####", 0, 0, dynamic=True, solid=True).physics
+        far.obj().create("#" * 30, -15, -30, dynamic=False, solid=True)
+        self.assertTrue(p._turn_clear())
+
+    def test_rotation_step_defaults_to_the_arc_and_can_be_pinned(self):
+        sc = make_scene()
+        small = sc.obj().create("##\n##", 0, 0, dynamic=True, solid=True).physics
+        large = sc.obj().create("#" * 40, -30, 6, dynamic=True, solid=True).physics
+        self.assertEqual(small.rprecision, 3)
+        self.assertGreater(small._turn_step(), 3)
+        self.assertEqual(large._turn_step(), 3)
+        small.rprecision = 3
+        self.assertEqual(small._turn_step(), 3)
+        small.rprecision = None
+        self.assertGreater(small._turn_step(), 3)
+        small.rprecision = 10
+        self.assertEqual(small._turn_step(), 10)
+        with self.assertRaises(ValueError):
+            small.rprecision = 0
+        pinned = sc.obj().create("##\n##", 20, 0, dynamic=True, solid=True, rprecision=3).physics
+        self.assertEqual(pinned._turn_step(), 3)
+
+    def test_granted_jumps_never_skip_a_hit(self):
+        rng = random.Random(33)
+        granted = 0
+        for _ in range(420):
+            sc = make_scene()
+            w, h = rng.randint(10, 36), rng.randint(3, 10)
+            text = "\n".join(["#" * w] * h) if rng.random() < 0.6 else "\n".join("#" * (i * w // h + 1) for i in range(h))
+            o = sc.obj().create(text, rng.randint(-8, 8) + rng.choice([0, 0.5]), rng.randint(-4, 4), dynamic=True, solid=True)
+            p = o.physics
+            o.transform.rotation = rng.uniform(0, 360)
+            pivot = p._pivot()
+            if pivot is None or pivot[3] < 40:
+                continue
+            cx, cy, far = pivot[:3]
+            for _ in range(rng.randint(1, 6)):
+                direction = rng.uniform(0, 2 * math.pi)
+                distance = rng.uniform(far * 0.5, far + 14)
+                w2, h2 = rng.choice([(1, 1), (3, 1), (1, 4), (6, 2), (12, 1), (2, 6)])
+                sc.obj().create("\n".join(["#" * w2] * h2), round(cx + distance * math.cos(direction) / 0.5), round(cy + distance * math.sin(direction)), dynamic=False, solid=True)
+            if p.overlaps():
+                continue
+            da = rng.choice([-1, 1]) * rng.uniform(1, 8)
+            jump = p._turn_free(da, rng.randint(2, 20))
+            if jump < 2:
+                continue
+            granted += 1
+            for _ in range(jump):
+                o.transform.rotation = o.transform.rotation + da
+                self.assertFalse(p.overlaps())
+        self.assertGreater(granted, 20)
+
+    def test_jumps_need_room_and_enough_cells(self):
+        sc = make_scene()
+        big = sc.obj().create("\n".join(["#" * 24] * 8), -12, 0, dynamic=True, solid=True).physics
+        self.assertGreaterEqual(big._turn_free(3, 10), 2)
+        sc.obj().create("#" * 40, -20, -5, dynamic=False, solid=True)
+        self.assertLess(big._turn_free(3, 20), 20)
+        tiny = sc.obj().create("##\n##", 40, 0, dynamic=True, solid=True).physics
+        self.assertEqual(tiny._turn_free(3, 10), 0)
+
+    def test_automatic_step_still_stops_a_spinning_body_at_a_post(self):
+        for mode in ('auto', 3):
+            sc = make_scene()
+            o = sc.obj().create("\n".join(["#" * 15] * 4), -7, 2, dynamic=True, solid=True, friction=0.0, bounciness=0.0)
+            sc.obj().create("#", 0, 3, dynamic=False, solid=True)
+            p = o.physics
+            if mode != 'auto':
+                p.rprecision = mode
+            p.avel = 170 * p.mass
+            sc.tick(True)
+            self.assertLess(abs((o.transform.rotation + 180) % 360 - 180), 120)
+            self.assertFalse(p.overlaps())
 
 
 class BoundTests(unittest.TestCase):

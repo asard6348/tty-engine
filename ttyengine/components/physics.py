@@ -1,11 +1,15 @@
 import math
 import re
 from itertools import repeat
-from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _mtv_cells, _offsets
+from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _mtv_cells, _offsets, _spread
 from .inherit import _change_callback, _keyed, _lerpable
 from .transform import transform
 
 _RUN = re.compile(r'[^ ]+')
+_SWEEP = 4.0
+_NOISE = 2.0
+_JUMP = 60.0
+_JUMP_CELLS = 40
 
 
 class physics(_change_callback, _lerpable, _keyed):
@@ -66,7 +70,8 @@ class physics(_change_callback, _lerpable, _keyed):
         self._drag = kwargs.get('drag', None)
         self._adrag = kwargs.get('adrag', None)
         self._precision = kwargs.get('precision', None)
-        self._rprecision = kwargs.get('rprecision', 3)
+        self._rauto = kwargs.get('rprecision') is None
+        self._rprecision = 3 if self._rauto else kwargs['rprecision']
         if (self._precision is not None and self._precision <= 0) or self._rprecision <= 0:
             raise ValueError('precision and rprecision must be positive')
         self.mass = kwargs.get('mass', None)
@@ -87,6 +92,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self._touch_callbacks = []
         self._pixel_cache = None
         self._rows_cache = None
+        self._pivot_cache = None
         self._bounds_cache = None
         self._body_cache = None
         self._ext_cache = None
@@ -201,15 +207,17 @@ class physics(_change_callback, _lerpable, _keyed):
         return self._rprecision
     @rprecision.setter
     def rprecision(self, value):
-        if value <= 0:
-            raise ValueError('rprecision must be positive')
+        if value is not None and value <= 0:
+            raise ValueError('rprecision must be positive or None')
         old = self._rprecision
-        self._rprecision = value
+        self._rauto = value is None
+        self._rprecision = 3 if value is None else value
         self._change('rprecision', old)
 
     def _dirty(self, attr=None):
         self._pixel_cache = None
         self._rows_cache = None
+        self._pivot_cache = None
         self._bounds_cache = None
         self._body_cache = None
         if attr != 'x' and attr != 'y':
@@ -258,15 +266,120 @@ class physics(_change_callback, _lerpable, _keyed):
         ry = round(y + oy)
         return (rx + ext[0], rx + ext[1], ry - ext[3], ry - ext[2])
 
+    def _pivot(self):
+        shape = self.rowmask()
+        cached = self._pivot_cache
+        if cached is not None and cached[0] is shape:
+            return cached[1]
+        ox, rows = shape[0], shape[1]
+        count = sx = sy = 0
+        for y, mask in rows.items():
+            c, offset, _ = _spread(mask)
+            count += c
+            sx += c * ox + offset
+            sy += c * y
+        found = None
+        if count:
+            cx = sx / count
+            cy = sy / count
+            A = self.t.aspect
+            far = 0.0
+            for y, mask in rows.items():
+                lo = ox + (mask & -mask).bit_length() - 1
+                hi = ox + mask.bit_length() - 1
+                reach = math.hypot(max(abs(lo - cx), abs(hi - cx)) * A, y - cy)
+                if reach > far:
+                    far = reach
+            found = (cx, cy, far, count)
+        self._pivot_cache = (shape, found)
+        return found
+
     def _turn_clear(self):
-        b = self.bounds()
-        if b is None:
+        pivot = self._pivot()
+        if pivot is None:
             return False
+        cx, cy, far = pivot[:3]
         A = self.t.aspect
-        radius = math.hypot((b[1] - b[0] + 1) * A, b[3] - b[2] + 1)
-        rx = int(radius / A) + 3
-        ry = int(radius) + 3
-        return not self.scene._broad.near(b[0] - rx, b[1] + rx, b[2] - ry, b[3] + ry, self.obj)
+        far += _SWEEP
+        rx = int(far / A) + 1
+        ry = int(far) + 1
+        return not self.scene._broad.near(math.floor(cx) - rx, math.ceil(cx) + rx, math.floor(cy) - ry, math.ceil(cy) + ry, self.obj)
+
+    def _turn_free(self, da, remaining):
+        pivot = self._pivot()
+        if pivot is None or pivot[3] < _JUMP_CELLS:
+            return 0
+        ox, rows = self.rowmask()[:2]
+        arc = (pivot[2] + 1.0) * math.radians(abs(da))
+        most = min(remaining, max(1, int(_JUMP / abs(da))))
+        if most < 2:
+            return 0
+        A = self.t.aspect
+        reach = arc * most + _NOISE
+        rx = int(reach / A) + 1
+        ry = int(reach) + 1
+        ys = rows.keys()
+        y0 = min(ys)
+        y1 = max(ys)
+        x0 = ox + min((m & -m).bit_length() - 1 for m in rows.values())
+        x1 = ox + max(m.bit_length() - 1 for m in rows.values())
+        obstacles = []
+        for obj2 in self.scene._broad.near(x0 - rx, x1 + rx, y0 - ry, y1 + ry, self.obj):
+            p2 = getattr(obj2, 'physics', None)
+            if p2 is None or p2.phantom or not p2.solid:
+                continue
+            obstacles.append(p2.rowmask()[:2])
+        if not obstacles:
+            return most
+        count = most
+        while count >= 2:
+            if self._clear_of(rows, ox, obstacles, arc * count + _NOISE, A, y0, y1):
+                return count
+            count //= 2
+        return 0
+
+    @staticmethod
+    def _clear_of(rows, ox, obstacles, reach, A, y0, y1):
+        rc = int(reach / A) + 1
+        rr = int(reach) + 1
+        base = min(ox, min(o[0] for o in obstacles)) - rc
+        grown = {}
+        for ox2, rows2 in obstacles:
+            shift = ox2 - base
+            for y, mask in rows2.items():
+                if y < y0 - rr or y > y1 + rr:
+                    continue
+                mask <<= shift
+                left = right = mask
+                covered = 0
+                while covered < rc:
+                    step = min(covered + 1, rc - covered)
+                    left |= left << step
+                    right |= right >> step
+                    covered += step
+                grown[y] = grown.get(y, 0) | left | right
+        if not grown:
+            return True
+        shift = ox - base
+        for y, mask in rows.items():
+            mask <<= shift
+            for yo in range(y - rr, y + rr + 1):
+                other = grown.get(yo)
+                if other and mask & other:
+                    return False
+        return True
+
+    def _turn_step(self):
+        step = self._rprecision
+        if not self._rauto:
+            return step
+        pivot = self._pivot()
+        if pivot is None:
+            return step
+        far = pivot[2]
+        if far < 0.5:
+            return max(step, 90.0)
+        return max(step, math.degrees(self.precision * self.t.aspect / far))
 
     def _lane(self, axis):
         ext = self._extent()
@@ -990,7 +1103,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self.avel *= self.adrag
         degrees = self.avel / actualmass
         if degrees:
-            pieces = max(1, int(math.ceil(abs(degrees) / self._rprecision)))
+            pieces = max(1, int(math.ceil(abs(degrees) / self._turn_step())))
             da = degrees / pieces
             check = self.solid and not self.phantom and not self.hitbox
             if pieces > 1 and (not check or self._turn_clear()):
@@ -999,7 +1112,18 @@ class physics(_change_callback, _lerpable, _keyed):
                     angle = angle + da
                 self.t.rotation = angle
                 pieces = 0
-            for _ in range(pieces):
+            remaining = pieces
+            while remaining > 0:
+                if check and remaining > 1:
+                    jump = self._turn_free(da, remaining)
+                    if jump:
+                        angle = self.t.rotation
+                        for _ in range(jump):
+                            angle = angle + da
+                        self.t.rotation = angle
+                        remaining -= jump
+                        continue
+                remaining -= 1
                 before = self.t.rotation
                 self.t.rotation = before + da
                 hit = self.overlaps() if check else None

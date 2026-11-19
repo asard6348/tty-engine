@@ -538,20 +538,21 @@ class transform(_change_callback, _lerpable, _keyed):
             local_pixels.add((gx + rx, ry + gy))
         return local_pixels
 
-    def _rotator(self, angle_degrees):
+    def _matrices(self, angle_degrees):
         angle = math.radians(angle_degrees)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
         if self._flip is None:
-            ma, mb, mc, md = cos_a, -sin_a, sin_a, cos_a
-            ja, jb, jc, jd = cos_a, sin_a, -sin_a, cos_a
-        else:
-            mirror = math.radians(2 * self._flip)
-            fa, fb, fc, fd = -math.cos(mirror), -math.sin(mirror), -math.sin(mirror), math.cos(mirror)
-            ma, mb = cos_a * fa - sin_a * fc, cos_a * fb - sin_a * fd
-            mc, md = sin_a * fa + cos_a * fc, sin_a * fb + cos_a * fd
-            ja, jb = fa * cos_a - fb * sin_a, fa * sin_a + fb * cos_a
-            jc, jd = fc * cos_a - fd * sin_a, fc * sin_a + fd * cos_a
+            return cos_a, -sin_a, sin_a, cos_a, cos_a, sin_a, -sin_a, cos_a
+        mirror = math.radians(2 * self._flip)
+        fa, fb, fc, fd = -math.cos(mirror), -math.sin(mirror), -math.sin(mirror), math.cos(mirror)
+        return (cos_a * fa - sin_a * fc, cos_a * fb - sin_a * fd,
+                sin_a * fa + cos_a * fc, sin_a * fb + cos_a * fd,
+                fa * cos_a - fb * sin_a, fa * sin_a + fb * cos_a,
+                fc * cos_a - fd * sin_a, fc * sin_a + fd * cos_a)
+
+    def _rotator(self, angle_degrees):
+        ma, mb, mc, md, ja, jb, jc, jd = self._matrices(angle_degrees)
         ASPECT = self.aspect
         floor = math.floor
         ident = self._flip is None and angle_degrees % 360 == 0
@@ -611,11 +612,13 @@ class transform(_change_callback, _lerpable, _keyed):
                     reach_y *= 2
                 placed[(-best[2], best[1])] = (ci, ri)
 
-            where = {src: cell for cell, src in placed.items()}
+            where = {(src[0] << 16) | src[1]: cell for cell, src in placed.items()}
+            steps_to = [((dx << 16) + dy, dx, dy) for dx, dy in _NEIGHBOURS_HALF]
+            lookup = where.get
             extra = {}
-            for (ci, ri), a in where.items():
-                for dx, dy in _NEIGHBOURS_HALF:
-                    b = where.get((ci + dx, ri + dy))
+            for key, a in where.items():
+                for delta, dx, dy in steps_to:
+                    b = lookup(key + delta)
                     if b is None:
                         continue
                     ex = b[0] - a[0]
@@ -623,21 +626,40 @@ class transform(_change_callback, _lerpable, _keyed):
                     if -1 <= ex <= 1 and -1 <= ey <= 1:
                         continue
                     steps = max(abs(ex), abs(ey))
+                    ci = key >> 16
+                    ri = key & 65535
                     for k in range(1, steps):
                         f = k / steps
                         cell = (floor(a[0] + ex * f + 0.5 + 1e-7), floor(a[1] + ey * f + 0.5 + 1e-7))
                         if cell not in placed and cell not in extra:
                             extra[cell] = (ci, ri) if f < 0.5 else (ci + dx, ri + dy)
 
-            around = {}
-            for group in (placed, extra):
-                for x, y in group:
-                    for dx, dy in _NEIGHBOURS4:
-                        c = (x + dx, y + dy)
-                        around[c] = around.get(c, 0) + 1
-            for (nx, ny), n in around.items():
-                if n < 4 or (nx, ny) in placed or (nx, ny) in extra:
+            occupied = list(placed)
+            occupied.extend(extra)
+            left = min(c[0] for c in occupied)
+            rows = {}
+            for x, y in occupied:
+                rows[y] = rows.get(y, 0) | (1 << (x - left))
+            holes = []
+            for y, mask in rows.items():
+                up = rows.get(y + 1)
+                down = rows.get(y - 1)
+                if not up or not down:
                     continue
+                gaps = ~mask & (mask << 1) & (mask >> 1) & up & down
+                while gaps:
+                    low = gaps & -gaps
+                    holes.append((left + low.bit_length() - 1, y))
+                    gaps ^= low
+            if holes:
+                order = {c: i for i, c in enumerate(occupied)}
+                ranked = []
+                for nx, ny in holes:
+                    first = min((order[(nx - dx, ny - dy)], k) for k, (dx, dy) in enumerate(_NEIGHBOURS4))
+                    ranked.append((first, nx, ny))
+                ranked.sort()
+                holes = [(nx, ny) for _, nx, ny in ranked]
+            for nx, ny in holes:
                 rx = (nx - cx) * ASPECT
                 ry = ny - cy
                 ci = floor((rx * ja + ry * jb) / ASPECT + cx + 0.5 + 1e-7)
@@ -774,6 +796,8 @@ class transform(_change_callback, _lerpable, _keyed):
         if entry is None:
             return False
         self.__dict__.update(zip(_MEMO_FIELDS, entry[1]))
+        if key[0] and self._rotmap is not None:
+            self.__dict__['_rotmap'] = self._rotmap[:5] + self._matrices(angle)[4:]
         self._rev += 1
         self._rotangle = angle
         self._rotcells_v = {}
