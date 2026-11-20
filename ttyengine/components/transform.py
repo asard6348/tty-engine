@@ -616,7 +616,7 @@ class transform(_change_callback, _lerpable, _keyed):
                     continue
                 px = -best[2]
                 py = best[1]
-                if ((px - fx) * ASPECT) ** 2 + (py - fy) ** 2 > _SHIFT ** 2:
+                if ((px - fx) * ASPECT) ** 2 + (py - fy) ** 2 > _SHIFT ** 2 + 1e-9:
                     rx = (px - cx) * ASPECT
                     ry = py - cy
                     sx = (rx * ja + ry * jb) / ASPECT + cx
@@ -630,7 +630,7 @@ class transform(_change_callback, _lerpable, _keyed):
                             if sample is None or sample[0] == ' ':
                                 continue
                             gap = ((mx + ox - sx) * ASPECT) ** 2 + (my + oy - sy) ** 2
-                            if gap <= _SHIFT ** 2 and (nearest is None or (gap, mx + ox, my + oy) < nearest):
+                            if gap <= _SHIFT ** 2 + 1e-9 and (nearest is None or (gap, mx + ox, my + oy) < nearest):
                                 nearest = (gap, mx + ox, my + oy)
                     if nearest is not None:
                         resampled[(px, py)] = (nearest[1], nearest[2])
