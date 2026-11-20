@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - Collision queries use a uniform-grid broadphase (`ttyengine.broadphase`) kept in sync with `scene.solids`, so each body only tests the solids near its path instead of every solid in the scene. Large bodies are tracked separately and never scanned cell by cell.
 - Axis movement jumps straight across free space: a body measures the clear distance to the nearest solid along its lane and only steps by `precision` near obstacles. Fast and huge bodies no longer pay for every sub-step, and contacts still resolve at the same positions.
