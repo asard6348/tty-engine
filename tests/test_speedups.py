@@ -355,10 +355,72 @@ class RotationRasterTests(unittest.TestCase):
                 out.append(hashlib.md5(repr(record).encode()).hexdigest()[:12])
         return out
 
-    EXPECTED = ['eb0e477e6926', 'e5a76a87f380', '8dac4af66411', 'af9daaba3768', '69161f214f38', 'afabdec219c5', 'e8098e42971f', '5dd17febfee4', 'eb631a133733', '11d8ee9e7642', 'e655fe1f73da', 'a7c08ea6d350', '65221fe3a4ec', 'b0cb10ce5feb', '85e213bb2b7b', '4c3c816cd1ad', '96735f47724b', '1545c8d4b3d1', 'f1f1a11f0b81', '5fde65bd3c2f', '0f410b018fd7', '1291b8f1775c', '322aec372fd5', '4300d46ae9ac', 'ffadc79c8090', '99ce2c658945', 'e331e00755a7', '88368537d364', '063da2975a88', '363b80fa5afe', '11890687b98b', '24320d72f90b', 'cf51f6e588ec', 'a170bb955918', '0f1cc730097b', 'deeb055a5165', '7a89cd743bbd', '4b076201a07e', '5ac7cad2b356', 'f7dd9d84db41', 'd2a13512bc75', '169dbdd724df', 'aed0c1441533', 'a2eed47ace03', 'e2b14c6ed413', 'ac9f7fbe5fff', '4179b63e3b71', '40a40f4c7bce', '9a490528f95c', '55788faa7f61', 'aef35e72e58e', '5deec36d864d', '5608e288dde8', '460f45577ea8', '9f468d6ecee3', 'cd0cb99ec7ab', '6adc24aa817d', '2c519daae3e3', '955ca61e0176', '84ebe3c31dea', 'dd5d9edd72b9', 'a859adde5ba9', '4cc63ce8ddcc', '1c436cf2bf40', '5f1106daf488', '6a45de74f61c', '5a9cf48452bc', '7fd1d203513a', '36b0abceef3a', 'a320bbfd35f8', 'cb81b849001c', '17078fc1654a']
+    ORIGINAL = ['eb0e477e6926', 'e5a76a87f380', '8dac4af66411', 'af9daaba3768', '69161f214f38', 'afabdec219c5', 'e8098e42971f', '5dd17febfee4', 'eb631a133733', '11d8ee9e7642', 'e655fe1f73da', 'a7c08ea6d350', '65221fe3a4ec', 'b0cb10ce5feb', '85e213bb2b7b', '4c3c816cd1ad', '96735f47724b', '1545c8d4b3d1', 'f1f1a11f0b81', '5fde65bd3c2f', '0f410b018fd7', '1291b8f1775c', '322aec372fd5', '4300d46ae9ac', 'ffadc79c8090', '99ce2c658945', 'e331e00755a7', '88368537d364', '063da2975a88', '363b80fa5afe', '11890687b98b', '24320d72f90b', 'cf51f6e588ec', 'a170bb955918', '0f1cc730097b', 'deeb055a5165', '7a89cd743bbd', '4b076201a07e', '5ac7cad2b356', 'f7dd9d84db41', 'd2a13512bc75', '169dbdd724df', 'aed0c1441533', 'a2eed47ace03', 'e2b14c6ed413', 'ac9f7fbe5fff', '4179b63e3b71', '40a40f4c7bce', '9a490528f95c', '55788faa7f61', 'aef35e72e58e', '5deec36d864d', '5608e288dde8', '460f45577ea8', '9f468d6ecee3', 'cd0cb99ec7ab', '6adc24aa817d', '2c519daae3e3', '955ca61e0176', '84ebe3c31dea', 'dd5d9edd72b9', 'a859adde5ba9', '4cc63ce8ddcc', '1c436cf2bf40', '5f1106daf488', '6a45de74f61c', '5a9cf48452bc', '7fd1d203513a', '36b0abceef3a', 'a320bbfd35f8', 'cb81b849001c', '17078fc1654a']
+    CURRENT = ['eb0e477e6926', 'e5a76a87f380', '992bedcb2feb', 'af9daaba3768', '69161f214f38', 'afabdec219c5', 'e8098e42971f', '711657edaa4b', 'eb631a133733', '11d8ee9e7642', 'e655fe1f73da', 'a7c08ea6d350', '65221fe3a4ec', 'b0cb10ce5feb', '85e213bb2b7b', '4c3c816cd1ad', '96735f47724b', '1545c8d4b3d1', 'f1f1a11f0b81', '5fde65bd3c2f', '0f410b018fd7', '1291b8f1775c', '322aec372fd5', '4300d46ae9ac', 'ffadc79c8090', '99ce2c658945', 'e331e00755a7', '88368537d364', '063da2975a88', '363b80fa5afe', '11890687b98b', '24320d72f90b', 'cf51f6e588ec', 'a170bb955918', '0f1cc730097b', 'deeb055a5165', '7a89cd743bbd', '4b076201a07e', '5ac7cad2b356', 'f7dd9d84db41', 'd2a13512bc75', '169dbdd724df', 'aed0c1441533', 'a2eed47ace03', 'e2b14c6ed413', 'ac9f7fbe5fff', '4179b63e3b71', '40a40f4c7bce', '9a490528f95c', '55788faa7f61', 'aef35e72e58e', '5deec36d864d', '5608e288dde8', '460f45577ea8', '9f468d6ecee3', 'cd0cb99ec7ab', '6adc24aa817d', '2c519daae3e3', '955ca61e0176', '84ebe3c31dea', 'dd5d9edd72b9', 'a859adde5ba9', '4cc63ce8ddcc', '1c436cf2bf40', '5f1106daf488', '6a45de74f61c', '5a9cf48452bc', '7fd1d203513a', '36b0abceef3a', 'a320bbfd35f8', 'cb81b849001c', '17078fc1654a']
+    CHANGED = [2, 7]
 
-    def test_rasterization_matches_the_original_algorithm(self):
-        self.assertEqual(self.fingerprints(), self.EXPECTED)
+    def test_rasterization_is_stable(self):
+        self.assertEqual(self.fingerprints(), self.CURRENT)
+
+    def test_only_far_displaced_glyphs_differ_from_the_original_algorithm(self):
+        same = [i for i in range(len(self.ORIGINAL)) if self.ORIGINAL[i] == self.CURRENT[i]]
+        self.assertEqual(sorted(set(range(len(self.ORIGINAL))) - set(same)), self.CHANGED)
+        self.assertGreater(len(same), len(self.ORIGINAL) * 0.9)
+
+    @staticmethod
+    def displacement(transform, rotation):
+        transform.rotation = rotation
+        m = transform._rotmap
+        aspect = transform.aspect
+        a = math.radians(transform.rotation)
+        c, s = math.cos(a), math.sin(a)
+        worst = 0.0
+        for (ci, ri), cells in transform._rotsrc.items():
+            u, v = (ci - m[0]) * aspect, ri - m[1]
+            fx = m[0] + (u * c - v * s) / aspect
+            fy = m[1] + (u * s + v * c)
+            for g in cells:
+                worst = max(worst, math.hypot((g[0] - fx) * aspect, g[1] - fy))
+        return worst
+
+    def test_dense_images_never_scatter_glyphs(self):
+        text = "\n".join("".join("#@%&"[(x * 7 + y * 3) % 4] for x in range(44)) for y in range(20))
+        for aspect in (0.3, 0.5, 1.0):
+            sc = make_scene()
+            o = sc.obj().create(text, 0, 0, dynamic=False, solid=False)
+            o.transform.aspect = aspect
+            for k in range(0, 360, 5):
+                self.assertLess(self.displacement(o.transform, k + 0.7), 2.5, 'aspect %s angle %s' % (aspect, k))
+
+    def test_the_relocation_limit_is_the_documented_constant(self):
+        self.assertEqual(sys.modules['ttyengine.components.transform']._SHIFT, 1.5)
+
+    def test_coloured_images_keep_every_glyph_near_its_place(self):
+        rng = random.Random(5)
+        chars = " .:-=+*#%@\u2591\u2592\u2593\u2588\u2580\u2584"
+        rows = []
+        for _ in range(20):
+            rows.append("".join("\x1b[38;2;%d;%d;%dm%s" % (rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255), rng.choice(chars[1:])) for _ in range(40)) + "\x1b[0m")
+        sc = make_scene()
+        o = sc.obj().create("\n".join(rows), 0, 0, dynamic=False, solid=False)
+        for k in range(1, 360, 4):
+            self.assertLess(self.displacement(o.transform, k + 0.3), 2.5)
+
+    def test_solid_blocks_keep_their_footprint_while_turning(self):
+        for w, h in ((24, 8), (14, 6), (10, 10)):
+            sc = make_scene()
+            o = sc.obj().create("\n".join(["#" * w] * h), 0, 0, dynamic=False, solid=False)
+            for k in range(0, 3600, 25):
+                o.transform.rotation = k / 10.0 + 0.037
+                self.assertGreaterEqual(len(o.transform._rotcells), w * h - 3)
+
+    def test_sparse_text_keeps_every_glyph(self):
+        sc = make_scene()
+        o = sc.obj().create("Hello, World!\nrotating text", 0, 0, dynamic=False, solid=False)
+        glyphs = {(x, y) for y, row in enumerate("Hello, World!\nrotating text".split("\n")) for x, ch in enumerate(row) if ch != " "}
+        for k in range(0, 360, 7):
+            o.transform.rotation = k + 0.4
+            self.assertEqual({src for src, cells in o.transform._rotsrc.items() if cells}, glyphs)
 
     def test_single_glyph_coefficients_follow_the_current_angle(self):
         sc = make_scene()

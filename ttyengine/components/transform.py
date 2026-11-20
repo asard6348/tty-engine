@@ -5,6 +5,7 @@ from ..ascii_styler import alphamark
 from .shared import _ALPHAS, _BGCODE, _NEIGHBOURS4, _NEIGHBOURS8, _NEIGHBOURS_HALF, _SGR, _argslen, _check_shadow, _contact_normal_cells, _contact_point_cells, _easing, _footprint, _mtv_cells, _styleprop
 from .inherit import _change_callback, _keyed, _lerpable
 
+_SHIFT = 1.5
 _ROTATIONS = {}
 _rotation_lock = threading.Lock()
 _MEMO_FIELDS = ('_plain_layout', '_text', '_rotmap', '_rotsize', '_rotorigin', 'vtext', '_ptext', '_pvx', '_pvy', '_pkey')
@@ -588,14 +589,15 @@ class transform(_change_callback, _lerpable, _keyed):
                     loose.append(spot)
                 else:
                     placed[cell] = (spot[2], spot[1])
+            resampled = {}
             for _, ri, ci, fx, fy, gx, gy in loose:
                 reach_x = 2
                 reach_y = 1
                 best = None
-                while best is None:
+                while best is None and reach_y <= 2:
                     for ny in range(gy - reach_y, gy + reach_y + 1):
                         for nx in range(gx - reach_x, gx + reach_x + 1):
-                            if (nx, ny) in placed:
+                            if (nx, ny) in placed or (nx, ny) in resampled:
                                 continue
                             base = ((nx - fx) * ASPECT) ** 2 + (ny - fy) ** 2 - 0.02 * (nx - fx) * ASPECT
                             if best is not None and round(base, 6) > best[0]:
@@ -610,12 +612,35 @@ class transform(_change_callback, _lerpable, _keyed):
                                 best = key
                     reach_x *= 2
                     reach_y *= 2
-                placed[(-best[2], best[1])] = (ci, ri)
+                if best is None:
+                    continue
+                px = -best[2]
+                py = best[1]
+                if ((px - fx) * ASPECT) ** 2 + (py - fy) ** 2 > _SHIFT ** 2:
+                    rx = (px - cx) * ASPECT
+                    ry = py - cy
+                    sx = (rx * ja + ry * jb) / ASPECT + cx
+                    sy = rx * jc + ry * jd + cy
+                    mx = floor(sx + 0.5 + 1e-7)
+                    my = floor(sy + 0.5 + 1e-7)
+                    nearest = None
+                    for oy in (-1, 0, 1):
+                        for ox in (-1, 0, 1):
+                            sample = source.get((mx + ox, my + oy))
+                            if sample is None or sample[0] == ' ':
+                                continue
+                            gap = ((mx + ox - sx) * ASPECT) ** 2 + (my + oy - sy) ** 2
+                            if gap <= _SHIFT ** 2 and (nearest is None or (gap, mx + ox, my + oy) < nearest):
+                                nearest = (gap, mx + ox, my + oy)
+                    if nearest is not None:
+                        resampled[(px, py)] = (nearest[1], nearest[2])
+                    continue
+                placed[(px, py)] = (ci, ri)
 
             where = {(src[0] << 16) | src[1]: cell for cell, src in placed.items()}
             steps_to = [((dx << 16) + dy, dx, dy) for dx, dy in _NEIGHBOURS_HALF]
             lookup = where.get
-            extra = {}
+            extra = dict(resampled)
             for key, a in where.items():
                 for delta, dx, dy in steps_to:
                     b = lookup(key + delta)
