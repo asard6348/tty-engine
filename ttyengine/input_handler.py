@@ -1248,12 +1248,11 @@ class inp():
                 return
             self._mouse_wheel += 1 if button == 0 else -1
             self._fire_mouse('wheel', x, y, self._mouse_wheel)
+        elif is_motion:
+            self._fire_mouse('move', x, y, button)
         elif action == 'M':
-            if is_motion:
-                self._fire_mouse('move', x, y, button)
-            else:
-                self._mouse_held.add(button)
-                self._fire_mouse('click', x, y, button)
+            self._mouse_held.add(button)
+            self._fire_mouse('click', x, y, button)
         elif action == 'm':
             self._mouse_held.discard(button)
             self._fire_mouse('release', x, y, button)
@@ -1261,7 +1260,14 @@ class inp():
     def _handle_x10(self, b, x, y):
         self._mouse_x, self._mouse_y = x, y
         btn = b & 3
-        if btn == 3:
+        if b & 64:
+            if btn > 1:
+                return
+            self._mouse_wheel += 1 if btn == 0 else -1
+            self._fire_mouse('wheel', x, y, self._mouse_wheel)
+        elif b & 32:
+            self._fire_mouse('move', x, y, btn)
+        elif btn == 3:
             self._mouse_held.clear()
             self._fire_mouse('release', x, y, None)
         else:
