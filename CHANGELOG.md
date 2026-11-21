@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- Fixed: mouse movement without a pressed button was reported as a `release` event by terminals that send it in the legacy X10 encoding or with an `m` final in the SGR encoding, so `onmouse('move', ...)` never fired and code that draws or aims while a key is held saw no movement. Motion is now recognised from its motion bit before the press or release is considered, the X10 parser also reports `move` for dragging and handles the wheel, and `click` and `release` are no longer fired for motion.
+
 ## 0.2.1
 
 - Collision queries use a uniform-grid broadphase (`ttyengine.broadphase`) kept in sync with `scene.solids`, so each body only tests the solids near its path instead of every solid in the scene. Large bodies are tracked separately and never scanned cell by cell.
@@ -31,7 +35,6 @@
 - New `handle.wait(duration, frames=False)` suspends the `start`, `update` or `final` function that calls it and continues from the next line, while the engine and the handle's other functions keep running. `handle.until(condition, timeout=None, frames=False)` does the same until a condition is true and returns whether it was met. Outside such a function `wait` sleeps and `until` raises `RuntimeError`. Functions that never mention `wait` or `until` run exactly as before.
 - New `handle.after(delay, fn, frames=False)` and `handle.every(interval, fn, frames=False, delay=None)` run a callback later or repeatedly from the frame loop. Both return a `Task`, which can also be created directly with `Task(handle, fn, delay, interval, frames)` and is exported as `ttyengine.Task`. `task.cancel()` (or `world.cancel(task)`) stops a timer or a function suspended in `wait` or `until`, `handle.tasks` lists a handle's live tasks, and `handle.cancel()` cancels them all.
 - `pause` on `Handle`, `World` and `Session`, and `pausephysics` and `pauserendering` on `World` and `Session`, are now properties that store a bool. While a handle, its world or the session is paused, the time of its waits and timers stands still.
-- Fixed: mouse movement without a pressed button was reported as a `release` event by terminals that send it in the legacy X10 encoding or with an `m` final in the SGR encoding, so `onmouse('move', ...)` never fired and code that draws or aims while a key is held saw no movement. Motion is now recognised from its motion bit before the press or release is considered, the X10 parser also reports `move` for dragging and handles the wheel, and `click` and `release` are no longer fired for motion.
 
 ## 0.2.0
 
