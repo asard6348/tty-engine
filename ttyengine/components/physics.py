@@ -473,6 +473,21 @@ class physics(_change_callback, _lerpable, _keyed):
         if not any(g is other for g in self.obj._ghosts):
             self.obj._ghosts.append(other)
 
+    def unghost(self, other):
+        pairs = [(self.obj, other)]
+        if hasattr(other, '_ghosts'):
+            pairs.append((other, self.obj))
+        removed = False
+        for owner, partner in pairs:
+            held = owner.__dict__.get('_ghostrefs')
+            if held and id(partner) in held:
+                continue
+            kept = [g for g in owner._ghosts if g is not partner]
+            if len(kept) != len(owner._ghosts):
+                owner._ghosts[:] = kept
+                removed = True
+        return removed
+
     def _spans(self, text, hitbox):
         cached = self._span_cache
         if cached is not None and cached[1] is text and cached[0] == hitbox:

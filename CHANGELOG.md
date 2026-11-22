@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4
+
+- New `physics.unghost(other)` undoes `physics.ghost(other)`, so two bodies that were made to pass through each other collide again. It removes the entry from both objects, because a ghost set on either one disables the collision, and accepts the same object or function that was passed to `ghost`. Pairs that a joint keeps apart are left ghosted. It returns `True` when something was removed.
+
 ## 0.2.3
 
 - Fixed: setting an object's text to an empty string left its old glyphs on screen. The compositor skipped objects with empty text, so the cells they had occupied were never redrawn; they are now cleared.

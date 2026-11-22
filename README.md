@@ -440,6 +440,14 @@ player.physics.ontouch(entered)
 
 `ontouch` fires when one body moves into another. A body that is only resting against, or pushed against by, another body does not trigger it, so use `touch`, `sides` and `grounded` for that case.
 
+**Letting bodies pass through each other.** `ghost(other)` stops two bodies from colliding, and `unghost(other)` makes them collide again. `other` is an object, or a function that is called with the other object (and, if it takes a second parameter, the overlapping cells) and returns `True` while the pair should pass through each other. Ghosting works in both directions, so `unghost` clears it whichever of the two bodies it was set on, and it returns `True` when something was removed. Pairs that a joint keeps apart stay ghosted, and a function is removed by passing the same function again.
+
+```python
+bullet.physics.ghost(shooter)       # the bullet passes through the shooter
+...
+bullet.physics.unghost(shooter)     # now it collides with the shooter again
+```
+
 **Headings and bouncing.** `transform.forward` and `transform.bounce` use the object's `rotation` as the heading unless you pass `angle=`. Assigning the result to `rotation` also turns the sprite and its collision cells, so keep a separate heading and pass it as `angle` when the object should not rotate:
 
 ```python
