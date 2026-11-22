@@ -1,5 +1,3 @@
-<a id="top"></a>
-
 <div align="center">
 
 # TTY Engine
@@ -22,6 +20,7 @@ Build animated, interactive scenes out of text, with collisions, joints, lightin
 [Examples](#examples) ·
 [Configuration](#configuration) ·
 [Requirements](#requirements) ·
+[Changelog](CHANGELOG.md) ·
 [License](#license)
 
 </div>
@@ -67,16 +66,12 @@ If a preview needs a longer caption, add it in the cell under the image.
     </td>
   </tr>
 </table>
-
-<sub>[↑ Back to top](#top)</sub>
 -->
 
 ## Installation
 
 <details open>
 <summary><b>Install from PyPI</b></summary>
-
-&nbsp;
 
 ```sh
 pip install ttyengine
@@ -96,30 +91,32 @@ cd tty-engine
 pip install -e .
 ```
 
+The test suite runs with the standard library only:
+
+```sh
+python -m unittest discover -s tests
+```
+
+`ttyengine.__version__` reports the installed version.
+
 </details>
 
 <details>
 <summary><b>Optional extras</b></summary>
 
-&nbsp;
-
 | Extra | Command | What it adds |
 |---|---|---|
-| `keyboard` | `pip install "ttyengine[keyboard]"` | Low-level key press and release tracking, which is what makes `inp.held()` accurate. It needs root on Linux and macOS. |
+| `keyboard` | `pip install "ttyengine[keyboard]"` | Key press and release tracking through the `keyboard` package, which makes `inp.held()` accurate. It needs root on Linux and macOS and is skipped over SSH. |
 | `ffmpeg` | `pip install "ttyengine[ffmpeg]"` | A bundled ffmpeg for decoding compressed audio formats and image formats beyond PNG, JPEG, GIF, BMP and PNM (WebP, TIFF, TGA, AVIF, ...). An ffmpeg already on your `PATH` works too. |
 
-Without the `keyboard` package the engine falls back to terminal input. See [Input](#usage-guide) in the usage guide for what that changes.
+Without the `keyboard` package the engine tries the kitty keyboard protocol, then its own operating-system key tracking, then plain terminal input. See [Input](#usage-guide) in the usage guide for what that changes.
 
 </details>
-
-<sub>[↑ Back to top](#top)</sub>
 
 ## Quick start
 
 <details open>
 <summary><b>Hello, terminal</b></summary>
-
-&nbsp;
 
 ```python
 from ttyengine import start
@@ -144,8 +141,6 @@ Run it, and press `x` to exit. The text appears five columns from the left and t
 <details>
 <summary><b>A function works too</b></summary>
 
-&nbsp;
-
 A launched handle can be a plain function. It is treated as the handle's `start` method:
 
 ```python
@@ -159,14 +154,10 @@ start(main)
 
 </details>
 
-<sub>[↑ Back to top](#top)</sub>
-
 ## How it works
 
 <details>
 <summary><b>Structure: simulation, session, world, scene</b></summary>
-
-&nbsp;
 
 ```mermaid
 flowchart TD
@@ -193,8 +184,6 @@ flowchart TD
 <details>
 <summary><b>The frame loop</b></summary>
 
-&nbsp;
-
 Every frame, each active world goes through the same steps:
 
 1. **`update`** is called on every handle, highest `priority` first.
@@ -210,8 +199,6 @@ The frame rate is controlled per scene through `scene.framerate` (60 by default,
 
 <details>
 <summary><b>Coordinates</b></summary>
-
-&nbsp;
 
 - The origin `(0, 0)` is the **top-left** corner of the view.
 - `x` grows to the **right**.
@@ -229,8 +216,6 @@ Mouse positions are reported in terminal cells counted from the top-left. With t
 
 <details>
 <summary><b>Objects and components</b></summary>
-
-&nbsp;
 
 An object starts out empty. `create()` looks at its keyword arguments, attaches the components that own them, and passes each value on. `transform` is always attached; the others are added the first time you use one of their settings.
 
@@ -265,8 +250,6 @@ scene.obj().create('+', 5, -2, pen={'char': '*', 'radius': 2})
 <details>
 <summary><b>Handles and their parameters</b></summary>
 
-&nbsp;
-
 A handle may define any of `start`, `update` and `final`. Each one receives only the arguments it asks for, matched by parameter name:
 
 | Name | Value |
@@ -296,8 +279,6 @@ class main:
 
 <details>
 <summary><b>Waiting, timers and tasks</b></summary>
-
-&nbsp;
 
 A handle can pause its own code, or schedule code to run later, without stopping anything else. The frame loop, physics, rendering, input and the handle's other functions keep running. Request the `handle` argument like any other (see the table above).
 
@@ -351,14 +332,10 @@ Things to know:
 
 </details>
 
-<sub>[↑ Back to top](#top)</sub>
-
 ## Usage guide
 
 <details>
 <summary><b>Creating, changing and removing objects</b></summary>
-
-&nbsp;
 
 ```python
 obj = scene.obj().create('hello', 10, -4, fg='cyan')
@@ -377,8 +354,6 @@ obj.discard()                 # remove it from the scene
 
 <details>
 <summary><b>Keyboard and mouse input</b></summary>
-
-&nbsp;
 
 Input lives on `session.inp`. Callbacks receive as many of their possible arguments as their signature accepts, so a callback can take none, some or all of them.
 
@@ -404,18 +379,23 @@ Key names include letters, digits, `up`, `down`, `left`, `right`, `space`, `esc`
 
 Callbacks can be removed again with `offpress`, `offrelease`, `offkey`, `offmouse` and `stop_all`.
 
-**How accurate `held()` is depends on the terminal.** The engine uses the best tier available:
+Mouse state is also available directly: `inp.mouse` is the current position, `inp.mouseheld(button)` tells whether a button is down (`0` left, `1` middle, `2` right) and `inp.wheel` is the last wheel step (`1` up, `-1` down, `0` none). `onmouse('move', ...)` fires for motion with or without a button held.
 
-1. The `keyboard` package, which reports real presses and releases.
+**How accurate `held()` and `onrelease()` are depends on the input backend.** The engine uses the first one that works:
+
+1. The `keyboard` package, which reports real presses and releases. It needs root on Linux and macOS, and is skipped over SSH.
 2. The kitty keyboard protocol, in terminals that support it, which does the same.
-3. Plain terminal input otherwise. Terminals do not send release events, so a key counts as held while it keeps repeating. Pass `delay=` to `held()` or `onrelease()` to control how long a key stays held after its last repeat.
+3. Operating-system key tracking built into the engine, which needs no extra package and also reports real presses and releases: evdev on Linux (read access to `/dev/input`, through root or the `input` group), a low-level keyboard hook on Windows, and an event tap on macOS (it needs Input Monitoring permission). It is skipped over SSH.
+4. Plain terminal input otherwise. Terminals do not send release events, so a key counts as held while it keeps repeating. Pass `delay=` to `held()` or `onrelease()` to control how long a key stays held after its last repeat.
+
+`inp.backend` reports the one in use: `'keyboard'`, `'kitty'`, `'evdev'`, `'kernel'` (Windows and macOS) or `'terminal'`. To force a backend, pass `backend=` to `Session()` (`'auto'`, `'keyboard'`, `'kitty'`, `'kernel'` or `'evdev'`, or `'terminal'`); a forced backend that is unavailable raises `RuntimeError`.
+
+Backends with real key events repeat a held key's `onpress` callbacks the way a terminal would: first after `repeatdelay` seconds (default `0.5`), then `repeatrate` times per second (default `30`). Both are `Session()` options, and a `repeatrate` of `0` turns repeating off.
 
 </details>
 
 <details>
 <summary><b>Physics</b></summary>
-
-&nbsp;
 
 Giving an object any physics setting makes it a physics body. By default bodies are `dynamic` (they move) and `solid` (they block other solids).
 
@@ -434,6 +414,8 @@ floor = scene.obj().create('#' * 40, 0, -10, dynamic=False)   # immovable
 | `phantom` | Lets other bodies pass through, while still reporting overlaps. |
 | `bounciness`, `friction` | Surface behavior on contact. |
 | `mass` | Defaults to the number of visible characters. |
+| `precision` | The largest distance, in cells, a body moves per sub-step while checking for collisions. Defaults to `scene.precision` (`0.5`). Free space is crossed in one jump, so it only costs time near obstacles. |
+| `rprecision` | How coarsely a rotating body is tested for collisions, in degrees per piece. Automatic by default: a piece moves the outermost cell by at most `precision` cells, and never less than `3` degrees. Assign a number (for example `rprecision=3`) to pin it, or `None` to return to automatic. |
 | `gravity` | An `(x, y)` pair that overrides the scene's gravity for this object. |
 | `drag` | Overrides the scene's drag for this object. |
 | `bouncethreshold` | Impact speed below which a collision does not bounce. Defaults to `scene.bouncethreshold` (`0.25`); set it to `0` to let shallow impacts bounce. When two bodies disagree, the lower value wins. |
@@ -472,8 +454,6 @@ dx, dy = ball.transform.forward(1, angle=heading)
 
 <details>
 <summary><b>Humanoid figures</b></summary>
-
-&nbsp;
 
 A `humanoid` component turns an object into the root of a jointed, posable figure. A figure is a graph of parts: every part is built from the text you give it, one part has no parent and becomes the object itself, and every other part hangs off a parent through a joint. Nothing is built in, so the same component makes people, spiders, robots or trees.
 
@@ -529,8 +509,6 @@ figure.ragdoll()                         # releases every joint; figure.ragdoll(
 <details>
 <summary><b>Camera</b></summary>
 
-&nbsp;
-
 ```python
 scene.camx = 40                       # move the view
 scene.follow(hero)                    # center the view on an object
@@ -544,8 +522,6 @@ Call `follow()` from `final` so the camera sees the object's position after phys
 
 <details>
 <summary><b>Text, colors, fonts and images</b></summary>
-
-&nbsp;
 
 `session.style()` returns an ANSI-styled string that you can pass to `create()` like any other text. The engine reads the colors back out of it, so styled text keeps its layout.
 
@@ -578,8 +554,6 @@ Per-object appearance is set on the transform: `fg`, `bg`, `alpha`, `bgalpha`, `
 <details>
 <summary><b>Fades and smooth movement</b></summary>
 
-&nbsp;
-
 ```python
 obj.transform.fade(0, time=1)                          # fade out over one second
 obj.transform.fade(0, time=1, discard=True)            # ...and remove it afterwards
@@ -600,8 +574,6 @@ def update(self):
 <details>
 <summary><b>Sound</b></summary>
 
-&nbsp;
-
 Audio goes through `session.sound`, which every handle can also receive as the `sound` parameter. Files are decoded and cached on first use, and the engine can synthesize simple sounds without any audio files.
 
 ```python
@@ -621,8 +593,6 @@ voice.stop(fade=1.0)
 
 <details>
 <summary><b>Several worlds and sessions</b></summary>
-
-&nbsp;
 
 Each world has its own scene and handles, and the session composites its worlds into one frame. This is useful for a HUD layered over a game, or a menu with its own camera.
 
@@ -647,8 +617,6 @@ The `Simulation` returned by `start()` exposes `sessions`, `worlds`, `handles` a
 
 <details>
 <summary><b id="regions">Regions: one line, one column, a panel or inline output</b></summary>
-
-&nbsp;
 
 The engine does not have to own the whole terminal. A session draws inside a **region** of the screen, and every world can draw inside a **region** of that. This is how you use TTY Engine for a status line, a progress bar, a sidebar or a full text UI, not only for games.
 
@@ -731,8 +699,6 @@ The older names keep working: `termxoffset`, `termyoffset`, `termwidth` and `ter
 <details>
 <summary><b>Networking: UDP, TCP, servers and peer-to-peer</b></summary>
 
-&nbsp;
-
 `ttyengine.net` shares a running simulation between processes over TCP, UDP or both, using only the standard library. A `Node` is one participant: it can listen (`host`), connect (`connect`) or do both, so the same code builds a dedicated server, a client, or a peer-to-peer mesh. A `Sync` shares engine state over a node.
 
 ```python
@@ -777,16 +743,12 @@ sync.attach(session)                 # pump the network inside the frame loop
 
 </details>
 
-<sub>[↑ Back to top](#top)</sub>
-
 ## Examples
 
 Every example below is a complete program. Press `x` or close the terminal to exit where an exit key is set.
 
 <details open>
 <summary><b>Move a character with the arrow keys</b></summary>
-
-&nbsp;
 
 ```python
 from ttyengine import start
@@ -812,8 +774,6 @@ start(main)
 <details>
 <summary><b>A bouncing ball</b></summary>
 
-&nbsp;
-
 ```python
 from ttyengine import start
 
@@ -830,8 +790,6 @@ start(main)
 
 <details>
 <summary><b>Text that follows the mouse</b></summary>
-
-&nbsp;
 
 The handler moves the object by the distance between its center and the mouse. Assigning an absolute position would not work here, because `center()` already includes the object's current position. Pass `local=True` to `center()` or `extent()` to get the values relative to the object's own position instead.
 
@@ -858,8 +816,6 @@ start(main)
 <details>
 <summary><b>A trigger zone with a sound</b></summary>
 
-&nbsp;
-
 ```python
 from ttyengine import start
 
@@ -883,8 +839,6 @@ start(main)
 <details>
 <summary><b>A styled title that fades out</b></summary>
 
-&nbsp;
-
 ```python
 from ttyengine import start
 
@@ -900,8 +854,6 @@ start(main)
 
 <details>
 <summary><b>A camera that follows the player</b></summary>
-
-&nbsp;
 
 ```python
 from ttyengine import start
@@ -925,14 +877,10 @@ start(main)
 
 </details>
 
-<sub>[↑ Back to top](#top)</sub>
-
 ## Configuration
 
 <details>
 <summary><b>Session settings</b></summary>
-
-&nbsp;
 
 Settings are passed to `start()`, `Session()` or `run()`, and are stored as attributes on the session, so many of them can also be changed while it is running.
 
@@ -964,13 +912,12 @@ Constructor-only options on `Session()`:
 | `style=False` | Disable the styling layer. |
 | `watchfocus`, `trackmotion` | Control whether terminal focus changes and mouse motion are tracked. |
 | `ffmpeg` | Path to an ffmpeg executable for audio and image decoding. It applies even with `sound=False`. |
+| `backend`, `repeatdelay`, `repeatrate` | Which keyboard backend to use and how a held key repeats. See [Keyboard and mouse input](#usage-guide). |
 
 </details>
 
 <details>
 <summary><b>Manual setup</b></summary>
-
-&nbsp;
 
 Build the objects yourself when you need `Session` options such as `sound=False`, or several sessions and worlds:
 
@@ -987,8 +934,6 @@ session.run()
 
 <details>
 <summary><b>Error reporting</b></summary>
-
-&nbsp;
 
 An uncaught error inside the engine (a handle, a callback or the main loop) restores the terminal, prints the traceback to `stderr` and exits with code 1. Colors and screen clearing are used only when `stderr` is a terminal, so redirected output stays plain.
 
@@ -1011,8 +956,6 @@ errors.attempt(risky, fatal=False)
 <details>
 <summary><b>Colors and ANSI wrapping</b></summary>
 
-&nbsp;
-
 Set the `NO_COLOR` environment variable to any non-empty value to strip color codes from everything the engine writes. Attributes such as bold are kept. `start(no_color=True)`, `Session(no_color=True)` and `Compositor(no_color=True)` do the same per instance, and any value other than `None` overrides the environment.
 
 Every ANSI code can be surrounded by a prefix and a suffix, both when the engine writes it and when it reads it from your text. Set them with the `TTYENGINE_ANSI_PREFIX` and `TTYENGINE_ANSI_SUFFIX` environment variables (backslash escapes such as `\001` are decoded) or in code:
@@ -1027,19 +970,13 @@ A value of `None` falls back to its environment variable, and both are empty by 
 
 </details>
 
-<sub>[↑ Back to top](#top)</sub>
-
 ## Requirements
 
 - **Python 3.8 or newer.**
 - **Windows, macOS or Linux**, in a terminal that supports ANSI escape sequences. Truecolor and the kitty keyboard protocol are used when the terminal offers them.
 - **No required packages.** The optional [`keyboard` and `ffmpeg` extras](#installation) add accurate key tracking, compressed-audio decoding and more image formats.
-- The project is in **alpha**, so APIs may still change.
-
-<sub>[↑ Back to top](#top)</sub>
+- The project is in **alpha**, so APIs may still change. See the [changelog](CHANGELOG.md) for what changed in each release.
 
 ## License
 
 TTY Engine is licensed under the [Mozilla Public License 2.0](LICENSE). Bundled FIGlet fonts and code are covered by `ttyengine/figlet-LICENSE.txt`.
-
-<sub>[↑ Back to top](#top)</sub>
