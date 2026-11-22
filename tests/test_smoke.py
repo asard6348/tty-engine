@@ -93,6 +93,14 @@ class RenderTests(unittest.TestCase):
         world.scene.obj().create("hello", 2, -2)
         self.assertIn("hello", ansi.strip_color(world.scene.render(full=True)))
 
+    def test_clearing_text_erases_old_glyphs(self):
+        world = make_session().World()
+        t = world.scene.obj().create("hello", 2, -2).transform
+        world.scene.render(full=True)
+        t.text = ""
+        self.assertIn("     ", ansi.strip_color(world.scene.render()))
+        self.assertNotIn("hello", ansi.strip_color(world.scene.render(full=True)))
+
 
 class AnsiTests(unittest.TestCase):
     def test_strip_color_removes_colors_keeps_bold(self):

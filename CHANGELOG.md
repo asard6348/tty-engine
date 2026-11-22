@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- Fixed: setting an object's text to an empty string left its old glyphs on screen. The compositor skipped objects with empty text, so the cells they had occupied were never redrawn; they are now cleared.
+
 ## 0.2.2
 
 - Fixed: mouse movement without a pressed button was reported as a `release` event by terminals that send it in the legacy X10 encoding or with an `m` final in the SGR encoding, so `onmouse('move', ...)` never fired and code that draws or aims while a key is held saw no movement. Motion is now recognised from its motion bit before the press or release is considered, the X10 parser also reports `move` for dragging and handles the wheel, and `click` and `release` are no longer fired for motion.

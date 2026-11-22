@@ -527,7 +527,7 @@ class Compositor:
                     state = known.get(t)
                     if state is not None and same and state[4] == t._rev:
                         continue
-                    if not t.rtext:
+                    if not t.rtext and (state is None or not state[0][2]):
                         continue
                     if state is None:
                         state = known[t] = [(0, 0, '', 0, 0), None, [], 0, -1, 0]
