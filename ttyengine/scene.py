@@ -1,4 +1,5 @@
 import inspect
+import math
 _ARGS = {}
 def _argslen(cb):
     try:
@@ -23,6 +24,8 @@ def wrap_property(component_attr: str, prop: property) -> property:
     return property(fget, fset if prop.fset else None)
 
 from . import ansi
+from . import axes as _ax
+from . import sprite as _sprite
 from . import region as _regions
 from . import components as _components
 from .ascii_styler import Styler
@@ -96,6 +99,16 @@ def _comname(c):
     return c.__name__ if inspect.isclass(c) else type(c).__name__
 
 _names = frozenset(_cls.__name__ for _cls in _allcomps)
+
+
+def _note(com, key, value):
+    changed = getattr(com, '_changed', None)
+    if not changed:
+        changed = com._changed = {key: value}
+    else:
+        changed[key] = value
+    return changed
+
 _versions = [0]
 
 
@@ -141,7 +154,9 @@ class obj:
             raise TypeError('object settings are looked up by name, not by %s' % type(key).__name__)
         comp = _attrs.get(key)
         if comp is None:
-            raise KeyError(key)
+            comp = self._extra(key)
+            if comp is None:
+                raise KeyError(key)
         found = getattr(self, comp.__name__, None)
         if found is None:
             raise KeyError('%s belongs to the %s component, which this object does not have' % (key, comp.__name__))
@@ -159,6 +174,18 @@ class obj:
         except KeyError:
             return False
         return True
+
+    def _extra(self, key, value=None):
+        if key == 'sprite':
+            return _attrs['x'] if isinstance(value, _sprite.sprite) else None
+        if key == 'projected':
+            return _attrs['x'] if isinstance(value, bool) else None
+        index = self.scene._axes.index
+        if key in index:
+            return None if key in _attrs else _attrs['x']
+        if key.endswith('vel') and key[:-3] in index:
+            return None if key in _attrs else _attrs['xvel']
+        return None
 
     def add(self, com, **kwargs):
         kwargs, _ = _expand(kwargs)
@@ -186,7 +213,11 @@ class obj:
                     else:
                         ch.update({k: v})
             elif k not in _attrs:
-                setattr(self, k, v)
+                own = self._extra(k, v)
+                if own is None:
+                    setattr(self, k, v)
+                elif own is comp:
+                    ch = _note(compins, k, v)
 
         compinsattr = comp.__name__
         setattr(self, compinsattr, compins)
@@ -217,7 +248,12 @@ class obj:
                         else:
                             ch.update({k: v})
                 elif k not in _attrs:
-                    setattr(self, k, v)
+                    own = self._extra(k, v)
+                    if own is None:
+                        setattr(self, k, v)
+                    elif own is type(c):
+                        setattr(c, k, v)
+                        ch = _note(c, k, v)
 
     def kwargs(self, coms=None):
         if coms is None:
@@ -270,7 +306,11 @@ class obj:
             if comp:
                 self._ensure(comp, kwargs, processed)
             else:
-                setattr(self, k, kwargs[k])
+                own = self._extra(k, kwargs[k])
+                if own is None:
+                    setattr(self, k, kwargs[k])
+                else:
+                    self._ensure(own, kwargs, processed)
 
         for comp in forced:
             self._ensure(comp, kwargs, processed)
@@ -363,9 +403,13 @@ class Scene:
         self.aspect = 0.5
         self.lights = []
         self.ambient = 1.0
+        self._axes = _ax.DEFAULT
         self._camx = 0
         self._camy = 0
+        self._camext = [0]
         self._camrotation = 0.0
+        self._camturn = {}
+        self._perspective = 0.0
         self._bgcolor = (0, 0, 0)
         self._fade = None
         self._ticks = 0
@@ -609,6 +653,45 @@ class Scene:
             self._fire(self._oncamcb, 'y', old)
 
     @property
+    def cam(self):
+        return (self._camx, self._camy) + tuple(self._camext)
+    @cam.setter
+    def cam(self, value):
+        value = list(value)
+        names = self._axes.names
+        if not 2 <= len(value) <= len(names):
+            raise ValueError('cam takes between 2 and %d values, got %d' % (len(names), len(value)))
+        self.camx = value[0]
+        self.camy = value[1]
+        ext = self._camext
+        for i, val in enumerate(value[2:]):
+            old = ext[i]
+            ext[i] = val
+            if val != old:
+                self._fire(self._oncamcb, names[i + 2], old)
+
+    @property
+    def axes(self):
+        return self._axes
+    @axes.setter
+    def axes(self, value):
+        new = _ax.get(value)
+        if new is self._axes:
+            return
+        self._axes = new
+        n = new.n
+        ext = self._camext
+        if len(ext) < n - 2:
+            ext.extend([0] * (n - 2 - len(ext)))
+        else:
+            del ext[n - 2:]
+        for o in self.objs:
+            for name in ('transform', 'physics'):
+                com = getattr(o, name, None)
+                if com is not None:
+                    com._fit(n)
+
+    @property
     def camrotation(self):
         return self._camrotation
     @camrotation.setter
@@ -617,6 +700,75 @@ class Scene:
         self._camrotation = float(value) % 360.0
         if self._camrotation != old:
             self._fire(self._oncamcb, 'rotation', old)
+
+    def _turn(self, plane, value, name):
+        old = self._camturn.get(plane, 0.0)
+        value = float(value) % 360.0
+        if value:
+            self._camturn[plane] = value
+        else:
+            self._camturn.pop(plane, None)
+        if value != old:
+            self._fire(self._oncamcb, name, old)
+
+    @property
+    def camxrotation(self):
+        return self._camturn.get((1, 2), 0.0)
+    @camxrotation.setter
+    def camxrotation(self, value):
+        self._turn((1, 2), value, 'xrotation')
+
+    @property
+    def camyrotation(self):
+        return self._camturn.get((2, 0), 0.0)
+    @camyrotation.setter
+    def camyrotation(self, value):
+        self._turn((2, 0), value, 'yrotation')
+
+    @property
+    def camzrotation(self):
+        return self.camrotation
+    @camzrotation.setter
+    def camzrotation(self, value):
+        self.camrotation = value
+
+    def camturn(self, a, b, value=None):
+        i = _ax.NAMES.index(a) if isinstance(a, str) else a
+        j = _ax.NAMES.index(b) if isinstance(b, str) else b
+        if i == j or not (0 <= i < self._axes.n and 0 <= j < self._axes.n):
+            raise ValueError('a camera rotation needs two different axes of the scene')
+        if (i, j) == (0, 1):
+            if value is None:
+                return self.camrotation
+            self.camrotation = value
+            return None
+        if value is None:
+            return self._camturn.get((i, j), 0.0)
+        self._turn((i, j), value, _ax.NAMES[i] + _ax.NAMES[j] + 'rotation')
+        return None
+
+    @property
+    def perspective(self):
+        return self._perspective
+    @perspective.setter
+    def perspective(self, value):
+        value = float(value or 0.0)
+        if value < 0:
+            raise ValueError('perspective is a focal distance and cannot be negative')
+        old = self._perspective
+        self._perspective = value
+        if value != old:
+            self._fire(self._oncamcb, 'perspective', old)
+
+    def projected(self):
+        return bool(self._perspective or self._camturn)
+
+    def _planes(self):
+        found = [(0, 1, math.cos(math.radians(self._camrotation)), math.sin(math.radians(self._camrotation)))] if self._camrotation else []
+        for (i, j), angle in sorted(self._camturn.items()):
+            rad = math.radians(angle)
+            found.append((i, j, math.cos(rad), math.sin(rad)))
+        return found
 
     def focus(self, target):
         t = getattr(target, 'transform', target)

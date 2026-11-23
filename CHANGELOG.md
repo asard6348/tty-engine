@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- New scene axes. `scene.axes` is a tuple of axis names that defaults to `('x', 'y', 'z')`; set it to a count or to `('x', 'y', 'z', 'w', 'a4', ...)` to give every object more positions. `x` and `y` keep their meaning, `z` stays the draw order, and the extra axes are free: they never change what is drawn or what collides. Objects expose them as `transform.w`, `transform.a4`, ... and as a whole through `transform.pos`, and `create(..., w=4)` sets them when the scene has the axis. Physics gets matching `zvel`, `wvel`, ... and `physics.vel`, and the non-solid axes drift under velocity, drag and a gravity tuple with more than two values. `scene.cam` is the camera as a vector over the same axes, with `camx` and `camy` as its first two entries. Scenes that never touch any of this render, collide and sync exactly as before.
+- Changed: writing `transform.z` now fires `onchange` with `'z'` like `x` and `y` do. Callbacks that ignore attributes they do not know are unaffected.
+- Changed: `physics.gravity` also accepts one extra value per extra axis.
+- New `Styler.scale(text, x, y=None)` resizes styled text by independent factors, repeating cells to enlarge and keeping the visible cell of each block to shrink, with styles intact.
+- New `Styler.sprite(layers, axes=None, step=1, spaces=False)` builds a multi-dimensional sprite from strings: a list of strings stacks along `z`, a list of lists along `z` and `w`, and so on (`axes` and `step` choose the axes and spacing). Pass it as `create(..., sprite=sp)`; objects without a projecting camera show its flattened footprint, so it is safe in scenes that never rotate the camera. `projected=False` keeps an object flat on screen whatever the camera does.
+- New camera controls: `scene.camxrotation`, `scene.camyrotation` and `scene.camzrotation` (the existing `camrotation`) rotate the view about each axis, `scene.camturn('x', 'w', degrees)` rotates in any plane of the scene's axes, and `scene.perspective` is the eye distance in front of the camera (0 keeps the view orthographic). Once any rotation other than `camzrotation`, or a perspective, is set, every object is placed in the scene's axes, rotated, projected and drawn through a depth buffer; otherwise rendering is unchanged. Lights are not projected yet.
+
 ## 0.2.4
 
 - New `physics.unghost(other)` undoes `physics.ghost(other)`, so two bodies that were made to pass through each other collide again. It removes the entry from both objects, because a ghost set on either one disables the collision, and accepts the same object or function that was passed to `ghost`. Pairs that a joint keeps apart are left ghosted. It returns `True` when something was removed.

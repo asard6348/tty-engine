@@ -8,6 +8,8 @@ import subprocess
 from itertools import groupby
 from operator import itemgetter, ne
 from . import ansi
+from . import cells as _cells
+from . import projection as _projection
 from .ascii_styler import alphamark, alphaparse, bgrecomp, fgrecomp
 
 COVER = {' ': 0.0, '█': 1.0, '▓': 0.75, '▒': 0.5, '░': 0.25, '▀': 0.5, '▄': 0.5, '▌': 0.5, '▐': 0.5}
@@ -155,6 +157,7 @@ class Compositor:
         self.coloring = {}
         self.region = None
         self.rotated = {}
+        self.projected = {}
         self._monochrome = None
 
     def invalidate(self):
@@ -522,8 +525,27 @@ class Compositor:
                         rects.append(self.view(sc, width, height))
             tfs = sc._roster()[5]
             seen.update(tfs)
+            proj = live and sc.projected()
+            if live:
+                if proj:
+                    sig = self.signature(sc, tfs, env, self.view(sc, width, height))
+                    held = self.projected.get(sc)
+                    if held is None:
+                        for t in tfs:
+                            if t.projected:
+                                known.pop(t, None)
+                        layered.pop(sc, None)
+                    if held is None or held[0] != sig:
+                        rects.append(self.view(sc, width, height))
+                        self.projected[sc] = (sig, None)
+                elif sc in self.projected:
+                    del self.projected[sc]
+                    rects.append(self.view(sc, width, height))
+                    layered.pop(sc, None)
             if live:
                 for t in tfs:
+                    if proj and t.projected:
+                        continue
                     state = known.get(t)
                     if state is not None and same and state[4] == t._rev:
                         continue
@@ -600,7 +622,7 @@ class Compositor:
         for w in items:
             sc = scene_of(w)
             view = self.view(sc, width, height)
-            ext = self.extent(sc, view) if sc.camrotation % 360.0 else view
+            ext = self.extent(sc, view) if self.roll(sc) else view
             bg = self.bgstyle(sc.bgcolor) if autobg and getattr(w, 'autobg', True) else None
             roster = sc._roster()
             cache = self.layered.get(sc)
@@ -622,8 +644,14 @@ class Compositor:
                     state[5] = t.z
                 cache = self.layered[sc] = (roster[0], sprites, slot, sc.bgcolor)
             sprites = cache[1]
+            if sc.projected():
+                held = self.projected.get(sc)
+                if held is None or held[1] is None:
+                    sig = held[0] if held is not None else None
+                    held = self.projected[sc] = (sig, self.raster(sc, roster[5], view, bg))
+                sprites = held[1] + sprites
             lit = []
-            if view[0] < view[2] and view[1] < view[3]:
+            if view[0] < view[2] and view[1] < view[3] and not sc.projected():
                 camx = sc.iround(sc.camx)
                 camy = sc.iround(sc.camy)
                 for light in sc.lights:
@@ -681,6 +709,51 @@ class Compositor:
                                 warm[(ry, xx)] = (share, cell)
         if lit:
             self.shine(sc, back, spans, lit, plain, warm)
+
+    @staticmethod
+    def roll(sc):
+        return 0.0 if sc.projected() else sc.camrotation % 360.0
+
+    @staticmethod
+    def signature(sc, tfs, env, view):
+        return (env, view, sc.camrotation, tuple(sorted(sc._camturn.items())), sc.perspective, tuple(sc._camext), sc.aspect,
+                tuple([(t, t._rev, tuple(t._p)) for t in tfs if t.projected]))
+
+    def raster(self, sc, tfs, view, bg):
+        if view[0] >= view[2] or view[1] >= view[3]:
+            return []
+        cam = _projection.camera(sc, view)
+        buf = _projection.depthbuffer(cam)
+        n = cam.n
+        for t in sorted(tfs, key=lambda t: t.z):
+            if not t.projected or not t.show:
+                continue
+            p = t._p
+            held = t._sprite
+            if held is not None:
+                for offset, plane in held.planes:
+                    origin = list(p)
+                    for k, value in enumerate(offset):
+                        origin[k] += value
+                    buf.plane(origin, plane)
+                continue
+            text = t._shown()
+            if not text:
+                continue
+            plane = {}
+            for r, row in enumerate(_cells.parse(text)):
+                for c, cell in enumerate(row):
+                    if t.renderspaces or not _cells.blank(cell):
+                        plane[c, r] = cell
+            origin = list(p)
+            origin[0] += t.vx
+            origin[1] += t.vy
+            buf.plane(origin, plane)
+        found = buf.text()
+        if not found:
+            return []
+        grid = self.parse(sc, found, False)
+        return [(view[0], view[1], grid)]
 
     @staticmethod
     def extent(sc, view):
@@ -783,7 +856,7 @@ class Compositor:
             sc = scene_of(w)
             if w not in active:
                 continue
-            angle = sc.camrotation % 360.0
+            angle = self.roll(sc)
             previous = self.rotated.get(sc)
             if not angle and previous is None:
                 continue
@@ -819,7 +892,7 @@ class Compositor:
         back = {y: [base] * width for y in spans}
         clear = (' ', base[1])
         for view, ext, bg, sprites, sc, lit in self.layers(items, width, height, autobg):
-            angle = sc.camrotation % 360.0
+            angle = self.roll(sc)
             if angle and view[0] < view[2] and view[1] < view[3]:
                 ex0, ey0, ex1, ey1 = ext
                 ew = ex1 - ex0

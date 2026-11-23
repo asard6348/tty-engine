@@ -1,6 +1,7 @@
 import math
 import re
 from itertools import repeat
+from .. import axes as _ax
 from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _mtv_cells, _offsets, _spread
 from .inherit import _change_callback, _keyed, _lerpable
 from .transform import transform
@@ -59,14 +60,13 @@ class physics(_change_callback, _lerpable, _keyed):
         self._axises = ('x', 'y')
         self._xvel = kwargs.get('xvel', 0)
         self._yvel = kwargs.get('yvel', 0)
+        self._ev = [kwargs.get(key + 'vel', 0) for key in obj.scene._axes.names[2:]]
         self._avel = kwargs.get('avel', 0)
         self.dynamic = kwargs.get('dynamic', True)
         self.bounciness = kwargs.get('bounciness', 0)
         self.friction = kwargs.get('friction', 0)
         gravity = kwargs.get('gravity', None)
-        self._gravity = None if gravity is None else tuple(gravity)
-        if self._gravity is not None and len(self._gravity) != 2:
-            raise ValueError('gravity must be a (x, y) pair or None')
+        self._gravity = self._checkgravity(gravity)
         self._drag = kwargs.get('drag', None)
         self._adrag = kwargs.get('adrag', None)
         self._precision = kwargs.get('precision', None)
@@ -100,7 +100,8 @@ class physics(_change_callback, _lerpable, _keyed):
         self._good = None
         self._depenskip = 0
         def dirty(attr):
-            self._dirty(attr)
+            if attr not in _ax.FREE:
+                self._dirty(attr)
         self.t.onchange(dirty)
 
     @property
@@ -166,12 +167,51 @@ class physics(_change_callback, _lerpable, _keyed):
     @gravity.setter
     def gravity(self, value):
         old = self._gravity
-        if value is not None:
-            value = tuple(value)
-            if len(value) != 2:
-                raise ValueError('gravity must be a (x, y) pair or None')
-        self._gravity = value
+        self._gravity = self._checkgravity(value)
         self._change('gravity', old)
+
+    def _checkgravity(self, value):
+        if value is None:
+            return None
+        value = tuple(value)
+        if not 2 <= len(value) <= self.scene._axes.n:
+            raise ValueError('gravity must be an (x, y) pair, with one more value per extra axis, or None')
+        return value
+
+    @property
+    def vel(self):
+        return (self._xvel, self._yvel) + tuple(self._ev)
+    @vel.setter
+    def vel(self, value):
+        value = list(value)
+        if not 2 <= len(value) <= self.scene._axes.n:
+            raise ValueError('vel takes between 2 and %d values, got %d' % (self.scene._axes.n, len(value)))
+        self.xvel = value[0]
+        self.yvel = value[1]
+        for key, val in zip(_ax.NAMES[2:], value[2:]):
+            setattr(self, key + 'vel', val)
+
+    def _fit(self, n):
+        ev = self._ev
+        if len(ev) < n - 2:
+            ev.extend([0] * (n - 2 - len(ev)))
+        else:
+            del ev[n - 2:]
+
+    def _drift(self, gravity, drag, mass):
+        t = self.t
+        names = _ax.NAMES
+        for i, v in enumerate(self._ev):
+            g = gravity[i + 2] if len(gravity) > i + 2 else 0
+            if not v and not g:
+                continue
+            v = v * drag + g * mass
+            if abs(v) < 1e-9:
+                v = 0
+            key = names[i + 2]
+            setattr(self, key + 'vel', v)
+            if v:
+                t[key] += v / mass
 
     @property
     def drag(self):
@@ -390,12 +430,13 @@ class physics(_change_callback, _lerpable, _keyed):
             ox = oy = 0
         else:
             ox, oy = t._pvx, t._pvy
+        p = t._p
         if axis == 'x':
-            base = t._x + ox
-            row = round(t._y + oy)
+            base = p[0] + ox
+            row = round(p[1] + oy)
             return base, ext[0], ext[1], row - ext[3], row - ext[2]
-        base = t._y + oy
-        col = round(t._x + ox)
+        base = p[1] + oy
+        col = round(p[0] + ox)
         return base, -ext[3], -ext[2], col + ext[0], col + ext[1]
 
     def _sweep(self, axis, direction, distance):
@@ -1054,6 +1095,8 @@ class physics(_change_callback, _lerpable, _keyed):
         drag = self.drag
         precision = self.precision
         self._dirty('x')
+        if len(gravity) > 2 or any(self._ev):
+            self._drift(gravity, drag, actualmass)
 
         for ia, a in enumerate(axises):
             self[a + 'vel'] *= drag
@@ -1174,3 +1217,24 @@ class physics(_change_callback, _lerpable, _keyed):
 
         self._depenetrate()
         self._probe()
+
+
+def _extra_velocity(i):
+    name = _ax.NAMES[i] + 'vel'
+    def fget(self):
+        try:
+            return self._ev[i - 2]
+        except IndexError:
+            raise AttributeError(name) from None
+    def fset(self, value):
+        ev = self._ev
+        if i - 2 >= len(ev):
+            raise AttributeError('the scene has no %s axis' % _ax.NAMES[i])
+        old = ev[i - 2]
+        ev[i - 2] = value
+        self._change(name, old)
+    return property(fget, fset)
+
+
+for _i in range(2, _ax.LIMIT):
+    setattr(physics, _ax.NAMES[_i] + 'vel', _extra_velocity(_i))

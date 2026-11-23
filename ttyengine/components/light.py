@@ -322,7 +322,7 @@ class light(_lerpable, _keyed):
         self._origin = self.origin()
         sig = ()
         if self._shadows:
-            sig = tuple((id(o), o.transform._x, o.transform._y, o.transform.vx, o.transform.vy,
+            sig = tuple((id(o), o.transform._p[0], o.transform._p[1], o.transform.vx, o.transform.vy,
                          o.transform._pvx, o.transform._pvy, hash(o.transform._text),
                          hash(o.transform._ptext), hash(o.transform._htext), hash(o.transform.vtext),
                          o.transform._shadow,

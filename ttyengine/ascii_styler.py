@@ -1,6 +1,8 @@
-import re, shutil, colorsys
+import re, shutil, colorsys, math
 from functools import lru_cache
 from . import ansi
+from . import cells as _cells
+from . import sprite as _sprite
 from . import region as _regions
 from .figlet import Figlet, available
 from .image_reader import read as readimage
@@ -392,6 +394,51 @@ class Styler:
                 line = line.rstrip(' ')
             lines.append(line + ansi.RESET if current or backdrop is not None else line)
         return '\n'.join(lines)
+    @staticmethod
+    def sprite(layers, axes=None, step=1, spaces=False):
+        return _sprite.build(layers, axes, step, spaces)
+
+    @staticmethod
+    def scale(text, x, y=None):
+        y = x if y is None else y
+        if not (math.isfinite(x) and math.isfinite(y)) or x <= 0 or y <= 0:
+            raise ValueError('scale factors must be finite and positive')
+        rows = _cells.parse(text)
+        if not rows:
+            return ''
+        height = len(rows)
+        width = max(len(row) for row in rows)
+        out = []
+        for j in range(max(1, round(height * y))):
+            cy = (j + 0.5) / y
+            if y < 1:
+                r0, r1 = int(j / y), min(height, max(int(j / y) + 1, math.ceil((j + 1) / y)))
+            else:
+                r0 = min(height - 1, int(cy))
+                r1 = r0 + 1
+            line = []
+            for i in range(max(1, round(width * x))):
+                cx = (i + 0.5) / x
+                if x < 1:
+                    c0, c1 = int(i / x), max(int(i / x) + 1, math.ceil((i + 1) / x))
+                else:
+                    c0 = int(cx)
+                    c1 = c0 + 1
+                best = None
+                near = 0.0
+                for r in range(r0, r1):
+                    row = rows[r]
+                    for c in range(c0, min(c1, len(row))):
+                        cell = row[c]
+                        if _cells.blank(cell):
+                            continue
+                        dist = (c + 0.5 - cx) ** 2 + (r + 0.5 - cy) ** 2
+                        if best is None or dist < near:
+                            best, near = cell, dist
+                line.append(best)
+            out.append(line)
+        return _cells.build(out)
+
 
 class Shapes:
     @staticmethod

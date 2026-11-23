@@ -312,6 +312,38 @@ class SyncTests(unittest.TestCase):
             for node in self.nodes:
                 node.close()
 
+    def test_extra_axes_replicate(self):
+        host, guest, hs, gs = self.pair()
+        a, b = engine_scene.Scene(), engine_scene.Scene()
+        a.axes = 5
+        hs.share(a, "arena")
+        gs.share(b, "arena")
+        ball = a.obj().create("o", 1, 2, z=3, w=4, a4=5, zvel=2, wvel=-1)
+        self.connect(host, guest)
+        self.assertTrue(pump(self.syncs, lambda: len(b.objs) == 1 and b.axes == a.axes))
+        twin = b.objs[0]
+        self.assertEqual(twin.transform.pos, (1, 2, 3, 4, 5))
+        self.assertEqual(twin.physics.vel, (0, 0, 2, -1, 0))
+        ball.transform.w = 40
+        ball.physics.a4vel = 7
+        self.assertTrue(pump(self.syncs, lambda: twin.transform.w == 40 and twin.physics.a4vel == 7))
+        a.axes = 4
+        self.assertTrue(pump(self.syncs, lambda: b.axes == a.axes))
+        self.assertEqual(twin.transform.pos, (1, 2, 3, 40))
+
+    def test_default_axes_leave_plain_scenes_alone(self):
+        host, guest, hs, gs = self.pair()
+        a, b = engine_scene.Scene(), engine_scene.Scene()
+        hs.share(a, "arena")
+        gs.share(b, "arena")
+        a.obj().create("o", 1, 2, z=3, xvel=1)
+        self.connect(host, guest)
+        self.assertTrue(pump(self.syncs, lambda: len(b.objs) == 1))
+        twin = b.objs[0]
+        self.assertEqual(b.axes, ("x", "y", "z"))
+        self.assertEqual(twin.transform.pos, (1, 2, 3))
+        self.assertFalse(hasattr(twin.transform, "w"))
+
     def test_late_joiner_receives_snapshot(self):
         host, guest, hs, gs = self.pair()
         a, b = engine_scene.Scene(), engine_scene.Scene()

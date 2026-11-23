@@ -1,6 +1,8 @@
 import math
 import threading
 from .. import ansi
+from .. import axes as _ax
+from .. import sprite as _sprite
 from ..ascii_styler import alphamark
 from .shared import _ALPHAS, _BGCODE, _NEIGHBOURS4, _NEIGHBOURS8, _NEIGHBOURS_HALF, _SGR, _argslen, _check_shadow, _contact_normal_cells, _contact_point_cells, _easing, _footprint, _mtv_cells, _styleprop
 from .inherit import _change_callback, _keyed, _lerpable
@@ -51,11 +53,17 @@ class transform(_change_callback, _lerpable, _keyed):
         self._lit = ''
         self.show = kwargs.get('show', True)
         self.renderspaces = kwargs.get('renderspaces', False)
-        self.z = kwargs.get('z', 0)
+        names = obj.scene._axes.names
+        p = [kwargs.get(key, 0) for key in names]
+        self._p = p
+        self._depth(p[2])
+        held = kwargs.get('sprite')
+        self._sprite = held if isinstance(held, _sprite.sprite) else None
+        self.projected = kwargs.get('projected', True) is not False
         raw = kwargs.get('text', '')
+        if self._sprite is not None and not raw:
+            raw = self._sprite.footprint()
         ctext = obj.scene.recomp.sub('', raw) if raw else ''
-        self._x = kwargs.get('x', 0)
-        self._y = kwargs.get('y', 0)
         self._vx = kwargs.get('vx', 0)
         self._vy = kwargs.get('vy', 0)
         self._fg = kwargs.get('fg', None)
@@ -118,21 +126,80 @@ class transform(_change_callback, _lerpable, _keyed):
 
     @property
     def x(self):
-        return self._x
+        return self._p[0]
     @x.setter
     def x(self, value):
-        old = self._x
-        self._x = value
+        p = self._p
+        old = p[0]
+        p[0] = value
+        self.__dict__['_rev'] = self._rev + 1
         self._change('x', old)
 
     @property
     def y(self):
-        return self._y
+        return self._p[1]
     @y.setter
     def y(self, value):
-        old = self._y
-        self._y = value
+        p = self._p
+        old = p[1]
+        p[1] = value
+        self.__dict__['_rev'] = self._rev + 1
         self._change('y', old)
+
+    @property
+    def z(self):
+        return self._p[2]
+    @z.setter
+    def z(self, value):
+        p = self._p
+        old = p[2]
+        p[2] = value
+        self.__dict__['_rev'] = self._rev + 1
+        self._depth(value)
+        self._change('z', old)
+
+    def _depth(self, value):
+        sc = self.scene
+        if value > sc._lastz: sc._lastz = value
+        if value < sc._firstz: sc._firstz = value
+
+    @property
+    def pos(self):
+        return tuple(self._p)
+    @pos.setter
+    def pos(self, value):
+        p = self._p
+        value = list(value)
+        if not 2 <= len(value) <= len(p):
+            raise ValueError('pos takes between 2 and %d values, got %d' % (len(p), len(value)))
+        olds = p[:len(value)]
+        p[:len(value)] = value
+        self.__dict__['_rev'] = self._rev + 1
+        if len(value) > 2:
+            self._depth(value[2])
+        for key, old in zip(_ax.NAMES, olds):
+            self._change(key, old)
+
+    @property
+    def sprite(self):
+        return self._sprite
+    @sprite.setter
+    def sprite(self, value):
+        if value is not None and not isinstance(value, _sprite.sprite):
+            raise TypeError('sprite must be a sprite or None')
+        old = self._sprite
+        self._sprite = value
+        if value is not None:
+            self.text = value.footprint()
+        self._change('sprite', old)
+
+    def _fit(self, n):
+        p = self._p
+        if len(p) < n:
+            p.extend([0] * (n - len(p)))
+        else:
+            del p[n:]
+        self.__dict__['_rev'] = self._rev + 1
 
     @property
     def vx(self):
@@ -255,15 +322,6 @@ class transform(_change_callback, _lerpable, _keyed):
         old = self._shadow
         self._shadow = _check_shadow(value)
         self._change('shadow', old)
-
-    @property
-    def z(self):
-        return self._z
-    @z.setter
-    def z(self, value):
-        self._z = value
-        if self._z > self.scene._lastz: self.scene._lastz = self._z
-        if self._z < self.scene._firstz: self.scene._firstz = self._z
 
     @property
     def spaces(self):
@@ -463,8 +521,9 @@ class transform(_change_callback, _lerpable, _keyed):
             text, ox, oy, full = self._htext, 0, 0, True
         else:
             text, ox, oy, full = self._text, self.vx, self.vy, False
-        rx = round(self._x + ox)
-        ry = round(self._y + oy)
+        p = self._p
+        rx = round(p[0] + ox)
+        ry = round(p[1] + oy)
         key = (full, rx, ry, text)
         cached = self._cells_cache
         if cached is not None and cached[0] == key:
@@ -524,16 +583,18 @@ class transform(_change_callback, _lerpable, _keyed):
         return math.degrees(math.atan2(gx, gy)) % 360
 
     def tolocal(self, pixels):
-        rx = round(self._x + self.vx)
-        ry = round(self._y + self.vy)
+        p = self._p
+        rx = round(p[0] + self.vx)
+        ry = round(p[1] + self.vy)
         local_pixels = set()
         for gx, gy in pixels:
             local_pixels.add((gx - rx, ry - gy))
         return local_pixels
 
     def toworld(self, pixels):
-        rx = round(self._x + self.vx)
-        ry = round(self._y + self.vy)
+        p = self._p
+        rx = round(p[0] + self.vx)
+        ry = round(p[1] + self.vy)
         local_pixels = set()
         for gx, gy in pixels:
             local_pixels.add((gx + rx, ry + gy))
@@ -930,7 +991,8 @@ class transform(_change_callback, _lerpable, _keyed):
         return self._rotsrc_v
 
     def _origin(self):
-        return round(self._x + self.vx), round(self._y + self.vy)
+        p = self._p
+        return round(p[0] + self.vx), round(p[1] + self.vy)
 
     def _cell_world(self, cell):
         m = self._rotmap
@@ -1018,9 +1080,9 @@ class transform(_change_callback, _lerpable, _keyed):
         after = self.rtext_to_world(ref[0] - min(xs), ref[1] - min(ys)) if ref is not None else None
         if before is not None and after is not None:
             if before[0] != after[0]:
-                self.x = self._x + before[0] - after[0]
+                self.x = self._p[0] + before[0] - after[0]
             if before[1] != after[1]:
-                self.y = self._y + before[1] - after[1]
+                self.y = self._p[1] + before[1] - after[1]
         return True
 
     def cut(self, wx, wy, r=1, shape='circle'):
@@ -1068,7 +1130,7 @@ class transform(_change_callback, _lerpable, _keyed):
 
     def _spawn_from_components(self, components, pixels, callback=None):
         rotation = self._rotation
-        ox, oy = self._x, self._y
+        ox, oy = self._p[0], self._p[1]
         parent = getattr(self.obj, 'physics', None)
         motion = None
         if parent is not None:
@@ -1090,6 +1152,8 @@ class transform(_change_callback, _lerpable, _keyed):
             kw = self.obj.kwargs()
             for key in ('mass', 'rtext', 'htext', 'vtext', 'vrtext', 'vhtext', 'vx', 'vy', 'xvel', 'yvel', 'avel', 'joints', 'humanoid'):
                 kw.pop(key, None)
+            for key in [k for k in kw if k.endswith('vel') and k[:-3] in _ax.FREE]:
+                del kw[key]
             if parent is not None:
                 kw.update(dynamic=parent.dynamic, bounciness=parent.bounciness, friction=parent.friction)
             if self._aspect is not None:
@@ -1273,7 +1337,8 @@ class transform(_change_callback, _lerpable, _keyed):
     def extent(self, local=False):
         rows = self._text.splitlines()
         cols = [i for row in rows for i, char in enumerate(row) if char != ' ']
-        px, py = (0, 0) if local else (self._x + self.vx, self._y + self.vy)
+        p = self._p
+        px, py = (0, 0) if local else (p[0] + self.vx, p[1] + self.vy)
         if not cols:
             return px, py, 0, 0
         lo, hi = min(cols), max(cols) + 1
@@ -1292,7 +1357,8 @@ class transform(_change_callback, _lerpable, _keyed):
     def pivot(self, local=False):
         m = self._rotmap
         if m is None:
-            return (0.0, 0.0) if local else (self._x + self.vx, self._y + self.vy)
+            p = self._p
+            return (0.0, 0.0) if local else (p[0] + self.vx, p[1] + self.vy)
         if local:
             return m[0], -m[1]
         ox, oy = self._origin()
@@ -1515,9 +1581,10 @@ class transform(_change_callback, _lerpable, _keyed):
     def state(self, camx, camy, xoff, yoff):
         if not self.show:
             return (0, 0, '', 0, 0)
+        p = self._p
         return (
-            int((self._x + self.vx - camx + 0.5) // 1),
-            -int((self._y + self.vy - camy + 0.5) // 1),
+            int((p[0] + self.vx - camx + 0.5) // 1),
+            -int((p[1] + self.vy - camy + 0.5) // 1),
             self._shown(),
             xoff,
             yoff,
@@ -1528,3 +1595,25 @@ class transform(_change_callback, _lerpable, _keyed):
 
     def back(self):
         self.z = self.scene._firstz - 1
+
+
+def _extra_axis(i):
+    key = _ax.NAMES[i]
+    def fget(self):
+        try:
+            return self._p[i]
+        except IndexError:
+            raise AttributeError(key) from None
+    def fset(self, value):
+        p = self._p
+        if i >= len(p):
+            raise AttributeError('the scene has no %s axis' % key)
+        old = p[i]
+        p[i] = value
+        self.__dict__['_rev'] = self._rev + 1
+        self._change(key, old)
+    return property(fget, fset)
+
+
+for _i in range(3, _ax.LIMIT):
+    setattr(transform, _ax.NAMES[_i], _extra_axis(_i))

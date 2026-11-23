@@ -5,7 +5,7 @@ from ..components import force, joint, light, pen, physics, transform
 
 
 class Spec:
-    def __init__(self, cls, names, ctor, getters=None, setters=None, extra=None, prepare=None, deferred=()):
+    def __init__(self, cls, names, ctor, getters=None, setters=None, extra=None, prepare=None, deferred=(), more=None):
         self.cls = cls
         self.name = cls.__name__
         self.names = tuple(names)
@@ -15,6 +15,10 @@ class Spec:
         self.extra = extra or {}
         self.custom = prepare
         self.deferred = frozenset(deferred)
+        self.more = more
+
+    def every(self, target):
+        return self.names if self.more is None else self.names + tuple(self.more(target))
 
     def get(self, comp, var):
         getter = self.getters.get(var)
@@ -78,7 +82,8 @@ def _transform_spec():
         'rtext': lambda comp: comp._vbase,
         'aspect': lambda comp: comp._aspect,
     }
-    return Spec(transform, names, ctor, getters=getters, prepare=_transform_prepare)
+    return Spec(transform, names, ctor, getters=getters, prepare=_transform_prepare,
+                more=lambda target: target.scene._axes.names[3:])
 
 
 def _links_get(comp):
@@ -114,7 +119,9 @@ def _light_spec():
     return _default(light, extra={'light': True})
 
 
-ORDER = [_transform_spec(), _default(physics), _joint_spec(), _light_spec(), _default(force), _default(pen)]
+ORDER = [_transform_spec(),
+         _default(physics, more=lambda target: tuple(key + 'vel' for key in target.scene._axes.names[2:])),
+         _joint_spec(), _light_spec(), _default(force), _default(pen)]
 SPECS = {spec.name: spec for spec in ORDER}
 FLAT = {}
 
@@ -231,7 +238,7 @@ class SceneLayer(Layer):
     kind = 'scene'
     child = 'obj'
     children_mode = 'any'
-    names = ('gravity', 'drag', 'precision', 'bouncethreshold', 'aspect', 'ambient')
+    names = ('axes', 'gravity', 'drag', 'precision', 'bouncethreshold', 'aspect', 'ambient')
 
     def children(self, target):
         return [('obj', item) for item in list(target.objs)]
@@ -279,7 +286,7 @@ class ObjLayer(Layer):
         for spec in ORDER:
             if getattr(target, spec.name, None) is None:
                 continue
-            for var in spec.names:
+            for var in spec.every(target):
                 if entity.allows(spec.name, var):
                     found.append((spec.name, var))
         if entity.include is not None:
@@ -289,7 +296,7 @@ class ObjLayer(Layer):
         return found
 
     def signature(self, target, entity):
-        present = tuple(getattr(target, spec.name, None) is not None for spec in ORDER)
+        present = tuple(getattr(target, spec.name, None) is not None for spec in ORDER) + (target.scene._axes,)
         if entity.include is None:
             return present
         return present + tuple(hasattr(target, var) for group, var in entity.include if group == 'obj')
@@ -308,7 +315,7 @@ class ObjLayer(Layer):
         if group == 'obj':
             return entity.include is not None and (group, var) in entity.include and entity.allows(group, var)
         spec = SPECS.get(group)
-        return spec is not None and var in spec.names and entity.allows(group, var)
+        return spec is not None and var in spec.every(entity.target) and entity.allows(group, var)
 
     def get(self, target, group, var):
         if group == 'obj':
