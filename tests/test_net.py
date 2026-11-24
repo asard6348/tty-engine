@@ -11,6 +11,7 @@ import zlib
 os.environ.setdefault("COLUMNS", "100")
 os.environ.setdefault("LINES", "40")
 
+from ttyengine.ascii_styler import Styler
 from ttyengine import scene as engine_scene
 from ttyengine.components import joint
 from ttyengine.launcher import Session
@@ -330,6 +331,41 @@ class SyncTests(unittest.TestCase):
         a.axes = 4
         self.assertTrue(pump(self.syncs, lambda: b.axes == a.axes))
         self.assertEqual(twin.transform.pos, (1, 2, 3, 40))
+
+    def test_sprites_and_solid_axes_replicate(self):
+        host, guest, hs, gs = self.pair()
+        a, b = engine_scene.Scene(), engine_scene.Scene()
+        a.axes = 4
+        a.solidaxes = ("w",)
+        hs.share(a, "arena")
+        gs.share(b, "arena")
+        sp = Styler.sprite(["ab", "cd"], axes="w", step=2)
+        ball = a.obj().create(None, 1, 2, sprite=sp, projected=False)
+        self.connect(host, guest)
+        self.assertTrue(pump(self.syncs, lambda: len(b.objs) == 1 and b.solidaxes == ("w",)))
+        twin = b.objs[0].transform
+        self.assertEqual(twin.sprite.spec, sp.spec)
+        self.assertFalse(twin.projected)
+        other = Styler.sprite(["x", "y", "z"])
+        ball.transform.sprite = other
+        self.assertTrue(pump(self.syncs, lambda: twin.sprite is not None and twin.sprite.spec == other.spec))
+        ball.transform.sprite = None
+        self.assertTrue(pump(self.syncs, lambda: twin.sprite is None))
+
+    def test_camera_can_be_shared_by_variable(self):
+        host, guest, hs, gs = self.pair()
+        a, b = engine_scene.Scene(), engine_scene.Scene()
+        a.axes = b.axes = 4
+        names = ("camxrotation", "camyrotation", "perspective", "camturns")
+        hs.share_var(a, *names, name="camera")
+        gs.share_var(b, *names, name="camera")
+        self.connect(host, guest)
+        a.camyrotation = 25
+        a.perspective = 12
+        a.camturn("x", "w", 40)
+        self.assertTrue(pump(self.syncs, lambda: b.camyrotation == 25 and b.perspective == 12 and b.camturn("x", "w") == 40))
+        a.camturn("x", "w", 0)
+        self.assertTrue(pump(self.syncs, lambda: b.camturn("x", "w") == 0))
 
     def test_default_axes_leave_plain_scenes_alone(self):
         host, guest, hs, gs = self.pair()

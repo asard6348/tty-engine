@@ -192,5 +192,57 @@ class CameraTests(unittest.TestCase):
         self.assertEqual(column(found, 'P'), [(8, 31)])
 
 
+class RotatedSpriteTests(unittest.TestCase):
+    def test_single_layer_matches_the_plain_object(self):
+        from ttyengine import cells
+        sc = make_scene()
+        for angle in (0, 15, 33, 90, 135, 200, 300):
+            for flip in (None, 0, 45):
+                kw = {'rotation': angle}
+                if flip is not None:
+                    kw['flip'] = flip
+                plain = sc.obj().create('AB\nCD\nEF', 0, 0, **kw)
+                layered = sc.obj().create(None, 0, 0, sprite=Styler.sprite(['AB\nCD\nEF']), **kw)
+                want = {(c, r): x for r, row in enumerate(cells.parse(plain.transform._text))
+                        for c, x in enumerate(row) if not cells.blank(x)}
+                self.assertEqual(want, dict(layered.transform.planes()[0][1]), (angle, flip))
+                self.assertEqual((plain.transform.vx, plain.transform.vy), (layered.transform.vx, layered.transform.vy))
+                plain.discard()
+                layered.discard()
+
+    def test_rotated_sprite_renders_like_the_plain_object(self):
+        def draw(sprite):
+            sc = make_scene()
+            sc.camxrotation = 1e-9
+            if sprite:
+                sc.obj().create(None, 0, 0, sprite=Styler.sprite(['AB\nCD\nEF']), rotation=33)
+            else:
+                sc.obj().create('AB\nCD\nEF', 0, 0, rotation=33)
+            return shown(sc)
+        self.assertEqual(draw(True), draw(False))
+
+    def test_layers_turn_together(self):
+        sc = make_scene()
+        sc.camxrotation = 1e-9
+        sc.obj().create(None, 0, 0, sprite=Styler.sprite(['AA', 'BB'], step=2), rotation=90)
+        self.assertEqual(set(shown(sc).values()), {'B'})
+
+
+class CameraStateTests(unittest.TestCase):
+    def test_custom_planes_round_trip(self):
+        sc = make_scene()
+        sc.axes = 4
+        sc.camxrotation = 10
+        sc.camturn('x', 'w', 30)
+        state = sc.camturns
+        other = make_scene()
+        other.axes = 4
+        other.camturns = state
+        self.assertEqual(other.camturns, state)
+        self.assertEqual(other.camxrotation, 10)
+        other.camturns = {}
+        self.assertFalse(other.projected())
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,5 +1,6 @@
 import math
 from .. import ansi
+from .. import axes as _ax
 from .shared import _wrap, _ALPHAS, _BGCODE, _FGCODE, _rebake, _unbake
 from .inherit import _keyed, _lerpable
 from .transform import transform
@@ -26,7 +27,7 @@ class light(_lerpable, _keyed):
     _colors = frozenset(('color',))
     _owned = ['light']
     _required = [transform]
-    _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'aspect'))
+    _watch = frozenset(('x', 'y', 'rotation', 'text', 'rtext', 'htext', 'aspect') + _ax.NAMES[2:])
     _settings = ('color', 'alpha', 'radius', 'falloff', 'shadows', 'shadowalpha', 'selfshadow',
                  'cone', 'direction', 'offset', 'mix', 'affect', 'on', 'glow', 'length', 'focus', 'translucent')
     _stamps = {}
@@ -43,6 +44,7 @@ class light(_lerpable, _keyed):
         self._occ = None
         self._thin = {}
         self._boxes = []
+        self._deep = None
         self._origin = (0.0, 0.0)
         self._heading = None
         self._normal = (0.0, 1.0)
@@ -65,6 +67,8 @@ class light(_lerpable, _keyed):
         self._focus = 0.0
         self._glowkey = None
         self._glowrows = []
+        self._halokey = None
+        self._halorows = []
         self._cfg = kwargs.get('light', True)
         self.light = self._cfg
         def cb(attr):
@@ -280,14 +284,32 @@ class light(_lerpable, _keyed):
             found.append((o, t))
         return found
 
+    @staticmethod
+    def _reach(t):
+        low = [v - 0.5 for v in t._p[2:]]
+        high = [v + 0.5 for v in t._p[2:]]
+        held = t._sprite
+        if held is not None:
+            for k in range(len(low)):
+                values = [off[k + 2] if k + 2 < len(off) else 0 for off, _ in held.planes]
+                if values:
+                    low[k] += min(values)
+                    high[k] += max(values)
+        return tuple(low), tuple(high)
+
     def _prepare(self):
         self._origin = self.origin()
         occ = {}
         thin = {}
         boxes = []
+        deep = {} if self.scene.projected() else None
         if self._shadows:
             for o, t in self._casters():
                 cells = t.cells()
+                if deep is not None:
+                    reach = self._reach(t)
+                    for pixel in cells:
+                        deep[pixel] = reach
                 ops = t.opacities() if self._translucent else None
                 if ops:
                     ox, oy = t._origin()
@@ -315,6 +337,7 @@ class light(_lerpable, _keyed):
         self._occ = occ
         self._thin = thin
         self._boxes = boxes
+        self._deep = deep
 
     def step(self):
         if not self._on:
@@ -327,12 +350,14 @@ class light(_lerpable, _keyed):
                          hash(o.transform._ptext), hash(o.transform._htext), hash(o.transform.vtext),
                          o.transform._shadow,
                          getattr(getattr(o, 'physics', None), 'hitbox', None))
+                        + (tuple(o.transform._p[2:]) if self.scene.projected() else ())
                         for o, t in self._casters())
+        sig = (self.scene.projected(), sig)
         if sig != self._sig:
             self._sig = sig
             self._touch()
 
-    def _shadowed(self, cx, cy, owner, origin=None, boxes=None):
+    def _shadowed(self, cx, cy, owner, origin=None, boxes=None, tail=None):
         occ = self._occ
         if not occ:
             return 0.0
@@ -393,11 +418,21 @@ class light(_lerpable, _keyed):
         ceil = math.ceil
         get = occ.get
         selfshadow = self._selfshadow
+        deep = self._deep if tail is not None else None
+        if deep is not None:
+            head = self.centre()
+            half = 0.5 / n
         for i in range(max(1, int(first * n) - 1), min(n, int(last * n) + 3)):
             f = i / n
             key = (floor(ox + dx * f), ceil(oy + dy * f))
             who = get(key)
             if who is not None and who != me and (selfshadow or who != owner):
+                if deep is not None:
+                    reach = deep.get(key)
+                    if reach is not None and any(not (lo <= a + (b - a) * (f + half) and a + (b - a) * (f - half) <= hi
+                                                      if b >= a else lo <= a + (b - a) * (f - half) and a + (b - a) * (f + half) <= hi)
+                                                 for a, b, lo, hi in zip(head, tail, reach[0], reach[1])):
+                        continue
                 opacity = thin.get(key)
                 if opacity is None:
                     return 1.0
@@ -435,11 +470,11 @@ class light(_lerpable, _keyed):
         qx, qy = self._foot(dx, dy)
         return (ox + qx / self.t.aspect, oy + qy)
 
-    def _level(self, dx, dy):
+    def _level(self, dx, dy, q=0.0):
         qx, qy = self._foot(dx, dy)
         dx -= qx
         dy -= qy
-        dist = math.hypot(dx, dy)
+        dist = math.hypot(dx, dy, q) if q else math.hypot(dx, dy)
         if dist >= self._radius:
             return 0.0
         amount = self._alpha * (1 - dist / self._radius) ** self._falloff
@@ -455,17 +490,32 @@ class light(_lerpable, _keyed):
                 amount *= 1 - self._focus + self._focus * max(0.0, (dx * nx + dy * ny) / dist)
         return max(amount, 0.0)
 
-    def contribution(self, cx, cy, owner=None):
+    def centre(self):
+        t = self.t
+        found = list(t._p[2:])
+        held = t._sprite
+        if held is not None:
+            for k in range(len(found)):
+                values = [off[k + 2] if k + 2 < len(off) else 0 for off, _ in held.planes]
+                if values:
+                    found[k] += (min(values) + max(values)) / 2
+        return found
+
+    def separation(self, at):
+        found = self.centre()
+        return math.sqrt(sum([(a - b) ** 2 for a, b in zip(at, found)]))
+
+    def contribution(self, cx, cy, owner=None, q=0.0, at=None):
         if self._occ is None:
             self._prepare()
         ox, oy = self._origin
         dx = (cx - ox) * self.t.aspect
         dy = cy - oy
-        amount = self._level(dx, dy)
+        amount = self._level(dx, dy, q)
         if amount <= 0:
             return 0.0
-        if self._shadows:
-            blocked = self._shadowed(cx, cy, owner, self._source(dx, dy))
+        if self._shadows and (q < 1 or at is not None):
+            blocked = self._shadowed(cx, cy, owner, self._source(dx, dy), None, at)
             if blocked:
                 amount *= 1 - self._shadowalpha * blocked
         return amount
@@ -498,6 +548,39 @@ class light(_lerpable, _keyed):
         if self._occ is None:
             self._prepare()
         return int(math.floor(self._origin[0])), int(math.ceil(self._origin[1]))
+
+    def project(self, cam):
+        if self._occ is None:
+            self._prepare()
+        ox, oy = self._origin
+        return cam.point([ox - 0.5, oy + 0.5] + self.centre())
+
+    def halo(self, cam, view):
+        spot = self.project(cam)
+        if spot is None:
+            return None, []
+        pc, pr, s = spot
+        key = (round(pc, 2), round(pr, 2), round(s, 3), self._stamp()[0], self._color, self._mix, view)
+        if key == self._halokey:
+            return key, self._halorows
+        aspect = self.t.aspect
+        span = (self._radius + self._length / 2) * s
+        reach_x = int(span / aspect) + 1
+        reach_y = int(span) + 1
+        c0 = int(math.floor(pc))
+        r0 = int(math.floor(pr))
+        out = []
+        for row in range(max(view[1], r0 - reach_y), min(view[3], r0 + reach_y + 1)):
+            dy = (pr - (row + 0.5)) / s
+            lo = max(view[0], c0 - reach_x)
+            hi = min(view[2], c0 + reach_x + 1)
+            amounts = [self._level((col + 0.5 - pc) * aspect / s, dy) for col in range(lo, hi)]
+            lit = [k for k, a in enumerate(amounts) if a > 0]
+            if lit:
+                out.append((row, lo + lit[0], amounts[lit[0]:lit[-1] + 1]))
+        self._halokey = key
+        self._halorows = out
+        return key, out
 
     def glowbox(self, camx, camy, xoff, yoff, view):
         gx, gy = self._spot()
@@ -562,7 +645,7 @@ class light(_lerpable, _keyed):
         return out
 
     @staticmethod
-    def shade(scene, obj, text):
+    def shade(scene, obj, text, at=None):
         lights = [l for l in scene.lights if l.on and l._affects(obj)]
         ambient = max(0.0, min(1.0, scene.ambient))
         if not lights and ambient >= 1:
@@ -588,6 +671,12 @@ class light(_lerpable, _keyed):
                     continue
                 reaching.append(l)
             lights = reaching
+        depth = {}
+        if lights and scene.projected():
+            at = tuple(t._p[2:]) if at is None else at
+            depth = {id(l): l.separation(at) for l in lights}
+        else:
+            at = None
         fgdef = tuple(scene.fgcolor)
         bgdef = tuple(scene.bgcolor)
         owner = id(obj)
@@ -602,7 +691,7 @@ class light(_lerpable, _keyed):
             mixsum = 0.0
             red = green = blue = 0.0
             for l in lights:
-                c = l.contribution(ox + ci + 0.5, oy - ri - 0.5, owner)
+                c = l.contribution(ox + ci + 0.5, oy - ri - 0.5, owner, depth.get(id(l), 0.0), at)
                 if c > 0:
                     total += c
                     mixsum += c * l._mix

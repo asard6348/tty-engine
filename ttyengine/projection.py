@@ -34,6 +34,17 @@ class camera:
         self.hy = 0.5 * (abs(self.dc[1]) + abs(self.dr[1]))
         self.flat = all(abs(v) < EPS for v in (self.dc[1], self.dc[2], self.dr[0], self.dr[2])) and self.dc[0] > 0 and self.dr[1] < 0
 
+    def point(self, origin):
+        u = self.base(origin)
+        if self.f:
+            den = self.f - u[2]
+            if den <= EPS:
+                return None
+            s = self.f / den
+        else:
+            s = 1.0
+        return self.cx + u[0] * s / self.a, self.cy - u[1] * s, s
+
     def base(self, origin):
         cam = self.cam
         u = [0.0] * self.n

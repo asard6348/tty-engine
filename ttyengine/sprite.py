@@ -31,7 +31,7 @@ def _index(name):
 
 
 class sprite:
-    __slots__ = ('rank', 'axes', 'steps', 'cells', 'spaces', 'size', 'spec', '_points', '_planes', '_flat')
+    __slots__ = ('rank', 'axes', 'steps', 'cells', 'spaces', 'size', 'spec', '_points', '_planes', '_flat', '_slabs')
 
     def __init__(self, layers, axes=None, step=1, spaces=False):
         depth = _depth(layers)
@@ -61,6 +61,7 @@ class sprite:
         self._points = None
         self._planes = None
         self._flat = None
+        self._slabs = {}
 
     def _walk(self, item, path):
         if isinstance(item, str):
@@ -102,6 +103,19 @@ class sprite:
             self._planes = tuple(
                 (self.offset((0, 0) + path), plane) for path, plane in sorted(found.items()))
         return self._planes
+
+    def slabs(self, solid):
+        found = self._slabs.get(solid)
+        if found is None:
+            groups = {}
+            for coord, cell in self.cells.items():
+                if cell[0] == ' ':
+                    continue
+                off = self.offset(coord)
+                key = tuple([off[i] if i < len(off) else 0 for i in solid])
+                groups.setdefault(key, set()).add((off[0], off[1]))
+            found = self._slabs[solid] = tuple((key, frozenset(cells)) for key, cells in groups.items())
+        return found
 
     def footprint(self):
         if self._flat is None:

@@ -193,6 +193,27 @@ class transform(_change_callback, _lerpable, _keyed):
             self.text = value.footprint()
         self._change('sprite', old)
 
+    def planes(self):
+        held = self._sprite
+        if held is None:
+            return ()
+        if not self.rotation % 360 and self._flip is None:
+            return held.planes
+        key = (self._rotangle, self._flip, held, self._rtext, self.aspect)
+        found = self.__dict__.get('_planes_cache')
+        if found is None or found[0] != key:
+            moved = self._rotsrc
+            m = self._rotmap
+            planes = []
+            for offset, plane in held.planes:
+                out = {}
+                for cell in sorted(plane, reverse=True):
+                    for dest in moved.get(cell, ()):
+                        out[dest[0] - m[2], dest[1] - m[3]] = plane[cell]
+                planes.append((offset, out))
+            found = self.__dict__['_planes_cache'] = (key, tuple(planes))
+        return found[1]
+
     def _fit(self, n):
         p = self._p
         if len(p) < n:
@@ -1572,7 +1593,7 @@ class transform(_change_callback, _lerpable, _keyed):
             return text
         from .light import light
         lights = tuple((id(l), l._version) for l in sc.lights if l.on and l._affects(self.obj))
-        key = (text, self._origin(), sc.ambient, sc.bgcolor, sc.fgcolor, lights)
+        key = (text, self._origin(), sc.ambient, sc.bgcolor, sc.fgcolor, lights, tuple(self._p[2:]) if sc.projected() else ())
         if self._litkey != key:
             self._litkey = key
             self._lit = light.shade(sc, self.obj, text)

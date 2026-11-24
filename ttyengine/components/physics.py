@@ -13,6 +13,10 @@ _JUMP = 60.0
 _JUMP_CELLS = 40
 
 
+class _moved(set):
+    dx = dy = 0
+
+
 class physics(_change_callback, _lerpable, _keyed):
     _owned = [
         'xvel', 'yvel', 'avel',
@@ -91,6 +95,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self.sides = (False, False, False, False)
         self._touch_callbacks = []
         self._pixel_cache = None
+        self._slab_cache = None
         self._rows_cache = None
         self._pivot_cache = None
         self._bounds_cache = None
@@ -211,7 +216,10 @@ class physics(_change_callback, _lerpable, _keyed):
             key = names[i + 2]
             setattr(self, key + 'vel', v)
             if v:
-                t[key] += v / mass
+                if i + 2 in self.scene._solidaxes:
+                    self._advance(i + 2, v)
+                else:
+                    t[key] += v / mass
 
     @property
     def drag(self):
@@ -618,6 +626,138 @@ class physics(_change_callback, _lerpable, _keyed):
             self._bounds_cache = result
         return result
 
+    def _slabs(self, dx=0, dy=0, mine=None):
+        t = self.t
+        p = t._p
+        solid = self.scene._solidaxes
+        base = tuple([p[i] for i in solid])
+        held = t._sprite
+        if held is None or (self.hitbox and t._htext != t._rtext):
+            if mine is None:
+                mine = self._shifted(dx, dy) if dx or dy else self.getpixels()
+            if held is None:
+                return ((base, mine),)
+            return tuple([(tuple([a + b for a, b in zip(base, at)]), mine) for at, _ in held.slabs(solid)]) or ((base, mine),)
+        turned = t.rotation % 360 or t._flip is not None
+        if turned and not self.hitbox:
+            rx, ry = t._origin()
+        else:
+            rx, ry = round(p[0]), round(p[1])
+        rx += dx
+        ry += dy
+        key = (rx, ry, solid, held, self.hitbox, t._rev if turned and not self.hitbox else 0)
+        cache = self._slab_cache
+        if cache is None or cache[0] != key:
+            if turned and not self.hitbox:
+                groups = {}
+                for off, plane in t.planes():
+                    at = tuple([off[i] if i < len(off) else 0 for i in solid])
+                    groups.setdefault(at, set()).update((rx + c, ry - r) for (c, r), cell in plane.items() if cell[0] != ' ')
+                found = tuple([(tuple([a + b for a, b in zip(base, at)]), cells) for at, cells in groups.items() if cells])
+            elif self.hitbox:
+                groups = {}
+                for off, plane in held.planes:
+                    at = tuple([off[i] if i < len(off) else 0 for i in solid])
+                    rows = {}
+                    for (c, r), cell in plane.items():
+                        rows[r] = max(rows.get(r, 0), c + 1)
+                    groups.setdefault(at, set()).update((rx + c, ry - r) for r, width in rows.items() for c in range(width))
+                found = tuple([(tuple([a + b for a, b in zip(base, at)]), cells) for at, cells in groups.items()])
+            else:
+                found = tuple([(tuple([a + b for a, b in zip(base, off)]), {(rx + c, ry + r) for c, r in cells})
+                               for off, cells in held.slabs(solid)])
+            cache = self._slab_cache = (key, found)
+        return cache[1]
+
+    def _pairs(self, other, dx=0, dy=0, mine=None):
+        found = []
+        theirs = other._slabs()
+        for ca, pa in self._slabs(dx, dy, mine):
+            for cb, pb in theirs:
+                for a, b in zip(ca, cb):
+                    if abs(a - b) >= 1:
+                        break
+                else:
+                    found.append((pa, pb, ca, cb))
+        return found
+
+    def _meet(self, other, mine=None, dx=0, dy=0):
+        found = set()
+        for pa, pb, _, _ in self._pairs(other, dx, dy, mine):
+            found |= pa & pb
+        return found
+
+    def _visible(self, other, dx=0, dy=0):
+        mine = set()
+        theirs = set()
+        for pa, pb, _, _ in self._pairs(other, dx, dy):
+            mine |= pa
+            theirs |= pb
+        return mine, theirs
+
+    def _escape(self, other):
+        solid = self.scene._solidaxes
+        found = None
+        for pa, pb, ca, cb in self._pairs(other):
+            if pa.isdisjoint(pb):
+                continue
+            for j, (a, b) in enumerate(zip(ca, cb)):
+                delta = a - b
+                depth = 1 - abs(delta)
+                if found is None or depth < found[0]:
+                    found = (depth, solid[j], 1 if delta >= 0 else -1)
+        return found
+
+    def _advance(self, i, v):
+        key = _ax.NAMES[i]
+        t = self.t
+        mass = self.mass
+        if not self.solid or self.phantom:
+            t[key] += v / mass
+            return
+        ch = abs(v) / mass
+        c = 1 if v > 0 else -1
+        precision = self.precision
+        while ch > 0:
+            step = min(precision, ch)
+            t[key] += c * step
+            hit = self.overlaps()
+            if hit:
+                t[key] -= c * step
+                for obj2, intersection in list(hit.items()):
+                    if self._notify(obj2, intersection) == 0:
+                        return
+                for obj2 in hit:
+                    p2 = getattr(obj2, 'physics', None)
+                    if p2 is not None:
+                        self._rebound(i, c, p2)
+                return
+            ch -= step
+
+    def _rebound(self, i, c, other):
+        k = i - 2
+        ma = self.mass
+        ua = self._ev[k] / ma
+        if other.dynamic and k < len(other._ev):
+            mb = other.mass
+            ub = other._ev[k] / mb
+            invb = 1.0 / mb
+        else:
+            ub = 0.0
+            invb = 0.0
+        vn = (ua - ub) * c
+        if vn <= 0:
+            return
+        e = max(self.bounciness, other.bounciness)
+        limits = [v for v in (self.bouncethreshold, other.bouncethreshold) if v is not None]
+        if vn < (min(limits) if limits else self.scene.bouncethreshold):
+            e = 0.0
+        j = (1 + e) * vn / (1.0 / ma + invb)
+        name = _ax.NAMES[i] + 'vel'
+        setattr(self, name, (ua - j / ma * c) * ma)
+        if invb:
+            setattr(other, name, (ub + j * invb * c) * mb)
+
     def collides(self, objs, x=None, y=None, text=None, full=False):
         if text is None:
             b1 = self._extent_bounds(x, y)
@@ -645,7 +785,11 @@ class physics(_change_callback, _lerpable, _keyed):
                 continue
             if pixels1 is None:
                 pixels1 = self.getpixels(x, y)
-            intersection = pixels1 & p2.getpixels()
+            if self.scene._solidaxes:
+                t = self.t
+                intersection = self._meet(p2, pixels1, round(t.x if x is None else x) - round(t.x), round(t.y if y is None else y) - round(t.y))
+            else:
+                intersection = pixels1 & p2.getpixels()
             if intersection:
                 result[obj2] = intersection
                 if not self.phantom and not full:
@@ -666,7 +810,10 @@ class physics(_change_callback, _lerpable, _keyed):
                 continue
             if pixels is None:
                 pixels = self.getpixels()
-            inter = pixels & p2.getpixels()
+            if self.scene._solidaxes:
+                inter = self._meet(p2, pixels, getattr(pixels, 'dx', 0), getattr(pixels, 'dy', 0))
+            else:
+                inter = pixels & p2.getpixels()
             if inter and not self._ghosted(obj2, inter):
                 found[obj2] = inter
         return found
@@ -715,7 +862,10 @@ class physics(_change_callback, _lerpable, _keyed):
         return (point[0] - cx) * A, point[1] - cy
 
     def _shifted(self, dx, dy):
-        return {(p[0] + dx, p[1] + dy) for p in self.getpixels()}
+        moved = _moved((p[0] + dx, p[1] + dy) for p in self.getpixels())
+        moved.dx = dx
+        moved.dy = dy
+        return moved
 
     def _ghosted(self, other, intersection=None):
         for owner, partner in ((self.obj, other), (other, self.obj)):
@@ -757,7 +907,7 @@ class physics(_change_callback, _lerpable, _keyed):
                 continue
             if shifted is None:
                 shifted = self._shifted(dx, dy)
-            inter = shifted & p2.getpixels()
+            inter = self._meet(p2, shifted, dx, dy) if self.scene._solidaxes else shifted & p2.getpixels()
             if inter and not self._ghosted(obj2, inter):
                 hits.append(obj2)
         return hits
@@ -976,10 +1126,24 @@ class physics(_change_callback, _lerpable, _keyed):
             seen.add(key)
             obj2 = max(found, key=lambda o: len(found[o]))
             p2 = obj2.physics
-            best = self._mtv(p2.getpixels())
+            best = self._mtv(self._visible(p2)[1] if self.scene._solidaxes else p2.getpixels())
             if best is None:
                 break
             _, dx, dy, k = best
+            if self.scene._solidaxes:
+                push = self._escape(p2)
+                if push is not None and push[0] < k:
+                    depth, axis, sign = push
+                    key = _ax.NAMES[axis]
+                    movable = p2.dynamic and not any(obj2 is a for a in pinned)
+                    share = depth * p2.mass / (self.mass + p2.mass) if movable else depth
+                    self.t[key] += sign * share
+                    if movable:
+                        p2.t[key] -= sign * (depth - share)
+                    for body, way in ((self, sign), (p2, -sign)):
+                        if (body is self or movable) and getattr(body, key + 'vel') * way < 0:
+                            setattr(body, key + 'vel', 0)
+                    continue
             if budget is not None:
                 k = min(k, budget)
                 budget -= k
@@ -1039,9 +1203,12 @@ class physics(_change_callback, _lerpable, _keyed):
                     dx, dy = (s, 0) if ia == 0 else (0, s)
                     for obj2 in (self._blocked(dx, dy, pool=pool) if pool is None or pool else ()):
                         p2 = obj2.physics
-                        theirs = p2.getpixels()
-                        if mine is None:
-                            mine = self.getpixels()
+                        if self.scene._solidaxes:
+                            mine, theirs = self._visible(p2)
+                        else:
+                            theirs = p2.getpixels()
+                            if mine is None:
+                                mine = self.getpixels()
                         if not mine.isdisjoint(theirs):
                             continue
                         contact = [p for p in mine if (p[0] + dx, p[1] + dy) in theirs]
@@ -1194,7 +1361,7 @@ class physics(_change_callback, _lerpable, _keyed):
                 for obj2, intersection in hit.items():
                     if getattr(obj2, 'physics', None) is None:
                         continue
-                    mtv = self._mtv(obj2.physics.getpixels())
+                    mtv = self._mtv(self._visible(obj2.physics)[1] if self.scene._solidaxes else obj2.physics.getpixels())
                     if mtv is None:
                         continue
                     contacts.append((obj2.physics, self._contact_point(intersection, mtv[1], mtv[2]), mtv[1], mtv[2]))

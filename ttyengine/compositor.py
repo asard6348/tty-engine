@@ -592,16 +592,27 @@ class Compositor:
                                 cache[1][slot] = (x + xo, y - yo, state[2])
             if live:
                 view = self.view(sc, width, height)
+                cam = _projection.camera(sc, view) if proj else None
                 for light in sc.lights:
                     if not light.glowing():
                         continue
+                    if proj:
+                        found, rows = light.halo(cam, view)
+                        if found is None:
+                            continue
+                        key = (found, bgcolor)
+                    else:
+                        key = (light.glowkey(camx, camy, xoff, yoff, view), bgcolor)
                     glowing.add(light)
-                    key = (light.glowkey(camx, camy, xoff, yoff, view), bgcolor)
                     previous = self.glows.get(light)
                     if previous is None or previous[0] != key:
                         if previous is not None:
                             rects.append(previous[1])
-                        box = light.glowbox(camx, camy, xoff, yoff, view)
+                        if proj:
+                            box = (min([x for _, x, _ in rows]), min([y for y, _, _ in rows]),
+                                   max([x + len(a) for _, x, a in rows]), max([y for y, _, _ in rows]) + 1) if rows else (view[0], view[1], view[0], view[1])
+                        else:
+                            box = light.glowbox(camx, camy, xoff, yoff, view)
                         rects.append(box)
                         self.glows[light] = (key, box)
             else:
@@ -651,14 +662,22 @@ class Compositor:
                     held = self.projected[sc] = (sig, self.raster(sc, roster[5], view, bg))
                 sprites = held[1] + sprites
             lit = []
-            if view[0] < view[2] and view[1] < view[3] and not sc.projected():
-                camx = sc.iround(sc.camx)
-                camy = sc.iround(sc.camy)
-                for light in sc.lights:
-                    if light.glowing():
-                        rows = light.glowrows(camx, camy, sc.dimxoffset, sc.dimyoffset, ext)
-                        if rows:
-                            lit.append((light, rows))
+            if view[0] < view[2] and view[1] < view[3]:
+                if sc.projected():
+                    cam = _projection.camera(sc, view)
+                    for light in sc.lights:
+                        if light.glowing():
+                            rows = light.halo(cam, view)[1]
+                            if rows:
+                                lit.append((light, rows))
+                else:
+                    camx = sc.iround(sc.camx)
+                    camy = sc.iround(sc.camy)
+                    for light in sc.lights:
+                        if light.glowing():
+                            rows = light.glowrows(camx, camy, sc.dimxoffset, sc.dimyoffset, ext)
+                            if rows:
+                                lit.append((light, rows))
             layers.append((view, ext, bg, sprites, sc, lit))
         return layers
 
@@ -724,17 +743,21 @@ class Compositor:
             return []
         cam = _projection.camera(sc, view)
         buf = _projection.depthbuffer(cam)
-        n = cam.n
+        shaded = bool(sc.lights) or sc.ambient < 1
         for t in sorted(tfs, key=lambda t: t.z):
             if not t.projected or not t.show:
                 continue
             p = t._p
             held = t._sprite
             if held is not None:
-                for offset, plane in held.planes:
+                for offset, plane in t.planes():
                     origin = list(p)
+                    origin[0] += t.vx
+                    origin[1] += t.vy
                     for k, value in enumerate(offset):
                         origin[k] += value
+                    if shaded:
+                        plane = self.shade(sc, t, plane, origin)
                     buf.plane(origin, plane)
                 continue
             text = t._shown()
@@ -754,6 +777,25 @@ class Compositor:
             return []
         grid = self.parse(sc, found, False)
         return [(view[0], view[1], grid)]
+
+    @staticmethod
+    def shade(sc, t, plane, origin):
+        from .components.light import light
+        if not plane:
+            return plane
+        rows = [[None] * (max(c for c, _ in plane) + 1) for _ in range(max(r for _, r in plane) + 1)]
+        for (c, r), cell in plane.items():
+            rows[r][c] = cell
+        text = _cells.build(rows)
+        found = light.shade(sc, t.obj, text, tuple(origin[2:]))
+        if found is text:
+            return plane
+        lit = {}
+        for r, row in enumerate(_cells.parse(found)):
+            for c, cell in enumerate(row):
+                if (c, r) in plane:
+                    lit[c, r] = cell
+        return lit
 
     @staticmethod
     def extent(sc, view):

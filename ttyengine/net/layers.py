@@ -1,11 +1,12 @@
 from operator import attrgetter
 
 from .. import scene as _scene
+from .. import sprite as _sprite
 from ..components import force, joint, light, pen, physics, transform
 
 
 class Spec:
-    def __init__(self, cls, names, ctor, getters=None, setters=None, extra=None, prepare=None, deferred=(), more=None):
+    def __init__(self, cls, names, ctor, getters=None, setters=None, extra=None, prepare=None, deferred=(), more=None, optional=(), live=None):
         self.cls = cls
         self.name = cls.__name__
         self.names = tuple(names)
@@ -16,9 +17,17 @@ class Spec:
         self.custom = prepare
         self.deferred = frozenset(deferred)
         self.more = more
+        self.optional = tuple(optional)
+        self.live = live
 
     def every(self, target):
-        return self.names if self.more is None else self.names + tuple(self.more(target))
+        found = self.names if self.more is None else self.names + tuple(self.more(target))
+        if self.live is not None and self.live(target):
+            found += self.optional
+        return found
+
+    def knows(self, target, var):
+        return var in self.optional or var in self.every(target)
 
     def get(self, comp, var):
         getter = self.getters.get(var)
@@ -63,6 +72,9 @@ def _transform_prepare(spec, values, scene):
             flat[owned] = value
         else:
             late[var] = value
+    held = late.pop('sprite', None)
+    if held is not None:
+        flat['sprite'] = _sprite.sprite(*held)
     raw = late.pop('rtext', None)
     if raw is not None:
         flat['text'] = raw
@@ -76,14 +88,17 @@ def _transform_spec():
              'flip', 'shadow', 'show', 'spaces', 'z')
     ctor = {'x': 'x', 'y': 'y', 'rotation': 'rotation', 'aspect': 'aspect', 'fg': 'fg', 'bg': 'bg',
             'alpha': 'alpha', 'bgalpha': 'bgalpha', 'flip': 'flip', 'shadow': 'shadow', 'show': 'show',
-            'spaces': 'renderspaces', 'z': 'z'}
+            'spaces': 'renderspaces', 'z': 'z', 'projected': 'projected'}
     getters = {
         'htext': lambda comp: comp._htext,
         'rtext': lambda comp: comp._vbase,
         'aspect': lambda comp: comp._aspect,
+        'sprite': lambda comp: None if comp._sprite is None else comp._sprite.spec,
     }
-    return Spec(transform, names, ctor, getters=getters, prepare=_transform_prepare,
-                more=lambda target: target.scene._axes.names[3:])
+    setters = {'sprite': lambda comp, value: setattr(comp, 'sprite', None if value is None else _sprite.sprite(*value))}
+    return Spec(transform, names, ctor, getters=getters, setters=setters, prepare=_transform_prepare,
+                more=lambda target: target.scene._axes.names[3:], optional=('sprite', 'projected'),
+                live=lambda target: target.transform._sprite is not None or not target.transform.projected)
 
 
 def _links_get(comp):
@@ -238,7 +253,7 @@ class SceneLayer(Layer):
     kind = 'scene'
     child = 'obj'
     children_mode = 'any'
-    names = ('axes', 'gravity', 'drag', 'precision', 'bouncethreshold', 'aspect', 'ambient')
+    names = ('axes', 'solidaxes', 'gravity', 'drag', 'precision', 'bouncethreshold', 'aspect', 'ambient')
 
     def children(self, target):
         return [('obj', item) for item in list(target.objs)]
@@ -297,6 +312,8 @@ class ObjLayer(Layer):
 
     def signature(self, target, entity):
         present = tuple(getattr(target, spec.name, None) is not None for spec in ORDER) + (target.scene._axes,)
+        if getattr(target, 'transform', None) is not None:
+            present += (len(SPECS['transform'].every(target)),)
         if entity.include is None:
             return present
         return present + tuple(hasattr(target, var) for group, var in entity.include if group == 'obj')
@@ -315,7 +332,7 @@ class ObjLayer(Layer):
         if group == 'obj':
             return entity.include is not None and (group, var) in entity.include and entity.allows(group, var)
         spec = SPECS.get(group)
-        return spec is not None and var in spec.every(entity.target) and entity.allows(group, var)
+        return spec is not None and spec.knows(entity.target, var) and entity.allows(group, var)
 
     def get(self, target, group, var):
         if group == 'obj':
@@ -345,7 +362,7 @@ class ObjLayer(Layer):
                     key = (2, len(rank), 0)
                 else:
                     deferred = 1 if var in spec.deferred else 0
-                    position = spec.names.index(var) if var in spec.names else len(spec.names)
+                    position = spec.names.index(var) if var in spec.names else -1 if var in spec.optional else len(spec.names)
                     key = (deferred, rank[group], position)
                 found.append((key, group, var, value))
         found.sort(key=lambda item: item[0])

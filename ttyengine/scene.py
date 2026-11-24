@@ -419,6 +419,7 @@ class Scene:
         self.recomp = ansi.SEQUENCE
         self._lastz = 0
         self._firstz = 0
+        self._solidaxes = ()
 
     @property
     def dimx(self):
@@ -685,11 +686,32 @@ class Scene:
             ext.extend([0] * (n - 2 - len(ext)))
         else:
             del ext[n - 2:]
+        self._solidaxes = tuple([i for i in self._solidaxes if i < n])
+        for plane in [k for k in self._camturn if max(k) >= n]:
+            del self._camturn[plane]
         for o in self.objs:
             for name in ('transform', 'physics'):
                 com = getattr(o, name, None)
                 if com is not None:
                     com._fit(n)
+
+    @property
+    def solidaxes(self):
+        return tuple([_ax.NAMES[i] for i in self._solidaxes])
+    @solidaxes.setter
+    def solidaxes(self, value):
+        if value is None:
+            value = ()
+        elif isinstance(value, (str, int)):
+            value = (value,)
+        found = []
+        for name in value:
+            i = _ax.NAMES.index(name) if isinstance(name, str) and name in _ax.NAMES else name
+            if isinstance(i, bool) or not isinstance(i, int) or not 2 <= i < self._axes.n:
+                raise ValueError('solid axes must be axes of the scene beyond x and y, got %r' % (name,))
+            if i not in found:
+                found.append(i)
+        self._solidaxes = tuple(sorted(found))
 
     @property
     def camrotation(self):
@@ -731,6 +753,20 @@ class Scene:
     @camzrotation.setter
     def camzrotation(self, value):
         self.camrotation = value
+
+    @property
+    def camturns(self):
+        return {','.join([_ax.NAMES[i] for i in plane]): angle for plane, angle in self._camturn.items()}
+    @camturns.setter
+    def camturns(self, value):
+        want = {}
+        for key, angle in dict(value or {}).items():
+            first, second = key.split(',')
+            want[(_ax.NAMES.index(first), _ax.NAMES.index(second))] = angle
+        for plane in [k for k in self._camturn if k not in want]:
+            self.camturn(plane[0], plane[1], 0)
+        for plane, angle in want.items():
+            self.camturn(plane[0], plane[1], angle)
 
     def camturn(self, a, b, value=None):
         i = _ax.NAMES.index(a) if isinstance(a, str) else a
