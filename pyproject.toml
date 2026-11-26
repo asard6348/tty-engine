@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61", "setuptools-rust>=1.5"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -44,3 +44,27 @@ include = ["ttyengine*"]
 
 [tool.setuptools.package-data]
 ttyengine = ["fonts.zip", "figlet-LICENSE.txt"]
+
+[[tool.setuptools-rust.ext-modules]]
+target = "ttyengine._native"
+path = "native/Cargo.toml"
+binding = "PyO3"
+optional = true
+
+[tool.distutils.bdist_wheel]
+py-limited-api = "cp38"
+
+[tool.cibuildwheel]
+build = "cp39-*"
+test-command = "python -m unittest discover -s {project}/tests"
+
+[tool.cibuildwheel.linux]
+archs = ["native"]
+before-all = "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
+environment = { PATH = "$PATH:$HOME/.cargo/bin" }
+
+[tool.cibuildwheel.macos]
+archs = ["native"]
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]

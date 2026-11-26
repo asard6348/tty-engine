@@ -1,10 +1,22 @@
 import math
+import os
 import re
 from itertools import repeat
 from .. import axes as _ax
 from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _mtv_cells, _offsets, _spread
 from .inherit import _change_callback, _keyed, _lerpable
 from .transform import transform
+
+try:
+    from .. import _native as _nat_mod
+except ImportError:
+    _nat_mod = None
+if os.environ.get('TTYENGINE_PURE'):
+    _nat_mod = None
+
+_APPLY = [False]
+_NAT_LIMIT = 1e11
+_CB = [0]
 
 _RUN = re.compile(r'[^ ]+')
 _SWEEP = 4.0
@@ -42,6 +54,15 @@ class physics(_change_callback, _lerpable, _keyed):
                  'bouncethreshold')
     _running = 0
     def on_discard(self):
+        slot = self._nslot
+        if slot is not None:
+            self._nslot = None
+            sc = self.scene
+            sc._nat_world.release(slot)
+            sc._nat_slots.pop(slot, None)
+            sc._nat_ids.pop(id(self.obj), None)
+            sc._nat_dirty.discard(self)
+            sc._nat_stale = True
         self.scene.solids = [s for s in self.scene.solids if s is not self.obj]
         discarded = self.obj
         for other in self.scene.objs:
@@ -61,6 +82,9 @@ class physics(_change_callback, _lerpable, _keyed):
         self.obj = obj
         self.t = obj.transform
         self.scene = obj.scene
+        self._nd = None
+        self._nslot = None
+        self._nspans = None
         self._axises = ('x', 'y')
         self._xvel = kwargs.get('xvel', 0)
         self._yvel = kwargs.get('yvel', 0)
@@ -100,6 +124,7 @@ class physics(_change_callback, _lerpable, _keyed):
         self._pivot_cache = None
         self._bounds_cache = None
         self._body_cache = None
+        self._stats = None
         self._ext_cache = None
         self._span_cache = None
         self._good = None
@@ -108,6 +133,19 @@ class physics(_change_callback, _lerpable, _keyed):
             if attr not in _ax.FREE:
                 self._dirty(attr)
         self.t.onchange(dirty)
+        self._ncbs = (masscal, dirty)
+        self._nok = False
+        sc = self.scene
+        if _nat_mod is not None:
+            if '_nat_world' not in sc.__dict__:
+                sc._nat_world = _nat_mod.World()
+                sc._nat_dirty = set()
+                sc._nat_slots = {}
+                sc._nat_ids = {}
+                sc._nat_bodies = []
+                sc._nat_live = False
+                sc._nat_stale = True
+            self._nd = sc._nat_dirty
 
     @property
     def solid(self):
@@ -271,6 +309,15 @@ class physics(_change_callback, _lerpable, _keyed):
         if attr != 'x' and attr != 'y':
             self._ext_cache = None
         self.scene._broad.stale.add(self.obj)
+        nd = self._nd
+        if nd is not None and not _APPLY[0]:
+            nd.add(self)
+
+    def _change(self, attr, old):
+        nd = self._nd
+        if nd is not None and not _APPLY[0]:
+            nd.add(self)
+        _change_callback._change(self, attr, old)
 
     def _extent(self):
         ext = self._ext_cache
@@ -818,19 +865,55 @@ class physics(_change_callback, _lerpable, _keyed):
                 found[obj2] = inter
         return found
 
+    def _shape_stats(self, rows, A):
+        cached = self._stats
+        if cached is not None and cached[0] is rows and cached[1] == A:
+            return cached[2]
+        n = sx = si = 0
+        for i, spans in rows:
+            for a, b in spans:
+                k = b - a
+                n += k
+                sx += (a + b - 1) * k // 2
+                si += i * k
+        spread = 0.0
+        if n:
+            cxr = sx / n
+            cyr = -si / n
+            total = 0.0
+            for i, spans in rows:
+                dy = -i - cyr
+                dy2 = dy * dy
+                for a, b in spans:
+                    for c in range(a, b):
+                        d = (c - cxr) * A
+                        total += d * d + dy2
+            spread = total / n
+        stats = (n, sx, si, spread)
+        self._stats = (rows, A, stats)
+        return stats
+
     def body(self):
-        if self._body_cache is None:
-            pixels = self.getpixels()
-            n = len(pixels)
-            if n == 0:
-                self._body_cache = (0.0, 0.0, 1.0)
+        cached = self._body_cache
+        if cached is None:
+            t = self.t
+            hitbox = self.hitbox
+            if hitbox:
+                text = t._htext
+                ox = oy = 0
             else:
-                A = self.t.aspect
-                cx = sum(p[0] for p in pixels) / n
-                cy = sum(p[1] for p in pixels) / n
-                spread = sum(((p[0] - cx) * A) ** 2 + (p[1] - cy) ** 2 for p in pixels) / n
-                self._body_cache = (cx, cy, spread + (A * A + 1) / 12)
-        return self._body_cache
+                text = t._ptext
+                ox, oy = t._pvx, t._pvy
+            A = t.aspect
+            n, sx, si, spread = self._shape_stats(self._spans(text, hitbox), A)
+            if n == 0:
+                cached = (0.0, 0.0, 1.0)
+            else:
+                rx = round(t.x + ox)
+                ry = round(t.y + oy)
+                cached = ((n * rx + sx) / n, (n * ry - si) / n, spread + (A * A + 1) / 12)
+            self._body_cache = cached
+        return cached
 
     def _invinertia(self):
         if self.hitbox or not self.slope or not self.dynamic or not self.solid or len(self.getpixels()) < 2:
@@ -873,6 +956,7 @@ class physics(_change_callback, _lerpable, _keyed):
                 if ghost is partner:
                     return True
                 if callable(ghost):
+                    _CB[0] += 1
                     count = _argslen(ghost)
                     if count > 1:
                         result = ghost(partner, intersection)
@@ -949,7 +1033,7 @@ class physics(_change_callback, _lerpable, _keyed):
             single = None
         else:
             single = group[0] if len(group) == 1 else None
-            total = sum(m.mass for m in group)
+            total = _acc(m.mass for m in group)
             invmb = 1.0 / total
             if single is not None:
                 rb = single._arm(point)
@@ -960,8 +1044,8 @@ class physics(_change_callback, _lerpable, _keyed):
                 invib = single._invinertia()
             else:
                 rb = (0.0, 0.0)
-                vbx = sum(m.xvel / m.mass * m.t.aspect * m.mass for m in group) / total
-                vby = sum(m.yvel for m in group) / total
+                vbx = _acc(m.xvel / m.mass * m.t.aspect * m.mass for m in group) / total
+                vby = _acc(m.yvel for m in group) / total
                 invib = 0.0
             e_other = max(m.bounciness for m in group)
             mu_other = max(m.friction for m in group)
@@ -977,8 +1061,10 @@ class physics(_change_callback, _lerpable, _keyed):
 
         inva = 1.0 / self.mass
         ia = self._invinertia()
-        can = (ra[0] * ny - ra[1] * nx) ** 2 * ia
-        cbn = (rb[0] * ny - rb[1] * nx) ** 2 * invib
+        va_ = ra[0] * ny - ra[1] * nx
+        vb_ = rb[0] * ny - rb[1] * nx
+        can = va_ * va_ * ia
+        cbn = vb_ * vb_ * invib
         denom = inva + invmb + can + cbn
         gravity = self.gravity
         boost = e * max(0.0, -(gravity[0] * A * nx + gravity[1] * ny))
@@ -1002,11 +1088,13 @@ class physics(_change_callback, _lerpable, _keyed):
                 vbx = vb[0] - wb * rb[1]
                 vby = vb[1] + wb * rb[0]
             else:
-                vbx = sum(m.xvel * m.t.aspect / 1.0 for m in group) / total
-                vby = sum(m.yvel for m in group) / total
+                vbx = _acc(m.xvel * m.t.aspect / 1.0 for m in group) / total
+                vby = _acc(m.yvel for m in group) / total
             vt = (vax - vbx) * tx + (vay - vby) * ty
-            cat = (ra[0] * ty - ra[1] * tx) ** 2 * ia
-            cbt = (rb[0] * ty - rb[1] * tx) ** 2 * invib
+            ta_ = ra[0] * ty - ra[1] * tx
+            tb_ = rb[0] * ty - rb[1] * tx
+            cat = ta_ * ta_ * ia
+            cbt = tb_ * tb_ * invib
             jt = -vt / (inva + invmb + cat + cbt)
             limit = mu * j
             jt = max(-limit, min(limit, jt))
@@ -1020,7 +1108,7 @@ class physics(_change_callback, _lerpable, _keyed):
         if single is not None:
             single._impulse(jx, jy, *rb)
             return
-        total = sum(m.mass for m in group)
+        total = _acc(m.mass for m in group)
         for m in group:
             share = m.mass / total
             m._impulse(jx * share, jy * share)
@@ -1230,10 +1318,155 @@ class physics(_change_callback, _lerpable, _keyed):
         if abs(self._yvel) < 1e-9: self._yvel = 0
         if abs(self._avel) < 1e-9: self._avel = 0
 
+    def _nsync(self, w):
+        sc = self.scene
+        t = self.t
+        slot = self._nslot
+        if slot is None:
+            slot = self._nslot = w.alloc()
+            self._nspans = None
+            sc._nat_slots[slot] = self
+            sc._nat_ids[id(self.obj)] = slot
+        hitbox = self.hitbox
+        if hitbox:
+            text = t._htext
+            ox = oy = 0
+        else:
+            text = t._ptext
+            ox, oy = t._pvx, t._pvy
+        spans = self._spans(text, hitbox)
+        send = None
+        if spans is not self._nspans:
+            send = spans
+            self._nspans = spans
+        g = self.gravity
+        mass = self._mass
+        bt = self.bouncethreshold
+        obj = self.obj
+        ok = (len(g) == 2
+              and getattr(obj, 'joint', None) is None and len(t._onchangecb) == 2
+              and self._ncbs[0] in t._onchangecb and self._ncbs[1] in t._onchangecb
+              and not self._onchangecb and not any(self._ev)
+              and isinstance(mass, (int, float)) and mass > 0 and self.precision > 0
+              and -_NAT_LIMIT < t.x < _NAT_LIMIT and -_NAT_LIMIT < t.y < _NAT_LIMIT)
+        ids = sc._nat_ids
+        held = getattr(obj, '_ghosts', None) or ()
+        calls = False
+        mates = []
+        for ghost in held:
+            if callable(ghost):
+                calls = True
+            else:
+                mate = ids.get(id(ghost))
+                if mate is not None:
+                    mates.append(mate)
+        self._nok = ok
+        w.sync(slot, [
+            1.0 if self.solid else 0.0, 1.0 if self.phantom else 0.0, 1.0 if self.dynamic else 0.0,
+            1.0 if hitbox else 0.0, 1.0 if self.slope else 0.0, 1.0 if ok else 0.0,
+            self.bounciness, self.friction, float('nan') if bt is None else bt,
+            mass if ok else 1.0, self.drag, self.adrag, self.precision,
+            g[0] if ok else 0.0, g[1] if ok else 0.0, t.aspect,
+            self._xvel, self._yvel, self._avel, t.x, t.y, ox, oy, self._depenskip,
+            0.0 if self._touch_callbacks else 1.0, 1.0 if calls else 0.0,
+        ], send, mates)
+
+    def _nat_apply(self, writes, extra, touched):
+        sc = self.scene
+        slots = sc._nat_slots
+        t = self.t
+        if touched is not None:
+            self._touched = {id(slots[n].obj) for n in touched}
+        _APPLY[0] = True
+        try:
+            if touched is not None:
+                self._dirty('x')
+            for slot, mask, x, y, xv, yv, av in writes:
+                p = slots[slot]
+                pt = p.t
+                if mask & 3:
+                    pos = pt._p
+                    rev = pt._rev
+                    if mask & 1:
+                        pos[0] = x
+                        rev += 1
+                    if mask & 2:
+                        pos[1] = y
+                        rev += 1
+                    pt.__dict__['_rev'] = rev
+                    p._dirty('x')
+                if mask & 4:
+                    p._xvel = _keep(p._xvel, xv)
+                if mask & 8:
+                    p._yvel = _keep(p._yvel, yv)
+                if mask & 16:
+                    p._avel = _keep(p._avel, av)
+            if not extra[8]:
+                self.touch = (extra[0], extra[1])
+                self.sides = (extra[2], extra[3], extra[4], extra[5])
+            self._depenskip = extra[6]
+            if extra[7]:
+                self._good = (t.x, t.y, t.rotation)
+        finally:
+            _APPLY[0] = False
+
+    def _nat_try(self):
+        sc = self.scene
+        if not sc.__dict__.get('_nat_live') or sc._solidaxes:
+            return 0
+        w = sc._nat_world
+        if sc._nat_stale or sc._nat_dirty:
+            _nat_flush(sc, w)
+        if self._nslot is None:
+            return 0
+        found = w.step(self._nslot)
+        if found is None:
+            return 0
+        writes, extra, touched = found
+        self._nat_apply(writes, extra, touched)
+        return 2 if extra[8] else 1
+
+    def _nat_finish(self):
+        sc = self.scene
+        if not sc.__dict__.get('_nat_live') or sc._solidaxes:
+            return False
+        w = sc._nat_world
+        if sc._nat_stale or sc._nat_dirty:
+            _nat_flush(sc, w)
+        ids = sc._nat_ids
+        touched = [ids[i] for i in self._touched if i in ids]
+        found = w.finish(self._nslot, touched)
+        if found is None:
+            return False
+        self._nat_apply(found[0], found[1], None)
+        return True
+
     def physics(self, axises=None):
         physics._running += 1
         try:
+            sc = self.scene
+            if axises is None:
+                state = self._nat_try()
+                if state == 1:
+                    return
+                if state == 2:
+                    before = _CB[0]
+                    degrees = self.avel / self.mass
+                    aborted = bool(degrees) and self._rotate(degrees)
+                    if _CB[0] != before:
+                        sc._nat_stale = True
+                    if aborted:
+                        return
+                    if not self._nat_finish():
+                        self._depenetrate()
+                        self._probe()
+                        if _CB[0] != before:
+                            sc._nat_stale = True
+                    return
+            before = _CB[0]
             self._physics(axises)
+            if _CB[0] != before and sc.__dict__.get('_nat_live'):
+                sc._nat_stale = True
         finally:
             physics._running -= 1
 
@@ -1244,6 +1477,8 @@ class physics(_change_callback, _lerpable, _keyed):
         if once and id(obj2) in self._touched:
             return 2
         self._touched.add(id(obj2))
+        if self._touch_callbacks or obj2p._touch_callbacks:
+            _CB[0] += 1
         for cb in list(self._touch_callbacks):
             cb(obj2, intersection)
         if getattr(self.obj, 'physics', None) is not self:
@@ -1253,6 +1488,62 @@ class physics(_change_callback, _lerpable, _keyed):
         if getattr(self.obj, 'physics', None) is not self:
             return 0
         return 1 if getattr(obj2, 'physics', None) is not obj2p else 2
+
+    def _rotate(self, degrees):
+        pieces = max(1, int(math.ceil(abs(degrees) / self._turn_step())))
+        da = degrees / pieces
+        check = self.solid and not self.phantom and not self.hitbox
+        if pieces > 1 and (not check or self._turn_clear()):
+            angle = self.t.rotation
+            for _ in range(pieces):
+                angle = angle + da
+            self.t.rotation = angle
+            pieces = 0
+        remaining = pieces
+        while remaining > 0:
+            if check and remaining > 1:
+                jump = self._turn_free(da, remaining)
+                if jump:
+                    angle = self.t.rotation
+                    for _ in range(jump):
+                        angle = angle + da
+                    self.t.rotation = angle
+                    remaining -= jump
+                    continue
+            remaining -= 1
+            before = self.t.rotation
+            self.t.rotation = before + da
+            hit = self.overlaps() if check else None
+            if not hit:
+                continue
+            for obj2, intersection in list(hit.items()):
+                if self._notify(obj2, intersection, True) == 0:
+                    return True
+            contacts = []
+            for obj2, intersection in hit.items():
+                if getattr(obj2, 'physics', None) is None:
+                    continue
+                mtv = self._mtv(self._visible(obj2.physics)[1] if self.scene._solidaxes else obj2.physics.getpixels())
+                if mtv is None:
+                    continue
+                contacts.append((obj2.physics, self._contact_point(intersection, mtv[1], mtv[2]), mtv[1], mtv[2]))
+            self.t.rotation = before
+            applied = False
+            for obj2p, point, nx, ny in contacts:
+                group = [obj2p] if obj2p.dynamic else None
+                if self._solve(obj2p, group, point, nx, ny):
+                    applied = True
+            if applied:
+                break
+            if contacts:
+                self.avel = 0
+                break
+            self.t.rotation = before + da
+        if not check:
+            for obj2, intersection in list(self.collides(self.scene.solids, full=True).items()):
+                if self._notify(obj2, intersection, True) == 0:
+                    return True
+        return False
 
     def _physics(self, axises=None):
         axises = self._axises if axises is None else axises
@@ -1327,63 +1618,75 @@ class physics(_change_callback, _lerpable, _keyed):
 
         self.avel *= self.adrag
         degrees = self.avel / actualmass
-        if degrees:
-            pieces = max(1, int(math.ceil(abs(degrees) / self._turn_step())))
-            da = degrees / pieces
-            check = self.solid and not self.phantom and not self.hitbox
-            if pieces > 1 and (not check or self._turn_clear()):
-                angle = self.t.rotation
-                for _ in range(pieces):
-                    angle = angle + da
-                self.t.rotation = angle
-                pieces = 0
-            remaining = pieces
-            while remaining > 0:
-                if check and remaining > 1:
-                    jump = self._turn_free(da, remaining)
-                    if jump:
-                        angle = self.t.rotation
-                        for _ in range(jump):
-                            angle = angle + da
-                        self.t.rotation = angle
-                        remaining -= jump
-                        continue
-                remaining -= 1
-                before = self.t.rotation
-                self.t.rotation = before + da
-                hit = self.overlaps() if check else None
-                if not hit:
-                    continue
-                for obj2, intersection in list(hit.items()):
-                    if self._notify(obj2, intersection, True) == 0:
-                        return
-                contacts = []
-                for obj2, intersection in hit.items():
-                    if getattr(obj2, 'physics', None) is None:
-                        continue
-                    mtv = self._mtv(self._visible(obj2.physics)[1] if self.scene._solidaxes else obj2.physics.getpixels())
-                    if mtv is None:
-                        continue
-                    contacts.append((obj2.physics, self._contact_point(intersection, mtv[1], mtv[2]), mtv[1], mtv[2]))
-                self.t.rotation = before
-                applied = False
-                for obj2p, point, nx, ny in contacts:
-                    group = [obj2p] if obj2p.dynamic else None
-                    if self._solve(obj2p, group, point, nx, ny):
-                        applied = True
-                if applied:
-                    break
-                if contacts:
-                    self.avel = 0
-                    break
-                self.t.rotation = before + da
-            if not check:
-                for obj2, intersection in list(self.collides(self.scene.solids, full=True).items()):
-                    if self._notify(obj2, intersection, True) == 0:
-                        return
-
+        if degrees and self._rotate(degrees):
+            return
         self._depenetrate()
         self._probe()
+
+
+def _acc(values):
+    total = 0
+    for v in values:
+        total += v
+    return total
+
+
+def _keep(old, new):
+    if type(old) is int and new == new and abs(new) < 1e15 and new == int(new):
+        return int(new)
+    return new
+
+
+def _nat_flush(sc, w):
+    if sc._nat_stale:
+        _nat_refresh(sc, w)
+        return
+    dirty = sc._nat_dirty
+    for p in list(dirty):
+        if p._nslot is None:
+            _nat_refresh(sc, w)
+            return
+        p._nsync(w)
+    dirty.clear()
+
+
+def _nat_refresh(sc, w):
+    key, snap, phys = sc._roster()[:3]
+    bodies = []
+    for i in phys:
+        p = getattr(snap[i], 'physics', None)
+        if p is not None:
+            bodies.append(p)
+    sc._nat_bodies = bodies
+    w.set_scene(sc.bouncethreshold)
+    for p in bodies:
+        if p._nslot is None:
+            p._nslot = w.alloc()
+            p._nspans = None
+            sc._nat_slots[p._nslot] = p
+            sc._nat_ids[id(p.obj)] = p._nslot
+    for p in bodies:
+        p._nsync(w)
+    order = []
+    for o in sc.solids:
+        p = getattr(o, 'physics', None)
+        if p is not None and p._nslot is not None:
+            order.append(p._nslot)
+    w.set_order(order)
+    sc._nat_dirty.clear()
+    sc._nat_stale = False
+
+
+def _nat_begin(sc):
+    if '_nat_world' not in sc.__dict__:
+        return
+    _nat_refresh(sc, sc._nat_world)
+    sc._nat_live = True
+
+
+def _nat_end(sc):
+    if '_nat_world' in sc.__dict__:
+        sc._nat_live = False
 
 
 def _extra_velocity(i):

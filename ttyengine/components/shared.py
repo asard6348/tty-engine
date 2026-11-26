@@ -108,7 +108,8 @@ def _window(fx, fy, aspect):
             dy = yrel - fy
             bits = 0
             for j in range(2 * span + 1):
-                if math.hypot((j - span - fx) * aspect, dy) <= _REACH:
+                u = (j - span - fx) * aspect
+                if math.sqrt(u * u + dy * dy) <= _REACH:
                     bits |= 1 << j
             if bits:
                 rows[yrel] = bits
@@ -215,7 +216,7 @@ def _fit_rows(shape, center, sign, aspect):
         return None
     sx = (sum_x - filled * cx) * aspect
     sy = sum_y - filled * cy
-    length = math.hypot(sx, sy)
+    length = math.sqrt(sx * sx + sy * sy)
     if length < 1e-9:
         return None
     gx, gy = sign * sx / length, sign * sy / length
@@ -223,7 +224,8 @@ def _fit_rows(shape, center, sign, aspect):
         sxx = (n * exx - ex * ex) * aspect * aspect / n
         syy = (n * eyy - ey * ey) / n
         sxy = (n * exy - ex * ey) * aspect / n
-        half = math.hypot((sxx - syy) / 2, sxy)
+        hd = (sxx - syy) / 2
+        half = math.sqrt(hd * hd + sxy * sxy)
         major = (sxx + syy) / 2 + half
         minor = (sxx + syy) / 2 - half
         if major > 3 * max(minor, 1e-9):

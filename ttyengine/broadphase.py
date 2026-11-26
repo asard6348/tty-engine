@@ -1,4 +1,13 @@
+import os
 from itertools import chain
+
+try:
+    from ._native import Grid
+except ImportError:
+    Grid = None
+
+if os.environ.get('TTYENGINE_PURE'):
+    Grid = None
 
 SHIFT = 3
 LIMIT = 64
@@ -15,6 +24,7 @@ class Broadphase:
         self.cells = {}
         self.large = set()
         self.stale = set()
+        self.grid = Grid() if Grid is not None else None
 
     def touch(self, obj):
         self.stale.add(obj)
@@ -27,6 +37,9 @@ class Broadphase:
         box = body.bounds() if body is not None else None
         self.boxes[obj] = box
         if box is None:
+            return
+        if self.grid is not None:
+            self.grid.place(obj, self.order[obj], box)
             return
         cx0, cx1, cy0, cy1 = self._span(box)
         if (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > LIMIT:
@@ -44,6 +57,9 @@ class Broadphase:
     def _lift(self, obj):
         box = self.boxes.pop(obj, None)
         if box is None:
+            return
+        if self.grid is not None:
+            self.grid.lift(obj)
             return
         if obj in self.large:
             self.large.discard(obj)
@@ -65,6 +81,8 @@ class Broadphase:
         self.cells = {}
         self.large = set()
         self.stale = set()
+        if self.grid is not None:
+            self.grid.clear()
         order = self.order
         for index, obj in enumerate(solids):
             order.setdefault(obj, index)
@@ -110,6 +128,8 @@ class Broadphase:
         solids = self.scene.solids
         if self.stale or solids is not self.source or len(solids) != self.count:
             self.sync()
+        if self.grid is not None:
+            return self.grid.query(x0, x1, y0, y1, skip)
         cells = self.cells
         large = self.large
         if not cells and not large:

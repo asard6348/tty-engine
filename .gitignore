@@ -6,3 +6,6 @@ dist/
 .venv/
 venv/
 demos/
+native/target/
+ttyengine/_native*.so
+ttyengine/_native*.pyd

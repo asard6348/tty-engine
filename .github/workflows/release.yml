@@ -11,7 +11,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/tests.yml
 
-  build:
+  sdist:
     needs: tests
     runs-on: ubuntu-latest
     permissions:
@@ -36,10 +36,124 @@ jobs:
               sys.exit(f"tag {tag!r} does not match the version {version!r} in pyproject.toml")
           PY
 
-      - run: python -m pip install . build twine
-      - run: python -m unittest discover -s tests -v
-      - run: python -m build
+      - run: python -m pip install build twine
+      - run: python -m build --sdist
       - run: python -m twine check --strict dist/*
+
+      - name: Install from the sdist and run the tests
+        run: |
+          python -m pip install dist/*.tar.gz
+          python -m unittest discover -s tests -v
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  wheels:
+    needs: tests
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - macos-15-intel
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install "cibuildwheel>=3,<4"
+      - run: python -m cibuildwheel --output-dir wheelhouse
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  test-wheels:
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - macos-15-intel
+          - macos-latest
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          - os: ubuntu-24.04-arm
+            python-version: "3.8"
+          - os: macos-latest
+            python-version: "3.8"
+          - os: macos-latest
+            python-version: "3.9"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/
+
+      - name: Install the wheel only, never the source tree
+        shell: bash
+        run: python -m pip install --no-index --find-links wheelhouse ttyengine
+
+      - name: Check that the native core is active
+        shell: bash
+        run: python -c "import importlib; m = importlib.import_module('ttyengine.components.physics'); assert m._nat_mod is not None, 'native core missing'"
+
+      - name: Run the tests against the installed wheel
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: python -m unittest discover -s "$GITHUB_WORKSPACE/tests" -v
+
+      - name: Run the tests with the native core disabled
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          TTYENGINE_PURE: "1"
+        run: python -m unittest discover -s "$GITHUB_WORKSPACE/tests" -v
+
+  build:
+    needs: [sdist, test-wheels]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "{sdist,wheels-*}"
+          merge-multiple: true
+          path: dist/
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install twine
+      - run: python -m twine check --strict dist/*
+      - run: ls -l dist/
 
       - uses: actions/upload-artifact@v7
         with:

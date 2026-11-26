@@ -31,6 +31,7 @@ from . import components as _components
 from .ascii_styler import Styler
 from .compositor import Compositor
 from .broadphase import Broadphase
+from .components.physics import _nat_begin, _nat_end
 _comps = []
 _attrs = {}
 _temps = []
@@ -556,17 +557,21 @@ class Scene:
         objs = self._objs
         if physics:
             key, snap, phys = self._roster()[:3]
-            for n, i in enumerate(phys):
-                o = snap[i]
-                phy = getattr(o, 'physics', None)
-                if phy is not None and phy.dynamic and not o._remote:
-                    phy.physics()
-                    if (objs.rev, _versions[0]) != key:
-                        for o in snap[i + 1:]:
-                            phy = getattr(o, 'physics', None)
-                            if phy is not None and phy.dynamic and not o._remote:
-                                phy.physics()
-                        break
+            _nat_begin(self)
+            try:
+                for n, i in enumerate(phys):
+                    o = snap[i]
+                    phy = getattr(o, 'physics', None)
+                    if phy is not None and phy.dynamic and not o._remote:
+                        phy.physics()
+                        if (objs.rev, _versions[0]) != key:
+                            for o in snap[i + 1:]:
+                                phy = getattr(o, 'physics', None)
+                                if phy is not None and phy.dynamic and not o._remote:
+                                    phy.physics()
+                            break
+            finally:
+                _nat_end(self)
         self._ticks += 1
         self._tickfade()
         key, snap, _, trans, _, tfs = self._roster()
