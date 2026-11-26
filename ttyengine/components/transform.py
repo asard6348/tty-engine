@@ -20,6 +20,9 @@ def _rotation_forget(key):
         _rotation_cost[0] -= entry[0]
 
 
+_SHADOW_VERSION = [0]
+_LIGHT_REV = [0]
+
 class transform(_change_callback, _lerpable, _keyed):
     _rev = 0
 
@@ -87,6 +90,7 @@ class transform(_change_callback, _lerpable, _keyed):
         self._aspect = kwargs.get('aspect', None)
         self._flip = kwargs.get('flip', None)
         self._shadow = _check_shadow(kwargs.get('shadow', None))
+        _SHADOW_VERSION[0] += 1
         self._cells_cache = None
         self._anim = None
         self._onsplit = {}
@@ -342,6 +346,7 @@ class transform(_change_callback, _lerpable, _keyed):
     def shadow(self, value):
         old = self._shadow
         self._shadow = _check_shadow(value)
+        _SHADOW_VERSION[0] += 1
         self._change('shadow', old)
 
     @property
@@ -1585,6 +1590,18 @@ class transform(_change_callback, _lerpable, _keyed):
         self._opacity_cache = (text, found)
         return found
 
+    def _lights_key(self):
+        sc = self.scene
+        memo = sc.__dict__.get('_lights_memo')
+        if memo is None or memo[0] != _LIGHT_REV[0] or memo[1] is not sc.lights or memo[2] != len(sc.lights):
+            active = [l for l in sc.lights if l.on]
+            memo = sc._lights_memo = (_LIGHT_REV[0], sc.lights, len(sc.lights), active,
+                                      all(l._affect is None for l in active),
+                                      tuple((id(l), l._version) for l in active))
+        if memo[4]:
+            return memo[5]
+        return tuple((id(l), l._version) for l in memo[3] if l._affects(self.obj))
+
     def _shown(self):
         self._stylecheck()
         text = self.vtext
@@ -1592,7 +1609,7 @@ class transform(_change_callback, _lerpable, _keyed):
         if not text or (not sc.lights and sc.ambient >= 1):
             return text
         from .light import light
-        lights = tuple((id(l), l._version) for l in sc.lights if l.on and l._affects(self.obj))
+        lights = self._lights_key()
         key = (text, self._origin(), sc.ambient, sc.bgcolor, sc.fgcolor, lights, tuple(self._p[2:]) if sc.projected() else ())
         if self._litkey != key:
             self._litkey = key

@@ -1680,7 +1680,7 @@ def _nat_refresh(sc, w):
 def _nat_begin(sc):
     if '_nat_world' not in sc.__dict__:
         return
-    _nat_refresh(sc, sc._nat_world)
+    sc._nat_stale = True
     sc._nat_live = True
 
 

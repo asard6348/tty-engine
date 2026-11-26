@@ -3,7 +3,7 @@ from .. import ansi
 from .. import axes as _ax
 from .shared import _wrap, _ALPHAS, _BGCODE, _FGCODE, _rebake, _unbake
 from .inherit import _keyed, _lerpable
-from .transform import transform
+from .transform import transform, _SHADOW_VERSION, _LIGHT_REV
 from .force import _matches
 
 _STYLES = {}
@@ -34,6 +34,7 @@ class light(_lerpable, _keyed):
 
     def on_discard(self):
         self.scene.lights = [l for l in self.scene.lights if l is not self]
+        _LIGHT_REV[0] += 1
 
     def __init__(self, obj, **kwargs):
         self.obj = obj
@@ -77,9 +78,11 @@ class light(_lerpable, _keyed):
         self._cb = cb
         self.t.onchange(cb)
         self.scene.lights.append(self)
+        _LIGHT_REV[0] += 1
 
     def _touch(self):
         self._version += 1
+        _LIGHT_REV[0] += 1
         self._occ = None
 
     @property
@@ -254,7 +257,36 @@ class light(_lerpable, _keyed):
         return (cx + (u * math.cos(r) + v * math.sin(r)) / A,
                 cy + (-u * math.sin(r) + v * math.cos(r)))
 
+    def _plain_shadows(self):
+        sc = self.scene
+        key = (sc.objs.rev, _SHADOW_VERSION[0])
+        cached = sc.__dict__.get('_plain_shadow_cache')
+        if cached is None or cached[0] != key:
+            plain = all(getattr(getattr(o, 'transform', None), '_shadow', None) is None for o in sc.objs)
+            cached = sc._plain_shadow_cache = (key, plain)
+        return cached[1]
+
     def _casters(self):
+        if self._plain_shadows():
+            ox, oy = self._origin
+            span = self._radius + self._length / 2
+            reach_x = span / self.t.aspect + 2
+            reach_y = span + 2
+            found = []
+            me = self.obj
+            for o in self.scene._broad.near(math.ceil(ox - reach_x), math.floor(ox + reach_x),
+                                            math.ceil(oy - reach_y), math.floor(oy + reach_y), me):
+                t = getattr(o, 'transform', None)
+                if t is None:
+                    continue
+                p = getattr(o, 'physics', None)
+                if p is None or p.phantom or not p.solid:
+                    continue
+                found.append((o, t))
+            return found
+        return self._casters_scan()
+
+    def _casters_scan(self):
         ox, oy = self._origin
         span = self._radius + self._length / 2
         reach_x = span / self.t.aspect + 2
