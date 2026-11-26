@@ -229,6 +229,26 @@ class InputTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "mouse failed"):
             self.feed("\x1b[<0;10;5M")
 
+    def test_kitty_ctrl_c_raises_keyboard_interrupt(self):
+        for seq in ("\x1b[99;5u", "\x1b[99;5:1u", "\x1b[99;5:2u", "\x1b[99;69u", "\x1b[99:67;5u"):
+            with self.subTest(seq=seq):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.feed(seq)
+
+    def test_kitty_ctrl_c_release_does_not_interrupt(self):
+        self.feed("\x1b[99;5:3u")
+
+    def test_kitty_plain_c_does_not_interrupt(self):
+        hits = []
+        self.inp.onpress("c", lambda: hits.append("c"))
+        self.feed("\x1b[99u")
+        self.assertEqual(hits, ["c"])
+
+    def test_kitty_interrupt_fires_once(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.feed("\x1b[99;5u")
+        self.inp.update()
+
 
 class ImageTests(unittest.TestCase):
     @staticmethod

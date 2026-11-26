@@ -1,4 +1,4 @@
-import sys, re, os, threading, time, inspect, atexit, codecs, weakref, struct
+import sys, re, os, threading, time, inspect, atexit, codecs, weakref, struct, signal
 from collections import defaultdict, deque
 
 try:
@@ -277,6 +277,8 @@ _MAC_TAP_OFF    = (0xFFFFFFFE, 0xFFFFFFFF)
 _CSI_RE      = re.compile(ansi.CSI_RE + r'([0-9:;<=>?]*)([ -/]*)([@-~])')
 _CSI_PARTIAL_RE = re.compile(ansi.CSI_RE + r'[0-9:;<=>?]*[ -/]*')
 _ESC_TIMEOUT = 0.05
+_KITTY_CTRL = 4
+_KITTY_KEY_C = 99
 _REPEAT_MIN_GAP = 0.008
 _NO_REPEAT = frozenset(('shift', 'ctrl', 'alt', 'alt gr', 'windows',
                         'caps lock', 'num lock', 'scroll lock',
@@ -747,6 +749,7 @@ class inp():
         self._mouse_cbs   = []
         self._buf         = '' # raw stdin accumulation buffer
         self._buf_t       = 0.0
+        self._interrupt   = False
         self._dec         = codecs.getincrementaldecoder('utf-8')('replace')
 
         # ── Windows console saved modes ───────────────────────────────────
@@ -1202,10 +1205,17 @@ class inp():
         try:
             code = int(f[0].split(':')[0]) if f[0] else 1
             ev = 1
-            if len(f) > 1 and ':' in f[1]:
-                e = f[1].split(':')[1]
-                ev = int(e) if e else 1
+            mods = 0
+            if len(f) > 1:
+                m = f[1].split(':')
+                if m[0]:
+                    mods = max(int(m[0]) - 1, 0)
+                if len(m) > 1 and m[1]:
+                    ev = int(m[1])
         except ValueError:
+            return
+        if final == 'u' and code == _KITTY_KEY_C and mods & _KITTY_CTRL and ev != 3:
+            self._interrupt = True
             return
         if final == 'u':
             name, ident = _kitty_name(code), ('t', code)
@@ -1294,6 +1304,9 @@ class inp():
         self._mouse_wheel = 0
         self._buf += self._read_raw()
         self._parse_input(now)
+        if self._interrupt:
+            self._interrupt = False
+            signal.raise_signal(signal.SIGINT)
         if self._kitty_state == 'probing' and now - self._kitty_t > 1.5:
             self._kitty_state = 'off'
             if self._forced == 'kitty':

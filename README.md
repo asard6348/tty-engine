@@ -390,6 +390,8 @@ Mouse state is also available directly: `inp.mouse` is the current position, `in
 
 `inp.backend` reports the one in use: `'keyboard'`, `'kitty'`, `'evdev'`, `'kernel'` (Windows and macOS) or `'terminal'`. To force a backend, pass `backend=` to `Session()` (`'auto'`, `'keyboard'`, `'kitty'`, `'kernel'` or `'evdev'`, or `'terminal'`); a forced backend that is unavailable raises `RuntimeError`.
 
+Ctrl+C stops a running session on every backend. Terminals using the kitty keyboard protocol report it as a key event rather than an interrupt, so the engine converts it into a `SIGINT` itself: it raises `KeyboardInterrupt` as usual, and a handler installed with `signal.signal(signal.SIGINT, ...)` takes over as usual.
+
 Backends with real key events repeat a held key's `onpress` callbacks the way a terminal would: first after `repeatdelay` seconds (default `0.5`), then `repeatrate` times per second (default `30`). Both are `Session()` options, and a `repeatrate` of `0` turns repeating off.
 
 </details>
