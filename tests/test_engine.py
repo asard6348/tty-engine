@@ -2,6 +2,7 @@ import io
 import math
 import random
 import os
+import signal
 import struct
 import subprocess
 import sys
@@ -187,10 +188,12 @@ class JointTests(unittest.TestCase):
 class InputTests(unittest.TestCase):
     def setUp(self):
         from ttyengine.input_handler import inp
+        self.sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
         self.inp = inp(watchfocus=False, trackmotion=False, quiet=True, backend="terminal")
 
     def tearDown(self):
         self.inp.cleanup()
+        signal.signal(signal.SIGINT, self.sigint)
 
     def feed(self, data):
         self.inp._buf = data
@@ -247,6 +250,11 @@ class InputTests(unittest.TestCase):
     def test_kitty_interrupt_fires_once(self):
         with self.assertRaises(KeyboardInterrupt):
             self.feed("\x1b[99;5u")
+        self.inp.update()
+
+    def test_kitty_interrupt_respects_an_ignored_sigint(self):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        self.feed("\x1b[99;5u")
         self.inp.update()
 
 
