@@ -94,11 +94,13 @@ def _transform_spec():
         'rtext': lambda comp: comp._vbase,
         'aspect': lambda comp: comp._aspect,
         'sprite': lambda comp: None if comp._sprite is None else comp._sprite.spec,
+        'turns': lambda comp: tuple(sorted(comp.turns.items())),
     }
-    setters = {'sprite': lambda comp, value: setattr(comp, 'sprite', None if value is None else _sprite.sprite(*value))}
+    setters = {'sprite': lambda comp, value: setattr(comp, 'sprite', None if value is None else _sprite.sprite(*value)),
+               'turns': lambda comp, value: setattr(comp, 'turns', dict(value))}
     return Spec(transform, names, ctor, getters=getters, setters=setters, prepare=_transform_prepare,
-                more=lambda target: target.scene._axes.names[3:], optional=('sprite', 'projected'),
-                live=lambda target: target.transform._sprite is not None or not target.transform.projected)
+                more=lambda target: target.scene._axes.names[3:], optional=('sprite', 'projected', 'turns'),
+                live=lambda target: target.transform._sprite is not None or bool(target.transform._turns) or not target.transform.projected)
 
 
 def _links_get(comp):

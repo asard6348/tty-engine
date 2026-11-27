@@ -9,6 +9,7 @@ from itertools import groupby
 from operator import itemgetter, ne
 from . import ansi
 from . import cells as _cells
+from . import fog as _fog
 from . import projection as _projection
 from .ascii_styler import alphamark, alphaparse, bgrecomp, fgrecomp
 
@@ -736,6 +737,7 @@ class Compositor:
     @staticmethod
     def signature(sc, tfs, env, view):
         return (env, view, sc.camrotation, tuple(sorted(sc._camturn.items())), sc.perspective, tuple(sc._camext), sc.aspect,
+                sc.renderdistance, sc.fog, sc.fogstart, sc.fogcolor,
                 tuple([(t, t._rev, tuple(t._p)) for t in tfs if t.projected]))
 
     def raster(self, sc, tfs, view, bg):
@@ -749,6 +751,9 @@ class Compositor:
                 continue
             p = t._p
             held = t._sprite
+            if t._turns:
+                self.turned(sc, t, cam, buf, shaded)
+                continue
             if held is not None:
                 for offset, plane in t.planes():
                     origin = list(p)
@@ -772,11 +777,24 @@ class Compositor:
             origin[0] += t.vx
             origin[1] += t.vy
             buf.plane(origin, plane)
-        found = buf.text()
+        found = buf.text(_fog.fader(sc) if cam.fog else None)
         if not found:
             return []
         grid = self.parse(sc, found, False)
         return [(view[0], view[1], grid)]
+
+    def turned(self, sc, t, cam, buf, shaded):
+        p = t._p
+        layers, pivot = t.parts()
+        spun = t.spun()
+        for offset, plane in layers:
+            origin = list(p)
+            for k, value in enumerate(offset):
+                origin[k] += value
+            if shaded:
+                plane = self.shade(sc, t, plane, origin)
+            base, dcv, drv = cam.rig(origin, spun, pivot)
+            buf.splat(plane, base, dcv, drv)
 
     @staticmethod
     def shade(sc, t, plane, origin):

@@ -2,6 +2,7 @@ import math
 import threading
 from .. import ansi
 from .. import axes as _ax
+from .. import cells as _cells
 from .. import sprite as _sprite
 from ..ascii_styler import alphamark
 from .shared import _ALPHAS, _BGCODE, _NEIGHBOURS4, _NEIGHBOURS8, _NEIGHBOURS_HALF, _SGR, _argslen, _check_shadow, _contact_normal_cells, _contact_point_cells, _easing, _footprint, _mtv_cells, _styleprop
@@ -63,6 +64,7 @@ class transform(_change_callback, _lerpable, _keyed):
         held = kwargs.get('sprite')
         self._sprite = held if isinstance(held, _sprite.sprite) else None
         self.projected = kwargs.get('projected', True) is not False
+        self._turns = {}
         raw = kwargs.get('text', '')
         if self._sprite is not None and not raw:
             raw = self._sprite.footprint()
@@ -119,6 +121,9 @@ class transform(_change_callback, _lerpable, _keyed):
             self.htext = kwargs['htext']
         elif 'rtext' in kwargs:
             self.rtext = kwargs['rtext']
+        for key in ('xrotation', 'yrotation', 'zrotation', 'turns'):
+            if key in kwargs:
+                setattr(self, key, kwargs[key])
 
     def _invalidate(self):
         self._xlen_cache = None
@@ -197,6 +202,96 @@ class transform(_change_callback, _lerpable, _keyed):
             self.text = value.footprint()
         self._change('sprite', old)
 
+    def _turn(self, plane, value, name):
+        old = self._turns.get(plane, 0.0)
+        value = float(value) % 360.0
+        if value:
+            self._turns[plane] = value
+            self.scene._spun.add(self)
+        else:
+            self._turns.pop(plane, None)
+        if value != old:
+            self.__dict__['_rev'] = self._rev + 1
+            self._change(name, old)
+
+    @property
+    def xrotation(self):
+        return self._turns.get((1, 2), 0.0)
+    @xrotation.setter
+    def xrotation(self, value):
+        self._turn((1, 2), value, 'xrotation')
+
+    @property
+    def yrotation(self):
+        return self._turns.get((2, 0), 0.0)
+    @yrotation.setter
+    def yrotation(self, value):
+        self._turn((2, 0), value, 'yrotation')
+
+    @property
+    def zrotation(self):
+        return self.rotation
+    @zrotation.setter
+    def zrotation(self, value):
+        self.rotation = value
+
+    @property
+    def turns(self):
+        return {','.join([_ax.NAMES[i] for i in plane]): angle for plane, angle in self._turns.items()}
+    @turns.setter
+    def turns(self, value):
+        want = {}
+        for key, angle in dict(value or {}).items():
+            first, second = key.split(',')
+            want[(_ax.NAMES.index(first), _ax.NAMES.index(second))] = angle
+        for plane in [k for k in self._turns if k not in want]:
+            self.turn(plane[0], plane[1], 0)
+        for plane, angle in want.items():
+            self.turn(plane[0], plane[1], angle)
+
+    def turn(self, a, b, value=None):
+        i = _ax.NAMES.index(a) if isinstance(a, str) else a
+        j = _ax.NAMES.index(b) if isinstance(b, str) else b
+        if i == j or not (0 <= i < len(self._p) and 0 <= j < len(self._p)):
+            raise ValueError('a rotation needs two different axes of the scene')
+        if (i, j) == (0, 1):
+            if value is None:
+                return self.rotation
+            self.rotation = value
+            return None
+        if value is None:
+            return self._turns.get((i, j), 0.0)
+        self._turn((i, j), value, _ax.NAMES[i] + _ax.NAMES[j] + 'rotation')
+        return None
+
+    def spun(self):
+        found = []
+        if self._rotation % 360:
+            rad = math.radians(-self._rotation)
+            found.append((0, 1, math.cos(rad), math.sin(rad)))
+        for (i, j), angle in sorted(self._turns.items()):
+            rad = math.radians(angle)
+            found.append((i, j, math.cos(rad), math.sin(rad)))
+        return found
+
+    def parts(self):
+        p = self._p
+        held = self._sprite
+        if held is not None:
+            centre = held.centre()
+            mid = [p[k] + (centre[k] if k < len(centre) else 0) for k in range(2, len(p))]
+            return held.planes, (centre[0], -centre[1], mid)
+        plane = {}
+        for r, row in enumerate(_cells.parse(self._rtext)):
+            for c, cell in enumerate(row):
+                if self.renderspaces or not _cells.blank(cell):
+                    plane[c, r] = cell
+        if not plane:
+            return (), (0.0, 0.0, list(p[2:]))
+        cols = [c for c, _ in plane]
+        rows = [r for _, r in plane]
+        return (((), plane),), ((min(cols) + max(cols) + 1) / 2, (max(rows) + 1) / 2, list(p[2:]))
+
     def planes(self):
         held = self._sprite
         if held is None:
@@ -224,6 +319,8 @@ class transform(_change_callback, _lerpable, _keyed):
             p.extend([0] * (n - len(p)))
         else:
             del p[n:]
+        for plane in [k for k in self._turns if max(k) >= n]:
+            del self._turns[plane]
         self.__dict__['_rev'] = self._rev + 1
 
     @property
@@ -1373,6 +1470,14 @@ class transform(_change_callback, _lerpable, _keyed):
 
     def center(self, local=False):
         return self.extent(local)[:2]
+
+    def centre(self, local=False):
+        found = list(self.center(local))
+        held = self._sprite
+        mid = held.centre()[2:] if held is not None else ()
+        for k, value in enumerate(self._p[2:]):
+            found.append((0 if local else value) + (mid[k] if k < len(mid) else 0))
+        return tuple(found)
 
     def forward(self, move=1, offset=0, angle=None):
         angle = math.radians((self._rotation if angle is None else angle) + offset)

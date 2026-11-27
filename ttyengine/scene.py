@@ -1,5 +1,6 @@
 import inspect
 import math
+import weakref
 _ARGS = {}
 def _argslen(cb):
     try:
@@ -72,6 +73,7 @@ def _scopes():
             found[cls.__name__] = (cls, mapping)
     return found
 _scoped = _scopes()
+_TURNS = frozenset(('xrotation', 'yrotation', 'zrotation', 'turns'))
 
 def _expand(kwargs):
     if not any(name in kwargs for name in _scoped):
@@ -177,6 +179,11 @@ class obj:
         return True
 
     def _extra(self, key, value=None):
+        if key in _TURNS:
+            if value is None:
+                return _attrs['x']
+            ok = isinstance(value, dict) if key == 'turns' else isinstance(value, (int, float)) and not isinstance(value, bool)
+            return _attrs['x'] if ok else None
         if key == 'sprite':
             return _attrs['x'] if isinstance(value, _sprite.sprite) else None
         if key == 'projected':
@@ -411,6 +418,11 @@ class Scene:
         self._camrotation = 0.0
         self._camturn = {}
         self._perspective = 0.0
+        self._renderdistance = 0.0
+        self._fog = 0.0
+        self._fogstart = 0.0
+        self._fogcolor = None
+        self._spun = weakref.WeakSet()
         self._bgcolor = (0, 0, 0)
         self._fade = None
         self._ticks = 0
@@ -801,8 +813,51 @@ class Scene:
         if value != old:
             self._fire(self._oncamcb, 'perspective', old)
 
+    def _distance(self, name, value):
+        value = float(value or 0.0)
+        if not value >= 0 or value == float('inf'):
+            raise ValueError('%s is a distance and cannot be negative or infinite' % name)
+        old = getattr(self, '_' + name)
+        setattr(self, '_' + name, value)
+        if value != old:
+            self._fire(self._oncamcb, name, old)
+
+    @property
+    def renderdistance(self):
+        return self._renderdistance
+    @renderdistance.setter
+    def renderdistance(self, value):
+        self._distance('renderdistance', value)
+
+    @property
+    def fog(self):
+        return self._fog
+    @fog.setter
+    def fog(self, value):
+        self._distance('fog', value)
+
+    @property
+    def fogstart(self):
+        return self._fogstart
+    @fogstart.setter
+    def fogstart(self, value):
+        self._distance('fogstart', value)
+
+    @property
+    def fogcolor(self):
+        return self._fogcolor
+    @fogcolor.setter
+    def fogcolor(self, value):
+        value = None if value is None else tuple(value)
+        if value is not None and (len(value) != 3 or not all(isinstance(v, (int, float)) and 0 <= v <= 255 for v in value)):
+            raise ValueError('fogcolor is None or three numbers between 0 and 255')
+        old = self._fogcolor
+        self._fogcolor = value
+        if value != old:
+            self._fire(self._oncamcb, 'fogcolor', old)
+
     def projected(self):
-        return bool(self._perspective or self._camturn)
+        return bool(self._perspective or self._camturn or self._renderdistance or self._fog or any([t._turns for t in self._spun]))
 
     def _planes(self):
         found = [(0, 1, math.cos(math.radians(self._camrotation)), math.sin(math.radians(self._camrotation)))] if self._camrotation else []
@@ -813,16 +868,27 @@ class Scene:
 
     def focus(self, target):
         t = getattr(target, 'transform', target)
+        if getattr(t, '_sprite', None) is not None:
+            return t.center()
         pivot = getattr(t, 'pivot', None)
         if pivot is None:
             return target[0], target[1]
         return pivot()
 
-    def follow(self, target=None, y=None, smooth=1, offset=(0, 0)):
+    def _depthfocus(self, target):
+        found = getattr(getattr(target, 'transform', target), 'centre', None)
+        if found is not None:
+            return found()[2:]
+        return tuple(target[2:]) if isinstance(target, (tuple, list)) else ()
+
+    def follow(self, target=None, y=None, smooth=1, offset=(0, 0), depth=None):
+        deep = ()
         if target is None or isinstance(target, (int, float)):
             px, py = target, y
         else:
             px, py = self.focus(target)
+            if self.projected() if depth is None else depth:
+                deep = self._depthfocus(target)
         dx = dy = 0
         if px is not None:
             goal = px + offset[0] - self._dimx / 2
@@ -836,6 +902,13 @@ class Scene:
             self.camx = self._camx + dx
         if dy:
             self.camy = self._camy + dy
+        if deep:
+            ext = self._camext
+            goal = list(ext)
+            for k in range(min(len(deep), len(ext))):
+                step = deep[k] + (offset[k + 2] if len(offset) > k + 2 else 0) - ext[k]
+                goal[k] = ext[k] + (step / smooth if smooth > 1 and abs(step) > 0.01 else step)
+            self.cam = (self._camx, self._camy) + tuple(goal)
         return dx, dy
 
     def _fire(self, callbacks, att='', old=None):

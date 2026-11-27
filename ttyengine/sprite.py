@@ -1,3 +1,6 @@
+import itertools
+import math
+
 from . import axes as _ax
 from . import cells as _cells
 
@@ -117,6 +120,20 @@ class sprite:
             found = self._slabs[solid] = tuple((key, frozenset(cells)) for key, cells in groups.items())
         return found
 
+    def centre(self):
+        if not self.cells:
+            return (0.0, 0.0)
+        cols = [coord[0] for coord in self.cells]
+        rows = [coord[1] for coord in self.cells]
+        found = [(min(cols) + max(cols) + 1) / 2, -(max(rows) + 1) / 2]
+        offsets = [self.offset(coord) for coord in self.cells]
+        for axis in self.axes:
+            while len(found) <= axis:
+                found.append(0.0)
+            values = [off[axis] for off in offsets if len(off) > axis]
+            found[axis] = (min(values) + max(values)) / 2
+        return tuple(found)
+
     def footprint(self):
         if self._flat is None:
             best = {}
@@ -138,3 +155,104 @@ class sprite:
 
 def build(layers, axes=None, step=1, spaces=False):
     return sprite(layers, axes, step, spaces)
+
+
+def _spin(vec, planes, back=False):
+    for i, j, c, s in (reversed(planes) if back else planes):
+        if back:
+            s = -s
+        a = vec[i]
+        b = vec[j]
+        vec[i] = a * c - b * s
+        vec[j] = a * s + b * c
+    return vec
+
+
+def rotate(held, planes, aspect=0.5, limit=2000000):
+    if not held.cells:
+        return held
+    centre = held.centre()
+    pc = centre[0]
+    pr = -centre[1]
+    mid = {axis: centre[axis] for axis in held.axes}
+    steps = dict(zip(held.axes, held.steps))
+    touched = {k for i, j, _, _ in planes for k in (i, j) if k >= 2}
+    axes = tuple(sorted(set(held.axes) | touched))
+    top = max((axes[-1] if axes else 1), 1) + 1
+    steps.update({axis: 1 for axis in axes if axis not in steps})
+    half = [aspect / 2, 0.5] + [steps.get(axis, 1) / 2 if axis >= 2 else 0.5 for axis in range(2, top)]
+    columns = []
+    for j in range(top):
+        unit = [0.0] * top
+        unit[j] = 1.0
+        columns.append(_spin(unit, planes))
+    reach = [sum([abs(columns[j][k]) * half[j] for j in range(top)]) for k in range(top)]
+    low = [float('inf')] * top
+    high = [float('-inf')] * top
+    for coord in held.cells:
+        off = held.offset(coord)
+        vec = [0.0] * top
+        vec[0] = (coord[0] + 0.5 - pc) * aspect
+        vec[1] = pr - coord[1] - 0.5
+        for axis in range(2, len(off)):
+            vec[axis] = off[axis] - mid.get(axis, 0)
+        _spin(vec, planes)
+        for k in range(top):
+            if vec[k] - reach[k] < low[k]:
+                low[k] = vec[k] - reach[k]
+            if vec[k] + reach[k] > high[k]:
+                high[k] = vec[k] + reach[k]
+    ncols = max(1, int(math.ceil((high[0] - low[0]) / aspect - 1e-9)))
+    nrows = max(1, int(math.ceil(high[1] - low[1] - 1e-9)))
+    counts = [max(1, int(math.ceil((high[axis] - low[axis]) / steps[axis] - 1e-9))) for axis in axes]
+    volume = ncols * nrows
+    for count in counts:
+        volume *= count
+    if volume > limit:
+        raise ValueError('the rotated sprite would hold %d cells' % volume)
+    cells = {}
+    src = held.cells
+    for index in itertools.product(*[range(count) for count in counts]):
+        base = [0.0] * top
+        for axis, i in zip(axes, index):
+            base[axis] = low[axis] + (i + 0.5) * steps[axis]
+        for r in range(nrows):
+            for c in range(ncols):
+                vec = list(base)
+                vec[0] = low[0] + (c + 0.5) * aspect
+                vec[1] = high[1] - r - 0.5
+                _spin(vec, planes, True)
+                key = [int(round(vec[0] / aspect + pc - 0.5)), int(round(pr - 0.5 - vec[1]))]
+                for axis in held.axes:
+                    key.append(int(round((vec[axis] + mid[axis]) / steps[axis])))
+                for axis in range(2, top):
+                    if axis not in mid and abs(vec[axis]) >= 0.5:
+                        key = None
+                        break
+                found = src.get(tuple(key)) if key is not None else None
+                if found is not None:
+                    cells[(c, r) + index] = found
+    if not any([count > 1 for count in counts]):
+        rows = [[None] * ncols for _ in range(nrows)]
+        for key, cell in cells.items():
+            rows[key[1]][key[0]] = cell
+        return _cells.build(rows)
+    return _assemble(cells, axes, counts, [steps[axis] for axis in axes], ncols, nrows, held.spaces)
+
+
+def _assemble(cells, axes, counts, steps, ncols, nrows, spaces):
+    planes = {}
+    for key, cell in cells.items():
+        planes.setdefault(key[2:], {})[key[0], key[1]] = cell
+
+    def build(prefix):
+        depth = len(prefix)
+        if depth == len(counts):
+            plane = planes.get(prefix, {})
+            rows = [[None] * ncols for _ in range(nrows)]
+            for (c, r), cell in plane.items():
+                rows[r][c] = cell
+            return _cells.build(rows)
+        return tuple(build(prefix + (i,)) for i in range(counts[depth]))
+
+    return sprite(build(()), tuple(_ax.NAMES[axis] for axis in axes), tuple(steps), spaces)

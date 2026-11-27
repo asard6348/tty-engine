@@ -3,6 +3,7 @@ import os
 import re
 from itertools import repeat
 from .. import axes as _ax
+from ..projection import spin
 from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _mtv_cells, _offsets, _spread
 from .inherit import _change_callback, _keyed, _lerpable
 from .transform import transform
@@ -679,6 +680,8 @@ class physics(_change_callback, _lerpable, _keyed):
         solid = self.scene._solidaxes
         base = tuple([p[i] for i in solid])
         held = t._sprite
+        if t._turns and not self.hitbox:
+            return self._spun(base, solid, round(p[0]) + dx, round(p[1]) + dy)
         if held is None or (self.hitbox and t._htext != t._rtext):
             if mine is None:
                 mine = self._shifted(dx, dy) if dx or dy else self.getpixels()
@@ -715,6 +718,34 @@ class physics(_change_callback, _lerpable, _keyed):
                                for off, cells in held.slabs(solid)])
             cache = self._slab_cache = (key, found)
         return cache[1]
+
+    def _spun(self, base, solid, rx, ry):
+        t = self.t
+        key = (rx, ry, solid, t._rev)
+        cache = self._slab_cache
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        layers, (pc, pr, mid) = t.parts()
+        turns = t.spun()
+        a = self.scene.aspect or 0.5
+        n = len(t._p)
+        mids = [0.0, 0.0] + [v - t._p[k + 2] for k, v in enumerate(mid)]
+        groups = {}
+        for offset, plane in layers:
+            for (c, r), cell in plane.items():
+                if cell[0] == ' ':
+                    continue
+                vec = [(c + 0.5 - pc) * a, pr - r - 0.5] + [0.0] * (n - 2)
+                for k in range(2, n):
+                    vec[k] = (offset[k] if k < len(offset) else 0) - mids[k]
+                spin(vec, turns)
+                at = tuple([round(vec[i] * 2) / 2 + mids[i] for i in solid])
+                x = rx + pc + vec[0] / a
+                y = ry - pr + vec[1]
+                groups.setdefault(at, set()).add((math.floor(x), math.floor(y) + 1))
+        found = tuple([(tuple([a_ + b for a_, b in zip(base, at)]), cells) for at, cells in groups.items()])
+        self._slab_cache = (key, found)
+        return found
 
     def _pairs(self, other, dx=0, dy=0, mine=None):
         found = []

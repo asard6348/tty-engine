@@ -352,6 +352,20 @@ class SyncTests(unittest.TestCase):
         ball.transform.sprite = None
         self.assertTrue(pump(self.syncs, lambda: twin.sprite is None))
 
+    def test_object_turns_replicate(self):
+        host, guest, hs, gs = self.pair()
+        a, b = engine_scene.Scene(), engine_scene.Scene()
+        a.axes = b.axes = 4
+        hs.share(a, "arena")
+        gs.share(b, "arena")
+        o = a.obj().create("ab", 1, 2, xrotation=30)
+        self.connect(host, guest)
+        self.assertTrue(pump(self.syncs, lambda: len(b.objs) == 1))
+        twin = b.objs[0].transform
+        self.assertTrue(pump(self.syncs, lambda: twin.turns == {"y,z": 30.0}))
+        o.transform.turn("x", "w", 45)
+        self.assertTrue(pump(self.syncs, lambda: twin.turns.get("x,w") == 45.0))
+
     def test_camera_can_be_shared_by_variable(self):
         host, guest, hs, gs = self.pair()
         a, b = engine_scene.Scene(), engine_scene.Scene()

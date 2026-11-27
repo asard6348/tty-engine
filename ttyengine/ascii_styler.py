@@ -2,6 +2,7 @@ import re, shutil, colorsys, math
 from functools import lru_cache
 from . import ansi
 from . import cells as _cells
+from . import axes as _axes
 from . import sprite as _sprite
 from . import region as _regions
 from .figlet import Figlet, available
@@ -397,6 +398,25 @@ class Styler:
     @staticmethod
     def sprite(layers, axes=None, step=1, spaces=False):
         return _sprite.build(layers, axes, step, spaces)
+
+    @staticmethod
+    def rotate(source, xrotation=0, yrotation=0, zrotation=0, turns=None, aspect=0.5):
+        planes = []
+        if zrotation % 360:
+            rad = math.radians(-zrotation)
+            planes.append((0, 1, math.cos(rad), math.sin(rad)))
+        found = {(1, 2): xrotation, (2, 0): yrotation}
+        for key, angle in (turns or {}).items():
+            first, second = key.split(',')
+            found[(_axes.NAMES.index(first), _axes.NAMES.index(second))] = angle
+        for (i, j), angle in sorted(found.items()):
+            if angle % 360:
+                rad = math.radians(angle)
+                planes.append((i, j, math.cos(rad), math.sin(rad)))
+        held = source if isinstance(source, _sprite.sprite) else _sprite.sprite(source)
+        if not planes:
+            return source
+        return _sprite.rotate(held, planes, aspect)
 
     @staticmethod
     def scale(text, x, y=None):
