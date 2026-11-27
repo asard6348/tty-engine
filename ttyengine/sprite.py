@@ -256,3 +256,128 @@ def _assemble(cells, axes, counts, steps, ncols, nrows, spaces):
         return tuple(build(prefix + (i,)) for i in range(counts[depth]))
 
     return sprite(build(()), tuple(_ax.NAMES[axis] for axis in axes), tuple(steps), spaces)
+
+
+def _spots(part, position, keep):
+    own = dict(zip(part.axes, part.steps))
+    found = []
+    for coord, cell in part.cells.items():
+        if not (part.spaces or cell[0] != ' ' or (keep is not None and keep(cell[1]))):
+            continue
+        vals = [0.0] * len(position)
+        for i, axis in enumerate(part.axes):
+            vals[position[axis]] = coord[2 + i] * own[axis]
+        found.append((coord[0], coord[1], vals, cell))
+    return found
+
+
+def _middle(spots):
+    use = [spot for spot in spots if spot[3][0] != ' '] or spots
+    if not use:
+        return None
+    cols = [spot[0] for spot in use]
+    rows = [spot[1] for spot in use]
+    mid = [(min(cols) + max(cols)) / 2, (min(rows) + max(rows)) / 2]
+    for k in range(len(use[0][2])):
+        values = [spot[2][k] for spot in use]
+        mid.append((min(values) + max(values)) / 2)
+    return mid
+
+
+def merge(parts, center=True, keep=None):
+    axes = set()
+    steps = {}
+    for held, shift in parts:
+        for axis, step in zip(held.axes, held.steps):
+            axes.add(axis)
+            steps.setdefault(axis, step)
+        axes.update(axis for axis, amount in shift.items() if axis >= 2 and amount)
+    axes = sorted(axes)
+    position = {axis: i for i, axis in enumerate(axes)}
+    for axis in axes:
+        steps.setdefault(axis, 1)
+    floor = math.floor
+    placed = {}
+    anchor = None
+    for number, (held, shift) in enumerate(parts):
+        spots = _spots(held, position, keep)
+        move = [0, 0] + [0.0] * len(axes)
+        if number:
+            move[0] = int(round(shift.get(0, 0)))
+            move[1] = -int(round(shift.get(1, 0)))
+            for axis in axes:
+                move[2 + position[axis]] = shift.get(axis, 0)
+            mid = _middle(spots)
+            if center and anchor is not None and mid is not None:
+                move[0] += floor(anchor[0] - mid[0] + 0.5)
+                move[1] += floor(anchor[1] - mid[1] + 0.5)
+                for axis in axes:
+                    k = 2 + position[axis]
+                    step = steps[axis]
+                    move[k] += floor((anchor[k] - mid[k]) / step + 0.5) * step
+        else:
+            anchor = _middle(spots)
+        for col, row, vals, cell in spots:
+            key = [col + move[0], row + move[1]]
+            for k, axis in enumerate(axes):
+                key.append(int(round((vals[k] + move[2 + k]) / steps[axis])))
+            placed[tuple(key)] = cell
+    if not placed:
+        return None
+    low = [min(key[i] for key in placed) for i in range(2 + len(axes))]
+    cells = {tuple(key[i] - low[i] for i in range(len(key))): cell for key, cell in placed.items()}
+    ncols = max(key[0] for key in cells) + 1
+    nrows = max(key[1] for key in cells) + 1
+    counts = [max(key[2 + k] for key in cells) + 1 for k in range(len(axes))]
+    spaces = any(held.spaces for held, _ in parts)
+    if not any(count > 1 for count in counts):
+        rows = [[None] * ncols for _ in range(nrows)]
+        for key, cell in cells.items():
+            rows[key[1]][key[0]] = cell
+        return _cells.build(rows)
+    return _assemble(cells, tuple(axes), counts, [steps[axis] for axis in axes], ncols, nrows, spaces)
+
+
+def scale(held, factors):
+    if not held.cells:
+        return held
+    size = held.size
+    counts = [max(1, int(round(n * f))) for n, f in zip(size, factors)]
+    volume = 1
+    for n in counts:
+        volume *= n
+    if volume > 2000000:
+        raise ValueError('the scaled sprite would hold %d cells' % volume)
+
+    def span(k, j):
+        f = factors[k]
+        n = size[k]
+        if f < 1:
+            lo = int(j / f)
+            return lo, min(n, max(lo + 1, int(math.ceil((j + 1) / f))))
+        lo = int((j + 0.5) / f)
+        return (lo, lo + 1) if k == 0 else (min(n - 1, lo), min(n - 1, lo) + 1)
+
+    order = [1, 0] + list(range(2, len(size)))
+    src = held.cells
+    cells = {}
+    for index in itertools.product(*[range(n) for n in counts]):
+        found = [span(k, index[k]) for k in range(len(size))]
+        mid = [(index[k] + 0.5) / factors[k] for k in range(len(size))]
+        best = None
+        near = 0.0
+        for pick in itertools.product(*[range(*found[k]) for k in order]):
+            key = [0] * len(size)
+            for k, value in zip(order, pick):
+                key[k] = value
+            cell = src.get(tuple(key))
+            if cell is None or _cells.blank(cell):
+                continue
+            dist = 0.0
+            for k in range(len(size)):
+                dist += (key[k] + 0.5 - mid[k]) ** 2
+            if best is None or dist < near:
+                best, near = cell, dist
+        if best is not None:
+            cells[index] = best
+    return _assemble(cells, held.axes, counts[2:], list(held.steps), counts[0], counts[1], held.spaces)

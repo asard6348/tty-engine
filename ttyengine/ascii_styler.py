@@ -1,4 +1,4 @@
-import re, shutil, colorsys, math
+import re, shutil, colorsys, math, itertools
 from functools import lru_cache
 from . import ansi
 from . import cells as _cells
@@ -419,10 +419,25 @@ class Styler:
         return _sprite.rotate(held, planes, aspect)
 
     @staticmethod
-    def scale(text, x, y=None):
+    def scale(text, x, y=None, *depth, **named):
         y = x if y is None else y
         if not (math.isfinite(x) and math.isfinite(y)) or x <= 0 or y <= 0:
             raise ValueError('scale factors must be finite and positive')
+        if isinstance(text, _sprite.sprite):
+            if len(depth) > len(text.axes):
+                raise ValueError('the sprite has %d extra axes, got %d factors' % (len(text.axes), len(depth)))
+            factors = [x, y] + [x] * len(text.axes)
+            for i, value in enumerate(depth):
+                factors[2 + i] = value
+            for key, value in named.items():
+                if key not in _axes.NAMES or _axes.NAMES.index(key) not in text.axes:
+                    raise ValueError('the sprite has no axis %r' % (key,))
+                factors[2 + text.axes.index(_axes.NAMES.index(key))] = value
+            if not all(math.isfinite(f) and f > 0 for f in factors):
+                raise ValueError('scale factors must be finite and positive')
+            return _sprite.scale(text, factors)
+        if depth or named:
+            raise ValueError('only sprites have more than two axes to scale')
         rows = _cells.parse(text)
         if not rows:
             return ''
@@ -460,9 +475,99 @@ class Styler:
         return _cells.build(out)
 
 
+_VOLUME_LIMIT = 2000000
+
+
+def _list(value):
+    return isinstance(value, (list, tuple))
+
+
+def _per_axis(step, count):
+    if _list(step):
+        if len(step) != count:
+            raise ValueError('step needs %d values, got %d' % (count, len(step)))
+        found = [float(s) for s in step]
+    else:
+        found = [float(step)] * count
+    for s in found:
+        if not s > 0:
+            raise ValueError('step must be positive')
+    return found
+
+
+def _volume(counts):
+    total = 1
+    for n in counts:
+        total *= n
+    if total > _VOLUME_LIMIT:
+        raise ValueError('the shape would hold %d cells' % total)
+
+
+def _body(counts, inside):
+    _volume(counts)
+    return {index for index in itertools.product(*[range(n) for n in counts]) if inside(index)}
+
+
+def _carve(body, rank, thickness, filled, surface):
+    if filled and not surface:
+        return body
+    span = range(rank) if filled else range(2)
+    out = set()
+    for cell in body:
+        for axis in span:
+            if any(cell[:axis] + (cell[axis] + gap,) + cell[axis + 1:] not in body for gap in _gaps(thickness)):
+                out.add(cell)
+                break
+    return out
+
+
+def _gaps(thickness):
+    return [g for n in range(1, thickness + 1) for g in (-n, n)]
+
+
+def _stack(cells, counts, char, axes, step):
+    def layer(extra):
+        return '\n'.join(
+            ''.join(char if (x, y) + extra in cells else ' ' for x in range(counts[0]))
+            for y in range(counts[1]))
+
+    def build(prefix):
+        if len(prefix) == len(counts) - 2:
+            return layer(prefix)
+        return tuple(build(prefix + (i,)) for i in range(counts[2 + len(prefix)]))
+
+    return _sprite.build(build(()), axes, step, False)
+
+
+def _solid(counts, inside, char, filled, thickness, surface, axes, step):
+    thickness = max(1, round(thickness))
+    body = _body(counts, inside)
+    return _stack(_carve(body, len(counts), thickness, filled, surface), counts, char, axes, step)
+
+
 class Shapes:
     @staticmethod
-    def ellipse(rx, ry, char='o', filled=False, thickness=1):
+    def ellipse(rx, ry=None, char='o', filled=False, thickness=1, surface=False, axes=None, step=1):
+        if _list(rx):
+            if ry is not None:
+                raise ValueError('with the radii in a sequence, pass char and the other options by keyword')
+            radii = list(rx)
+        elif ry is None:
+            raise ValueError('an ellipse needs a radius for every axis')
+        else:
+            radii = [rx, ry]
+        if len(radii) < 2:
+            raise ValueError('an ellipse needs at least two radii')
+        if len(radii) > 2:
+            radii = [max(0, round(r)) for r in radii]
+            offs = [r + 0.5 for r in radii]
+            counts = [2 * r + 1 for r in radii]
+
+            def inside(index):
+                return sum([((i - r) / o) ** 2 for i, r, o in zip(index, radii, offs)]) <= 1
+
+            return _solid(counts, inside, char, filled, thickness, surface, axes, step)
+        rx, ry = radii
         rx = round(rx)
         ry = round(ry)
         if rx < 1 or ry < 1:
@@ -482,11 +587,28 @@ class Shapes:
         return '\n'.join(rows)
 
     @staticmethod
-    def circle(radius, char='o', filled=False, thickness=1, aspect=0.5):
-        return Shapes.ellipse(radius * (1 / aspect), radius, char, filled, thickness)
+    def circle(radius, char='o', filled=False, thickness=1, aspect=0.5, surface=False, dims=2, axes=None, step=1):
+        if dims < 2:
+            raise ValueError('dims must be at least 2')
+        if dims == 2:
+            return Shapes.ellipse(radius * (1 / aspect), radius, char, filled, thickness)
+        steps = _per_axis(step, dims - 2)
+        radii = [radius * (1 / aspect), radius] + [radius / s for s in steps]
+        return Shapes.ellipse(radii, None, char, filled, thickness, surface, axes, step)
 
     @staticmethod
-    def block(width, height=None, char='█', filled=False, thickness=1, aspect=0.5):
+    def block(width, height=None, char='█', filled=False, thickness=1, aspect=0.5, surface=False, axes=None, step=1):
+        if _list(width):
+            if height is not None:
+                raise ValueError('with the sizes in a sequence, pass char and the other options by keyword')
+            sizes = list(width)
+            if not sizes:
+                raise ValueError('a block needs at least one size')
+            width = sizes[0]
+            height = sizes[1] if len(sizes) > 1 else None
+            if len(sizes) > 2:
+                counts = [max(1, round(n)) for n in sizes]
+                return _solid(counts, lambda index: True, char, filled, thickness, surface, axes, step)
         width = max(1, round(width))
         height = max(1, round(width * aspect) if height is None else round(height))
         thickness = max(1, round(thickness))
@@ -499,8 +621,27 @@ class Shapes:
         return '\n'.join(rows)
 
     @staticmethod
-    def triangle(height, base=None, char='█', filled=False, thickness=1, aspect=0.5, direction='up'):
+    def triangle(height, base=None, char='█', filled=False, thickness=1, aspect=0.5, direction='up',
+                 surface=False, dims=None, axes=None, step=1):
         height = max(1, round(height))
+        bases = list(base) if _list(base) else [base]
+        rank = max(len(bases) + 1, dims or 2)
+        if rank > 2:
+            steps = _per_axis(step, rank - 2)
+            bases += [None] * (rank - 1 - len(bases))
+            defaults = [height / aspect] + [height / s for s in steps]
+            bases = [d if b is None else b for b, d in zip(bases, defaults)]
+            halves = [max(0, round((b - 1) / 2)) for b in bases]
+            counts = [2 * halves[0] + 1, height] + [2 * h + 1 for h in halves[1:]]
+
+            def inside(index):
+                depth = height - 1 - index[1] if direction == 'down' else index[1]
+                reach = depth / (height - 1) if height > 1 else 0
+                spans = [index[0]] + list(index[2:])
+                return all(abs(i - h) <= round(h * reach) for i, h in zip(spans, halves))
+
+            return _solid(counts, inside, char, filled, thickness, surface, axes, step)
+        base = bases[0]
         thickness = max(1, round(thickness))
         if base is None:
             base = height / aspect
@@ -519,7 +660,18 @@ class Shapes:
         return '\n'.join(rows)
 
     @staticmethod
-    def diamond(radius, char='█', filled=False, thickness=1, aspect=0.5):
+    def diamond(radius, char='█', filled=False, thickness=1, aspect=0.5, surface=False, dims=2, axes=None, step=1):
+        if dims < 2:
+            raise ValueError('dims must be at least 2')
+        if dims > 2:
+            steps = _per_axis(step, dims - 2)
+            radii = [max(1, round(radius * (1 / aspect))), max(1, round(radius))] + [max(1, round(radius / s)) for s in steps]
+            counts = [2 * r + 1 for r in radii]
+
+            def inside(index):
+                return sum([abs(i - r) / r for i, r in zip(index, radii)]) <= 1 + 1e-9
+
+            return _solid(counts, inside, char, filled, thickness, surface, axes, step)
         ry = max(1, round(radius))
         rx = max(1, round(radius * (1 / aspect)))
         thickness = max(1, round(thickness))
@@ -535,9 +687,18 @@ class Shapes:
         return '\n'.join(rows)
 
     @staticmethod
-    def line(length, char='█', thickness=1, vertical=False):
+    def line(length, char='█', thickness=1, vertical=False, axis=None, step=1):
         length = max(1, round(length))
         thickness = max(1, round(thickness))
+        if axis is not None:
+            found = axis if isinstance(axis, int) and not isinstance(axis, bool) else _axes.NAMES.index(axis)
+            if found == 1:
+                vertical = True
+            elif found == 0:
+                vertical = False
+            else:
+                layer = '\n'.join([char * thickness] * thickness)
+                return _sprite.build((layer,) * length, (_axes.NAMES[found],), step, False)
         if vertical:
             return '\n'.join([char * thickness] * length)
         return '\n'.join([char * length] * thickness)

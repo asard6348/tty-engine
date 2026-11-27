@@ -594,16 +594,44 @@ class transform(_change_callback, _lerpable, _keyed):
             out_rows.append(row)
         return '\n'.join(out_rows)
 
-    def merge(self, *layers, dx=0, dy=0, center=True):
+    def merge(self, *layers, dx=0, dy=0, center=True, **extra):
+        shift = {}
+        for key, value in extra.items():
+            name = key[1:] if key.startswith('d') else None
+            if name not in _ax.NAMES[2:]:
+                raise TypeError('merge() got an unexpected keyword argument %r' % key)
+            shift[_ax.NAMES.index(name)] = value
         items = []
+        deep = bool(any(shift.values()))
         for layer in layers:
-            if isinstance(layer, str):
-                items.append((layer, 0, 0))
+            if isinstance(layer, (str, _sprite.sprite)):
+                items.append((layer, 0, 0, ()))
+                deep = deep or isinstance(layer, _sprite.sprite)
             else:
-                text, ox, oy = (tuple(layer) + (0, 0))[:3]
-                items.append((text, ox, oy))
+                given = tuple(layer)
+                text, ox, oy = (given + (0, 0))[:3]
+                more = given[3:]
+                items.append((text, ox, oy, more))
+                deep = deep or isinstance(text, _sprite.sprite) or any(more)
         if len(items) == 1:
-            items.insert(0, (self._vrtext, 0, 0))
+            if self._sprite is not None:
+                items.insert(0, (self._sprite, 0, 0, ()))
+                deep = True
+            else:
+                items.insert(0, (self._vrtext, 0, 0, ()))
+        if deep:
+            parts = []
+            for number, (text, ox, oy, more) in enumerate(items):
+                held = text if isinstance(text, _sprite.sprite) else _sprite.sprite(text)
+                moves = {0: ox + dx, 1: oy + dy}
+                for i, amount in enumerate(more):
+                    moves[2 + i] = amount
+                for axis, amount in shift.items():
+                    moves[axis] = moves.get(axis, 0) + amount
+                parts.append((held, moves))
+            found = _sprite.merge(parts, center, self._has_background)
+            return '' if found is None else found
+        items = [item[:3] for item in items]
         floor = math.floor
 
         def middle(pixels):
