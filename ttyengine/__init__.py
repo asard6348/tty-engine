@@ -35,7 +35,7 @@ def _installed_version():
 
 __version__ = _installed_version() or _pyproject_version() or "0+unknown"
 
-__all__ = ["Session", "World", "Simulation", "Task", "start", "net", "__version__"]
+__all__ = ["Session", "World", "Simulation", "Task", "start", "net", "pure", "__version__"]
 
 
 import importlib
@@ -46,4 +46,6 @@ def __getattr__(name):
         return getattr(submod, name)
     if name == "net":
         return importlib.import_module(".net", __name__)
+    if name == "pure":
+        return importlib.import_module(".components.shared", __name__).pure
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

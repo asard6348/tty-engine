@@ -321,6 +321,16 @@ def _argslen(cb):
         found = _ARGS[cb] = len(inspect.signature(cb).parameters)
     return found
 
+def pure(fn):
+    fn._pure = True
+    return fn
+
+def _impure(callbacks):
+    for cb in callbacks:
+        if not getattr(cb, '_pure', False):
+            return True
+    return False
+
 def _closure_refs(fn, obj):
     if not fn.__closure__:
         return False

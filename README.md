@@ -442,6 +442,21 @@ player.physics.ontouch(entered)
 
 `ontouch` fires when one body moves into another. A body that is only resting against, or pushed against by, another body does not trigger it, so use `touch`, `sides` and `grounded` for that case.
 
+**Pure callbacks.** After a touch callback or a callable ghost runs, the native physics core assumes the callback may have changed any body and refreshes its mirror of the scene before the next body steps. A callback that only reads the scene (plays a sound, counts, logs, returns a verdict) can be marked with `ttyengine.pure` so that refresh is skipped:
+
+```python
+import ttyengine
+
+@ttyengine.pure
+def entered(other):
+    sound.beep(660)
+
+player.physics.ontouch(entered)
+player.physics.ghost(ttyengine.pure(lambda other: other is ally))
+```
+
+A pure callback must not write to any object, component or scene setting, and must not add or discard objects. `ontouch(..., once=True)` callbacks and callbacks whose `when` filter is not also marked pure are never treated as pure.
+
 **Letting bodies pass through each other.** `ghost(other)` stops two bodies from colliding, and `unghost(other)` makes them collide again. `other` is an object, or a function that is called with the other object (and, if it takes a second parameter, the overlapping cells) and returns `True` while the pair should pass through each other. Ghosting works in both directions, so `unghost` clears it whichever of the two bodies it was set on, and it returns `True` when something was removed. Pairs that a joint keeps apart stay ghosted, and a function is removed by passing the same function again.
 
 ```python

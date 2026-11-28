@@ -10,6 +10,7 @@ os.environ.setdefault("LINES", "40")
 
 from ttyengine import broadphase
 from ttyengine import scene as scene_mod
+from ttyengine.components.shared import pure
 
 phys_mod = importlib.import_module("ttyengine.components.physics")
 
@@ -301,6 +302,96 @@ class WorldParityTests(unittest.TestCase):
             a.tick(True)
             b.tick(True)
             self.assertEqual(snapshot(a), snapshot(b), "diverged at frame %d" % frame)
+
+    def test_pure_callbacks_skip_mirror_refresh(self):
+        def run(mark):
+            sc = build_world(5, 25, self.shapes, True, False)
+            hits = [0]
+            for o in sc.objs[3:9]:
+                def callback(other, cells, hits=hits):
+                    hits[0] += 1
+
+                o.physics.ontouch(pure(callback) if mark else callback)
+            refreshes = [0]
+            original = phys_mod._nat_refresh
+
+            def counting(scene, world):
+                refreshes[0] += 1
+                return original(scene, world)
+
+            phys_mod._nat_refresh = counting
+            try:
+                states = []
+                for frame in range(100):
+                    sc.tick(True)
+                    states.append(snapshot(sc))
+            finally:
+                phys_mod._nat_refresh = original
+            return states, hits[0], refreshes[0]
+
+        marked = run(True)
+        plain = run(False)
+        self.assertEqual(marked[0], plain[0])
+        self.assertEqual(marked[1], plain[1])
+        self.assertGreater(marked[1], 0)
+        self.assertLess(marked[2], plain[2])
+
+
+class PureCallbackTests(unittest.TestCase):
+    shapes = ["O", "#", "##", "##\n##"]
+
+    def run_world(self, touch=None, ghost=None, once=False, when=None):
+        sc = build_world(5, 25, self.shapes, False, False)
+        hits = [0]
+        for o in sc.objs[3:9]:
+            def callback(other, cells, hits=hits):
+                hits[0] += 1
+
+            o.physics.ontouch(touch(callback) if touch else callback, when=when, once=once)
+        if ghost is not None:
+            bodies = [o for o in sc.objs if getattr(o, "physics", None) is not None and o.physics.dynamic]
+            for body in bodies[8:20]:
+                body.physics.ghost(ghost(lambda partner: False))
+        before = phys_mod._CB[0]
+        for frame in range(100):
+            sc.tick(True)
+        return hits[0], phys_mod._CB[0] - before
+
+    def test_unmarked_touch_callbacks_are_counted(self):
+        hits, counted = self.run_world()
+        self.assertGreater(hits, 0)
+        self.assertGreater(counted, 0)
+
+    def test_pure_touch_callbacks_are_not_counted(self):
+        hits, counted = self.run_world(touch=pure)
+        self.assertGreater(hits, 0)
+        self.assertEqual(counted, 0)
+
+    def test_pure_touch_callback_with_once_is_counted(self):
+        hits, counted = self.run_world(touch=pure, once=True)
+        self.assertGreater(hits, 0)
+        self.assertGreater(counted, 0)
+
+    def test_pure_touch_callback_with_unmarked_filter_is_counted(self):
+        hits, counted = self.run_world(touch=pure, when=lambda other: True)
+        self.assertGreater(hits, 0)
+        self.assertGreater(counted, 0)
+
+    def test_pure_touch_callback_with_pure_filter_is_not_counted(self):
+        hits, counted = self.run_world(touch=pure, when=pure(lambda other: True))
+        self.assertGreater(hits, 0)
+        self.assertEqual(counted, 0)
+
+    def test_pure_ghost_function_is_not_counted(self):
+        _, unmarked = self.run_world(touch=pure, ghost=lambda fn: fn)
+        _, marked = self.run_world(touch=pure, ghost=pure)
+        self.assertGreater(unmarked, 0)
+        self.assertEqual(marked, 0)
+
+    def test_pure_is_exported(self):
+        import ttyengine
+
+        self.assertIs(ttyengine.pure, pure)
 
 
 if __name__ == "__main__":

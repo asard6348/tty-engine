@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- New `ttyengine.pure` marker for `ontouch` callbacks and callable `ghost` functions that only read the scene. After a pure callback fires, the native physics core keeps its mirror instead of refreshing it before the next body steps. Callbacks that are not marked, `once=True` touch callbacks, and callbacks with an unmarked `when` filter behave as before.
 - Every `Styler.shapes` shape takes `uniform=True`: `thickness` is then counted in world units, so side strokes are `1 / aspect` cells wide (two full block symbols with the default `aspect`) and match the top and bottom ones. In multi-dimensional shapes the extra axes divide the thickness by their `step`. The default `False` keeps the old behaviour.
 - Faster rendering and rotation with identical output: rotation memo hits write their fields directly instead of through `__setattr__`, the automass listener is merged into the physics change listener (one fewer callback per property write), and the compositor's per-row clamps use comparisons instead of `min`/`max` calls.
 - `Styler.scale` accepts sprites. `scale(sprite, x, y)` resizes every axis (the extra axes follow `x` unless told otherwise), `scale(sprite, x, y, 2, 3)` or `scale(sprite, x, y, z=2, w=3)` give the extra axes their own factors, and the result is a sprite with the same axes and steps. Text is scaled as before.

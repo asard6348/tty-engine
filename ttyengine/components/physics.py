@@ -4,7 +4,7 @@ import re
 from itertools import repeat
 from .. import axes as _ax
 from ..projection import spin
-from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _mtv_cells, _offsets, _spread
+from .shared import _RELIEF, _argslen, _closure_refs, _contact_normal_cells, _contact_point_cells, _impure, _mtv_cells, _offsets, _spread
 from .inherit import _change_callback, _keyed, _lerpable
 from .transform import transform
 
@@ -555,6 +555,7 @@ class physics(_change_callback, _lerpable, _keyed):
                 else: callback()
                 if once and wrapped in self._touch_callbacks:
                     self._touch_callbacks.remove(wrapped)
+        wrapped._pure = not once and getattr(callback, '_pure', False) and (when is None or getattr(when, '_pure', False))
         self._touch_callbacks.append(wrapped)
         return callback
 
@@ -985,7 +986,8 @@ class physics(_change_callback, _lerpable, _keyed):
                 if ghost is partner:
                     return True
                 if callable(ghost):
-                    _CB[0] += 1
+                    if not getattr(ghost, '_pure', False):
+                        _CB[0] += 1
                     count = _argslen(ghost)
                     if count > 1:
                         result = ghost(partner, intersection)
@@ -1506,7 +1508,7 @@ class physics(_change_callback, _lerpable, _keyed):
         if once and id(obj2) in self._touched:
             return 2
         self._touched.add(id(obj2))
-        if self._touch_callbacks or obj2p._touch_callbacks:
+        if _impure(self._touch_callbacks) or _impure(obj2p._touch_callbacks):
             _CB[0] += 1
         for cb in list(self._touch_callbacks):
             cb(obj2, intersection)
