@@ -224,7 +224,7 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(len(full), 64)
 
     def test_round_wireframes_are_great_circles(self):
-        sphere = Shapes.ellipse((6, 6, 6), char='o')
+        sphere = Shapes.ellipse((6, 6, 6), char='o', aspect=1.0)
         self.assertTrue(all(6 in cell for cell in sphere.cells))
         self.assertIn((12, 6, 6), sphere.cells)
         octa = Shapes.diamond(3, dims=3, aspect=1.0)
@@ -232,14 +232,14 @@ class ShapeTests(unittest.TestCase):
         self.assertIn((6, 3, 3), octa.cells)
 
     def test_flat_shapes_keep_their_outline(self):
-        disc = Shapes.ellipse((5, 4, 0), char='o')
+        disc = Shapes.ellipse((5, 4, 0), char='o', aspect=1.0)
         flat = Shapes.ellipse(5, 4, 'o')
         self.assertEqual({(c, r) for c, r, z in disc.cells}, {(c, r) for c, r in sprite_mod.sprite(flat).cells})
 
     def test_ellipse_with_per_axis_radii(self):
-        sp = Shapes.ellipse((6, 5, 4), char='o', filled=True)
+        sp = Shapes.ellipse((6, 5, 4), char='o', filled=True, aspect=1.0)
         self.assertEqual(sp.size, (13, 11, 9))
-        flat = Shapes.ellipse((4, 3, 0), char='o', filled=True)
+        flat = Shapes.ellipse((4, 3, 0), char='o', filled=True, aspect=1.0)
         self.assertEqual(flat.size, (9, 7, 1))
         self.assertEqual(len(flat), len(sprite_mod.sprite(Shapes.ellipse(4, 3, 'o', True)).cells))
 
@@ -277,6 +277,23 @@ class ShapeTests(unittest.TestCase):
         self.assertLess(set(sp.cells), set(shell.cells))
         self.assertLess(set(shell.cells), set(solid.cells))
 
+    def test_every_shape_uses_world_units(self):
+        shapes = {
+            'block': Shapes.block((10, 10, 10), char='#', filled=True),
+            'ellipse': Shapes.ellipse((5, 5, 5), char='o', filled=True),
+            'circle': Shapes.circle(5, 'o', True, dims=3),
+            'diamond': Shapes.diamond(5, dims=3, filled=True),
+            'pyramid': Shapes.triangle(10, (10, 10), filled=True),
+            'line': Shapes.line(10, '#', 10, axis='z'),
+        }
+        for name, sp in shapes.items():
+            width, height, depth = sp.size
+            self.assertAlmostEqual(width / height, 2, delta=0.25, msg=name)
+            self.assertAlmostEqual(depth / height, 1, delta=0.25, msg=name)
+        self.assertEqual(Shapes.ellipse((5, 5, 5), char='o', filled=True).cells,
+                         Shapes.circle(5, 'o', True, dims=3).cells)
+        self.assertEqual(Shapes.ellipse((5, 5, 5), char='o', filled=True, step=2).size, (21, 11, 5))
+
     def test_four_dimensions(self):
         sp = Shapes.circle(2, 'o', True, surface=True, dims=4)
         self.assertEqual((sp.rank, sp.axes), (4, (2, 3)))
@@ -293,7 +310,9 @@ class ShapeTests(unittest.TestCase):
 
     def test_line_along_extra_axes(self):
         sp = Shapes.line(4, '#', 2, axis='z')
-        self.assertEqual((sp.size, len(sp)), ((2, 2, 4), 16))
+        self.assertEqual((sp.size, len(sp)), ((4, 2, 4), 32))
+        self.assertEqual(Shapes.line(4, '#', 2, axis='z', aspect=1.0).size, (2, 2, 4))
+        self.assertEqual(Shapes.line(6, '#', axis='z', step=2).size, (2, 1, 3))
         self.assertEqual(Shapes.line(3, '-', axis='x'), Shapes.line(3, '-'))
         self.assertEqual(Shapes.line(3, '-', axis='y'), Shapes.line(3, '-', vertical=True))
         self.assertEqual(Shapes.line(2, axis='w').axes, (3,))
@@ -318,6 +337,71 @@ class ShapeTests(unittest.TestCase):
         merged = make_object().merge(box, wall)
         self.assertIsInstance(merged, sprite_mod.sprite)
         self.assertGreaterEqual(len(merged), len(box))
+
+
+class UniformTests(unittest.TestCase):
+    def test_default_keeps_thin_sides(self):
+        self.assertEqual(Shapes.block(8, 4, char='#'), '########\n#      #\n#      #\n########')
+        self.assertEqual(Shapes.block(8, 4, char='#', uniform=False), Shapes.block(8, 4, char='#'))
+
+    def test_block_sides_follow_the_aspect(self):
+        self.assertEqual(Shapes.block(8, 4, char='#', uniform=True), '########\n##    ##\n##    ##\n########')
+        thick = Shapes.block(12, 6, char='#', thickness=2, uniform=True).splitlines()
+        self.assertEqual(thick[2], '####    ####')
+        self.assertEqual(thick[1], '############')
+        square = Shapes.block(8, 4, char='#', aspect=1.0, uniform=True)
+        self.assertEqual(square, Shapes.block(8, 4, char='#', aspect=1.0))
+
+    def test_round_shapes_get_wider_sides(self):
+        rows = Shapes.ellipse(9, 4, 'o', uniform=True).splitlines()
+        self.assertEqual(rows[4], 'oo               oo')
+        self.assertEqual(Shapes.ellipse(9, 4, 'o').splitlines()[4], 'o                 o')
+        self.assertEqual(Shapes.circle(5, 'o', uniform=True).splitlines()[5], 'oo                 oo')
+        self.assertEqual(Shapes.circle(5, 'o', uniform=True), Shapes.ellipse(10, 5, 'o', uniform=True))
+        self.assertEqual(Shapes.circle(5, 'o', filled=True, uniform=True), Shapes.circle(5, 'o', filled=True))
+
+    def test_triangle_and_diamond_sides(self):
+        rows = Shapes.triangle(7, None, '^', uniform=True).splitlines()
+        self.assertEqual(rows[3], '   ^^   ^^')
+        self.assertEqual(rows[-1], '^' * 13)
+        mid = Shapes.diamond(5, '<', uniform=True).splitlines()[5]
+        self.assertEqual(mid, '<<                 <<')
+        self.assertEqual(Shapes.diamond(5, '<').splitlines()[5], '<                   <')
+
+    def test_vertical_lines_get_wider(self):
+        self.assertEqual(Shapes.line(3, '#', 2, vertical=True, uniform=True), '####\n####\n####')
+        self.assertEqual(Shapes.line(3, '#', 2, uniform=True), Shapes.line(3, '#', 2))
+        self.assertEqual(Shapes.line(3, '#', 1, axis='y', uniform=True), '##\n##\n##')
+
+    def test_multi_dimensional_edges_get_wider_sides(self):
+        plain = Shapes.block((6, 6, 6), char='#')
+        even = Shapes.block((6, 6, 6), char='#', uniform=True)
+        self.assertEqual(plain.size, even.size)
+        row = lambda sp, y: ''.join('#' if (x, y, 0) in sp.cells else '.' for x in range(sp.size[0]))
+        self.assertEqual(row(plain, 1), '#..........#')
+        self.assertEqual(row(even, 1), '##........##')
+        self.assertEqual(row(even, 0), '#' * 12)
+        self.assertLess(set(plain.cells), set(even.cells))
+
+    def test_multi_dimensional_shells_get_thicker_sides(self):
+        for build in (lambda **k: Shapes.circle(4, 'o', True, surface=True, dims=3, **k),
+                      lambda **k: Shapes.diamond(4, 'o', True, surface=True, dims=3, **k),
+                      lambda **k: Shapes.triangle(6, (6, 6), 'o', True, surface=True, **k),
+                      lambda **k: Shapes.ellipse((4, 4, 4), char='o', filled=True, surface=True, **k)):
+            self.assertGreaterEqual(len(build(uniform=True)), len(build()))
+            self.assertLess(len(build(uniform=True)), len(build(thickness=3)))
+        self.assertGreater(len(Shapes.circle(4, 'o', True, surface=True, dims=3, uniform=True)),
+                           len(Shapes.circle(4, 'o', True, surface=True, dims=3)))
+
+    def test_pyramid_wireframe_edges_get_wider(self):
+        plain = Shapes.triangle(6, (6, 6))
+        even = Shapes.triangle(6, (6, 6), uniform=True)
+        self.assertLess(set(plain.cells), set(even.cells))
+
+    def test_default_is_unchanged_for_every_shape(self):
+        for build in (lambda **k: Shapes.block((4, 4, 4), char='#', **k), lambda **k: Shapes.ellipse((4, 4, 4), char='o', **k),
+                      lambda **k: Shapes.triangle(5, (5, 5), **k), lambda **k: Shapes.diamond(3, dims=3, **k)):
+            self.assertEqual(build(uniform=False).cells, build().cells)
 
 
 class ScaleTests(unittest.TestCase):

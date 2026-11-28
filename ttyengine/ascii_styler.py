@@ -513,12 +513,12 @@ def _span(counts):
     return found or list(range(len(counts)))
 
 
-def _carve(body, span, thickness):
-    gaps = _gaps(thickness)
+def _carve(body, span, widths):
+    gaps = {axis: _gaps(widths[axis]) for axis in span}
     out = set()
     for cell in body:
         for axis in span:
-            if any(cell[:axis] + (cell[axis] + gap,) + cell[axis + 1:] not in body for gap in gaps):
+            if any(cell[:axis] + (cell[axis] + gap,) + cell[axis + 1:] not in body for gap in gaps[axis]):
                 out.add(cell)
                 break
     return out
@@ -542,28 +542,35 @@ def _stack(cells, counts, char, axes, step):
     return _sprite.build(build(()), axes, step, False)
 
 
-def _solid(counts, inside, char, filled, thickness, surface, axes, step, edge):
+def _widths(thickness, count, uniform, aspect, step):
     thickness = max(1, round(thickness))
+    if not uniform:
+        return [thickness] * count
+    steps = _per_axis(step, count - 2)
+    return [max(1, round(thickness / aspect)), thickness] + [max(1, round(thickness / s)) for s in steps]
+
+
+def _solid(counts, inside, char, filled, widths, surface, axes, step, edge):
     body = _body(counts, inside)
     span = _span(counts)
     if filled and not surface:
         cells = body
     else:
-        cells = _carve(body, span, thickness)
+        cells = _carve(body, span, widths)
         if not filled:
-            cells = {cell for cell in cells if edge(cell, span, thickness)}
+            cells = {cell for cell in cells if edge(cell, span, widths)}
     return _stack(cells, counts, char, axes, step)
 
 
 def _near_extremes(counts):
-    def edge(cell, span, thickness):
-        hits = sum([1 for k in span if cell[k] < thickness or cell[k] >= counts[k] - thickness])
+    def edge(cell, span, widths):
+        hits = sum([1 for k in span if cell[k] < widths[k] or cell[k] >= counts[k] - widths[k]])
         return hits >= len(span) - 1
     return edge
 
 
 def _on_planes(radii):
-    def edge(cell, span, thickness):
+    def edge(cell, span, widths):
         zeros = sum([1 for k in span if cell[k] == radii[k]])
         return zeros >= len(span) - 2
     return edge
@@ -571,7 +578,8 @@ def _on_planes(radii):
 
 class Shapes:
     @staticmethod
-    def ellipse(rx, ry=None, char='o', filled=False, thickness=1, surface=False, axes=None, step=1):
+    def ellipse(rx, ry=None, char='o', filled=False, thickness=1, surface=False, axes=None, step=1, aspect=0.5,
+                uniform=False):
         if _list(rx):
             if ry is not None:
                 raise ValueError('with the radii in a sequence, pass char and the other options by keyword')
@@ -583,14 +591,17 @@ class Shapes:
         if len(radii) < 2:
             raise ValueError('an ellipse needs at least two radii')
         if len(radii) > 2:
-            radii = [max(0, round(r)) for r in radii]
+            steps = _per_axis(step, len(radii) - 2)
+            scales = [1 / aspect, 1] + [1 / s for s in steps]
+            radii = [max(0, round(r * f)) for r, f in zip(radii, scales)]
             offs = [r + 0.5 for r in radii]
             counts = [2 * r + 1 for r in radii]
 
             def inside(index):
                 return sum([((i - r) / o) ** 2 for i, r, o in zip(index, radii, offs)]) <= 1
 
-            return _solid(counts, inside, char, filled, thickness, surface, axes, step, _on_planes(radii))
+            widths = _widths(thickness, len(counts), uniform, aspect, step)
+            return _solid(counts, inside, char, filled, widths, surface, axes, step, _on_planes(radii))
         rx, ry = radii
         rx = round(rx)
         ry = round(ry)
@@ -598,7 +609,7 @@ class Shapes:
             return char
         thickness = max(1, thickness)
         ox, oy = rx + 0.5, ry + 0.5
-        ix, iy = ox - thickness, oy - thickness
+        ix, iy = ox - (thickness / aspect if uniform else thickness), oy - thickness
         rows = []
         for dy in range(-ry, ry + 1):
             row = ''
@@ -611,17 +622,17 @@ class Shapes:
         return '\n'.join(rows)
 
     @staticmethod
-    def circle(radius, char='o', filled=False, thickness=1, aspect=0.5, surface=False, dims=2, axes=None, step=1):
+    def circle(radius, char='o', filled=False, thickness=1, aspect=0.5, surface=False, dims=2, axes=None, step=1,
+               uniform=False):
         if dims < 2:
             raise ValueError('dims must be at least 2')
         if dims == 2:
-            return Shapes.ellipse(radius * (1 / aspect), radius, char, filled, thickness)
-        steps = _per_axis(step, dims - 2)
-        radii = [radius * (1 / aspect), radius] + [radius / s for s in steps]
-        return Shapes.ellipse(radii, None, char, filled, thickness, surface, axes, step)
+            return Shapes.ellipse(radius * (1 / aspect), radius, char, filled, thickness, aspect=aspect, uniform=uniform)
+        return Shapes.ellipse([radius] * dims, None, char, filled, thickness, surface, axes, step, aspect, uniform)
 
     @staticmethod
-    def block(width, height=None, char='█', filled=False, thickness=1, aspect=0.5, surface=False, axes=None, step=1):
+    def block(width, height=None, char='█', filled=False, thickness=1, aspect=0.5, surface=False, axes=None, step=1,
+              uniform=False):
         if _list(width):
             if height is not None:
                 raise ValueError('with the sizes in a sequence, pass char and the other options by keyword')
@@ -634,22 +645,24 @@ class Shapes:
                 steps = _per_axis(step, len(sizes) - 2)
                 counts = [max(1, round(sizes[0] / aspect)), max(1, round(sizes[1]))]
                 counts += [max(1, round(n / s)) for n, s in zip(sizes[2:], steps)]
-                return _solid(counts, lambda index: True, char, filled, thickness, surface, axes, step,
+                widths = _widths(thickness, len(counts), uniform, aspect, step)
+                return _solid(counts, lambda index: True, char, filled, widths, surface, axes, step,
                               _near_extremes(counts))
         width = max(1, round(width))
         height = max(1, round(width * aspect) if height is None else round(height))
         thickness = max(1, round(thickness))
+        side = max(1, round(thickness / aspect)) if uniform else thickness
         rows = []
         for i in range(height):
-            if filled or i < thickness or i >= height - thickness or width <= 2 * thickness:
+            if filled or i < thickness or i >= height - thickness or width <= 2 * side:
                 rows.append(char * width)
             else:
-                rows.append(char * thickness + ' ' * (width - 2 * thickness) + char * thickness)
+                rows.append(char * side + ' ' * (width - 2 * side) + char * side)
         return '\n'.join(rows)
 
     @staticmethod
     def triangle(height, base=None, char='█', filled=False, thickness=1, aspect=0.5, direction='up',
-                 surface=False, dims=None, axes=None, step=1):
+                 surface=False, dims=None, axes=None, step=1, uniform=False):
         height = max(1, round(height))
         bases = list(base) if _list(base) else [base]
         rank = max(len(bases) + 1, dims or 2)
@@ -670,15 +683,17 @@ class Shapes:
 
             cross = [0] + list(range(2, rank))
 
-            def edge(cell, span, thick):
+            def edge(cell, span, widths):
                 depth = height - 1 - cell[1] if direction == 'down' else cell[1]
                 reach = depth / (height - 1) if height > 1 else 0
-                hits = sum([1 for k, h in zip(cross, halves) if abs(cell[k] - h) >= round(h * reach) - thick + 1])
-                return hits == len(cross) or (depth >= height - thick and hits >= len(cross) - 1)
+                hits = sum([1 for k, h in zip(cross, halves) if abs(cell[k] - h) >= round(h * reach) - widths[k] + 1])
+                return hits == len(cross) or (depth >= height - widths[1] and hits >= len(cross) - 1)
 
-            return _solid(counts, inside, char, filled, thickness, surface, axes, step, edge)
+            widths = _widths(thickness, rank, uniform, aspect, step)
+            return _solid(counts, inside, char, filled, widths, surface, axes, step, edge)
         base = bases[0]
         thickness = max(1, round(thickness))
+        side = max(1, round(thickness / aspect)) if uniform else thickness
         if base is None:
             base = height / aspect
         half = max(0, round((base - 1) / 2))
@@ -686,17 +701,18 @@ class Shapes:
         full = widths[-1]
         rows = []
         for i, w in enumerate(widths):
-            if filled or i >= height - thickness or w <= 2 * thickness:
+            if filled or i >= height - thickness or w <= 2 * side:
                 body = char * w
             else:
-                body = char * thickness + ' ' * (w - 2 * thickness) + char * thickness
+                body = char * side + ' ' * (w - 2 * side) + char * side
             rows.append(' ' * ((full - w) // 2) + body)
         if direction == 'down':
             rows.reverse()
         return '\n'.join(rows)
 
     @staticmethod
-    def diamond(radius, char='█', filled=False, thickness=1, aspect=0.5, surface=False, dims=2, axes=None, step=1):
+    def diamond(radius, char='█', filled=False, thickness=1, aspect=0.5, surface=False, dims=2, axes=None, step=1,
+                uniform=False):
         if dims < 2:
             raise ValueError('dims must be at least 2')
         if dims > 2:
@@ -707,23 +723,25 @@ class Shapes:
             def inside(index):
                 return sum([abs(i - r) / r for i, r in zip(index, radii)]) <= 1 + 1e-9
 
-            return _solid(counts, inside, char, filled, thickness, surface, axes, step, _on_planes(radii))
+            widths = _widths(thickness, len(counts), uniform, aspect, step)
+            return _solid(counts, inside, char, filled, widths, surface, axes, step, _on_planes(radii))
         ry = max(1, round(radius))
         rx = max(1, round(radius * (1 / aspect)))
         thickness = max(1, round(thickness))
+        side = max(1, round(thickness / aspect)) if uniform else thickness
         rows = []
         for dy in range(-ry, ry + 1):
             hw = round(rx * (1 - abs(dy) / ry))
             w = 2 * hw + 1
-            if filled or w <= 2 * thickness:
+            if filled or w <= 2 * side:
                 body = char * w
             else:
-                body = char * thickness + ' ' * (w - 2 * thickness) + char * thickness
+                body = char * side + ' ' * (w - 2 * side) + char * side
             rows.append(' ' * (rx - hw) + body)
         return '\n'.join(rows)
 
     @staticmethod
-    def line(length, char='█', thickness=1, vertical=False, axis=None, step=1):
+    def line(length, char='█', thickness=1, vertical=False, axis=None, step=1, aspect=0.5, uniform=False):
         length = max(1, round(length))
         thickness = max(1, round(thickness))
         if axis is not None:
@@ -733,10 +751,11 @@ class Shapes:
             elif found == 0:
                 vertical = False
             else:
-                layer = '\n'.join([char * thickness] * thickness)
-                return _sprite.build((layer,) * length, (_axes.NAMES[found],), step, False)
+                layer = '\n'.join([char * max(1, round(thickness / aspect))] * thickness)
+                count = max(1, round(length / _per_axis(step, 1)[0]))
+                return _sprite.build((layer,) * count, (_axes.NAMES[found],), step, False)
         if vertical:
-            return '\n'.join([char * thickness] * length)
+            return '\n'.join([char * (max(1, round(thickness / aspect)) if uniform else thickness)] * length)
         return '\n'.join([char * length] * thickness)
 
 
