@@ -1032,18 +1032,19 @@ class transform(_change_callback, _lerpable, _keyed):
                 _ROTATIONS[key] = entry
         if entry is None:
             return False
-        self.__dict__.update(zip(_MEMO_FIELDS, entry[1]))
-        if key[0] and self._rotmap is not None:
-            self.__dict__['_rotmap'] = self._rotmap[:5] + self._matrices(angle)[4:]
-        self._rev += 1
-        self._rotangle = angle
-        self._rotcells_v = {}
-        self._rotsrc_v = {}
-        self._rotmaps_ok = not self._text
-        self._xlen_cache = None
-        self._ylen_cache = None
-        self.__dict__['_parse_pixels_key'] = None
-        self.__dict__['_parse_pixels_val'] = None
+        d = self.__dict__
+        d.update(zip(_MEMO_FIELDS, entry[1]))
+        if key[0] and d['_rotmap'] is not None:
+            d['_rotmap'] = d['_rotmap'][:5] + self._matrices(angle)[4:]
+        d['_rev'] = self._rev + 1
+        d['_rotangle'] = angle
+        d['_rotcells_v'] = {}
+        d['_rotsrc_v'] = {}
+        d['_rotmaps_ok'] = not d['_text']
+        d['_xlen_cache'] = None
+        d['_ylen_cache'] = None
+        d['_parse_pixels_key'] = None
+        d['_parse_pixels_val'] = None
         self.vx = self._rotorigin[0]
         self.vy = -self._rotorigin[1]
         return True

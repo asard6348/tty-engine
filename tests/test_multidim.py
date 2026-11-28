@@ -41,7 +41,7 @@ def layer_cells(sp, z):
 
 
 class MergeTests(unittest.TestCase):
-    def test_strings_still_merge_to_a_string(self):
+    def test_stedges_still_merge_to_a_string(self):
         t = make_object()
         found = t.merge('ab\ncd', ('X', 1, 0))
         self.assertIsInstance(found, str)
@@ -152,16 +152,40 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(Shapes.block((4, 3), char='#'), Shapes.block(4, 3, char='#'))
 
     def test_block_filled_and_surface(self):
-        solid = Shapes.block((6, 4, 4), char='#', filled=True)
-        shell = Shapes.block((6, 4, 4), char='#', filled=True, surface=True)
-        outline = Shapes.block((6, 4, 4), char='#')
+        solid = Shapes.block((3, 4, 4), char='#', filled=True)
+        shell = Shapes.block((3, 4, 4), char='#', filled=True, surface=True)
+        edges = Shapes.block((3, 4, 4), char='#')
         self.assertEqual((solid.rank, solid.size), (3, (6, 4, 4)))
-        self.assertEqual((len(solid), len(shell), len(outline)), (96, 80, 64))
-        self.assertLess(set(outline.cells), set(shell.cells))
+        self.assertEqual((len(solid), len(shell), len(edges)), (96, 80, 40))
+        self.assertLess(set(edges.cells), set(shell.cells))
         self.assertLess(set(shell.cells), set(solid.cells))
         self.assertEqual(layer_cells(shell, 0), layer_cells(solid, 0))
         self.assertEqual(len(layer_cells(shell, 1)), 16)
-        self.assertEqual(layer_cells(outline, 0), layer_cells(outline, 1))
+        self.assertEqual(len(layer_cells(edges, 0)), 16)
+        self.assertEqual(len(layer_cells(edges, 1)), 4)
+
+    def test_block_sizes_are_world_units(self):
+        cube = Shapes.block((10, 10, 10), char='#')
+        self.assertEqual(cube.size, (20, 10, 10))
+        self.assertEqual(cube.steps, (1,))
+        self.assertEqual(Shapes.block((10, 10, 10), char='#', aspect=1.0).size, (10, 10, 10))
+        self.assertEqual(Shapes.block((10, 10, 10), char='#', step=2).size, (20, 10, 5))
+
+    def test_cube_wireframe_has_only_edges(self):
+        cube = Shapes.block((5, 5, 5), char='#', aspect=1.0)
+        self.assertEqual(len(cube), 12 * 3 + 8)
+        for c, r, z in cube.cells:
+            self.assertGreaterEqual(sum([v in (0, 4) for v in (c, r, z)]), 2)
+        self.assertNotIn((2, 2, 0), cube.cells)
+        self.assertNotIn((2, 0, 2), cube.cells)
+        self.assertIn((2, 0, 0), cube.cells)
+        thick = Shapes.block((9, 9, 9), char='#', aspect=1.0, thickness=2)
+        self.assertNotIn((4, 4, 0), thick.cells)
+        self.assertIn((1, 1, 4), thick.cells)
+
+    def test_hypercube_wireframe_keeps_one_dimensional_edges(self):
+        cube = Shapes.block((4, 4, 4, 4), char='#', aspect=1.0)
+        self.assertEqual(len(cube), 32 * 2 + 16)
 
     def test_surface_without_filled_changes_nothing(self):
         self.assertEqual(Shapes.block((5, 4, 3), char='#', surface=True).cells,
@@ -170,10 +194,10 @@ class ShapeTests(unittest.TestCase):
     def test_sphere_nesting_and_symmetry(self):
         solid = Shapes.circle(3, 'o', True, dims=3)
         shell = Shapes.circle(3, 'o', True, surface=True, dims=3)
-        rings = Shapes.circle(3, 'o', False, dims=3)
+        edges = Shapes.circle(3, 'o', False, dims=3)
         self.assertEqual(solid.size, (13, 7, 7))
         self.assertLess(set(shell.cells), set(solid.cells))
-        self.assertLess(set(rings.cells), set(shell.cells))
+        self.assertLess(set(edges.cells), set(shell.cells))
         self.assertNotIn((6, 3, 3), shell.cells)
         self.assertIn((6, 3, 3), solid.cells)
         for c, r, z in solid.cells:
@@ -193,11 +217,24 @@ class ShapeTests(unittest.TestCase):
                     self.assertIn(tuple(near), solid.cells)
 
     def test_thickness_grows_the_shell(self):
-        thin = Shapes.block((9, 9, 9), char='#', filled=True, surface=True, thickness=1)
-        thick = Shapes.block((9, 9, 9), char='#', filled=True, surface=True, thickness=2)
+        thin = Shapes.block((9, 9, 9), char='#', filled=True, surface=True, thickness=1, aspect=1.0)
+        thick = Shapes.block((9, 9, 9), char='#', filled=True, surface=True, thickness=2, aspect=1.0)
         self.assertEqual((len(thin), len(thick)), (729 - 343, 729 - 125))
-        full = Shapes.block((4, 4, 4), char='#', filled=True, surface=True, thickness=2)
+        full = Shapes.block((4, 4, 4), char='#', filled=True, surface=True, thickness=2, aspect=1.0)
         self.assertEqual(len(full), 64)
+
+    def test_round_wireframes_are_great_circles(self):
+        sphere = Shapes.ellipse((6, 6, 6), char='o')
+        self.assertTrue(all(6 in cell for cell in sphere.cells))
+        self.assertIn((12, 6, 6), sphere.cells)
+        octa = Shapes.diamond(3, dims=3, aspect=1.0)
+        self.assertTrue(all(3 in cell for cell in octa.cells))
+        self.assertIn((6, 3, 3), octa.cells)
+
+    def test_flat_shapes_keep_their_outline(self):
+        disc = Shapes.ellipse((5, 4, 0), char='o')
+        flat = Shapes.ellipse(5, 4, 'o')
+        self.assertEqual({(c, r) for c, r, z in disc.cells}, {(c, r) for c, r in sprite_mod.sprite(flat).cells})
 
     def test_ellipse_with_per_axis_radii(self):
         sp = Shapes.ellipse((6, 5, 4), char='o', filled=True)
@@ -216,13 +253,29 @@ class ShapeTests(unittest.TestCase):
         self.assertNotIn((0, 0, 0), sp.cells)
 
     def test_pyramid(self):
-        sp = Shapes.triangle(4, (7, 5), filled=True)
+        sp = Shapes.triangle(4, (7, 5), filled=True, aspect=1.0)
         self.assertEqual(sp.size, (7, 4, 5))
         self.assertEqual(len([k for k in sp.cells if k[:2] == (3, 0)]), 1)
         self.assertEqual(len(layer_cells(sp, 2)), 1 + 3 + 5 + 7)
-        down = Shapes.triangle(4, (7, 5), filled=True, direction='down')
+        down = Shapes.triangle(4, (7, 5), filled=True, direction='down', aspect=1.0)
         self.assertEqual({(c, 3 - r, z) for c, r, z in down.cells}, set(sp.cells))
         self.assertEqual(Shapes.triangle(4, dims=3, filled=True).rank, 3)
+        self.assertEqual(Shapes.triangle(4, (7, 5)).size, (13, 4, 5))
+
+    def test_pyramid_wireframe(self):
+        sp = Shapes.triangle(5, (9, 9), aspect=1.0)
+        self.assertEqual(sp.size, (9, 5, 9))
+        self.assertIn((4, 0, 4), sp.cells)
+        self.assertIn((0, 4, 0), sp.cells)
+        self.assertIn((8, 4, 8), sp.cells)
+        self.assertIn((4, 4, 0), sp.cells)
+        self.assertNotIn((4, 4, 4), sp.cells)
+        self.assertNotIn((4, 2, 0), sp.cells)
+        self.assertEqual(len(layer_cells(sp, 0)), 9)
+        solid = Shapes.triangle(5, (9, 9), aspect=1.0, filled=True)
+        shell = Shapes.triangle(5, (9, 9), aspect=1.0, filled=True, surface=True)
+        self.assertLess(set(sp.cells), set(shell.cells))
+        self.assertLess(set(shell.cells), set(solid.cells))
 
     def test_four_dimensions(self):
         sp = Shapes.circle(2, 'o', True, surface=True, dims=4)
@@ -255,7 +308,7 @@ class ShapeTests(unittest.TestCase):
 
     def test_shapes_work_through_the_session_styler(self):
         styler = Styler()
-        sp = styler.shapes.block((3, 3, 3), char='#', filled=True)
+        sp = styler.shapes.block((3, 3, 3), char='#', filled=True, aspect=1.0)
         make_object(sprite=sp)
         self.assertEqual(len(sp), 27)
 

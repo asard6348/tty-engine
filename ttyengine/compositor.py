@@ -687,12 +687,16 @@ class Compositor:
         warm = {}
         if bg is not None:
             cell = (' ', bg)
-            for y in range(max(vy0, top), min(vy1, bottom)):
+            for y in range(vy0 if vy0 > top else top, vy1 if vy1 < bottom else bottom):
                 span = spans.get(y)
                 if span is None:
                     continue
-                a = max(vx0, span[0])
-                b = min(vx1, span[1])
+                a = span[0]
+                if vx0 > a:
+                    a = vx0
+                b = span[1]
+                if vx1 < b:
+                    b = vx1
                 if a < b:
                     back[y][a:b] = [cell] * (b - a)
         if lit and any(row[2] for _, _, grid in sprites for row in grid):
@@ -707,19 +711,32 @@ class Compositor:
                 span = spans.get(ry)
                 if span is None:
                     continue
-                a = max(vx0, span[0], x)
-                b = min(vx1, span[1], x + rowwidth)
+                a = span[0]
+                if vx0 > a:
+                    a = vx0
+                if x > a:
+                    a = x
+                b = span[1]
+                if vx1 < b:
+                    b = vx1
+                edge = x + rowwidth
+                if edge < b:
+                    b = edge
                 if a >= b:
                     continue
                 line = back[ry]
                 for offset, cells in runs:
-                    s = max(a, x + offset)
-                    e = min(b, x + offset + len(cells))
+                    start = x + offset
+                    s = start if start > a else a
+                    end = start + len(cells)
+                    e = end if end < b else b
                     if s < e:
-                        line[s:e] = cells[s - x - offset:e - x - offset]
+                        line[s:e] = cells[s - start:e - start]
                 for offset, cells in glass:
-                    s = max(a, x + offset)
-                    e = min(b, x + offset + len(cells))
+                    start = x + offset
+                    s = start if start > a else a
+                    end = start + len(cells)
+                    e = end if end < b else b
                     for xx in range(s, e):
                         char, active = cells[xx - x - offset]
                         cell, share = self.glass(sc, line[xx], char, active)
@@ -930,10 +947,14 @@ class Compositor:
                 del self.rotated[sc]
         spans = {}
         for x0, y0, x1, y1 in rects:
-            x0 = max(0, x0)
-            y0 = max(0, y0)
-            x1 = min(width, x1)
-            y1 = min(height, y1)
+            if x0 < 0:
+                x0 = 0
+            if y0 < 0:
+                y0 = 0
+            if x1 > width:
+                x1 = width
+            if y1 > height:
+                y1 = height
             if x0 >= x1 or y0 >= y1:
                 continue
             for y in range(y0, y1):

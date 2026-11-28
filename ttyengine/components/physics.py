@@ -105,12 +105,8 @@ class physics(_change_callback, _lerpable, _keyed):
             raise ValueError('precision and rprecision must be positive')
         self.mass = kwargs.get('mass', None)
         self.automass = kwargs.get('automass', self.mass is None)
-        def masscal(prop='text'):
-            if self.automass and prop.endswith('text'):
-                self.mass = sum(1 for c in self.t._htext if c not in (' ', '\n'))
         if self.mass is None:
             self.mass = sum(1 for c in self.t._htext if c not in (' ', '\n'))
-        self.t.onchange(masscal)
         self.solid = kwargs.get('solid', True)
         self.hitbox = kwargs.get('hitbox', False)
         self.phantom = kwargs.get('phantom', False)
@@ -131,10 +127,12 @@ class physics(_change_callback, _lerpable, _keyed):
         self._good = None
         self._depenskip = 0
         def dirty(attr):
+            if self.automass and attr.endswith('text'):
+                self.mass = sum(1 for c in self.t._htext if c not in (' ', '\n'))
             if attr not in _ax.FREE:
                 self._dirty(attr)
         self.t.onchange(dirty)
-        self._ncbs = (masscal, dirty)
+        self._ncbs = (dirty,)
         self._nok = False
         sc = self.scene
         if _nat_mod is not None:
@@ -1375,8 +1373,8 @@ class physics(_change_callback, _lerpable, _keyed):
         bt = self.bouncethreshold
         obj = self.obj
         ok = (len(g) == 2
-              and getattr(obj, 'joint', None) is None and len(t._onchangecb) == 2
-              and self._ncbs[0] in t._onchangecb and self._ncbs[1] in t._onchangecb
+              and getattr(obj, 'joint', None) is None and len(t._onchangecb) == 1
+              and self._ncbs[0] in t._onchangecb
               and not self._onchangecb and not any(self._ev)
               and isinstance(mass, (int, float)) and mass > 0 and self.precision > 0
               and -_NAT_LIMIT < t.x < _NAT_LIMIT and -_NAT_LIMIT < t.y < _NAT_LIMIT)

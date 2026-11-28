@@ -508,14 +508,17 @@ def _body(counts, inside):
     return {index for index in itertools.product(*[range(n) for n in counts]) if inside(index)}
 
 
-def _carve(body, rank, thickness, filled, surface):
-    if filled and not surface:
-        return body
-    span = range(rank) if filled else range(2)
+def _span(counts):
+    found = [k for k, n in enumerate(counts) if n > 1]
+    return found or list(range(len(counts)))
+
+
+def _carve(body, span, thickness):
+    gaps = _gaps(thickness)
     out = set()
     for cell in body:
         for axis in span:
-            if any(cell[:axis] + (cell[axis] + gap,) + cell[axis + 1:] not in body for gap in _gaps(thickness)):
+            if any(cell[:axis] + (cell[axis] + gap,) + cell[axis + 1:] not in body for gap in gaps):
                 out.add(cell)
                 break
     return out
@@ -539,10 +542,31 @@ def _stack(cells, counts, char, axes, step):
     return _sprite.build(build(()), axes, step, False)
 
 
-def _solid(counts, inside, char, filled, thickness, surface, axes, step):
+def _solid(counts, inside, char, filled, thickness, surface, axes, step, edge):
     thickness = max(1, round(thickness))
     body = _body(counts, inside)
-    return _stack(_carve(body, len(counts), thickness, filled, surface), counts, char, axes, step)
+    span = _span(counts)
+    if filled and not surface:
+        cells = body
+    else:
+        cells = _carve(body, span, thickness)
+        if not filled:
+            cells = {cell for cell in cells if edge(cell, span, thickness)}
+    return _stack(cells, counts, char, axes, step)
+
+
+def _near_extremes(counts):
+    def edge(cell, span, thickness):
+        hits = sum([1 for k in span if cell[k] < thickness or cell[k] >= counts[k] - thickness])
+        return hits >= len(span) - 1
+    return edge
+
+
+def _on_planes(radii):
+    def edge(cell, span, thickness):
+        zeros = sum([1 for k in span if cell[k] == radii[k]])
+        return zeros >= len(span) - 2
+    return edge
 
 
 class Shapes:
@@ -566,7 +590,7 @@ class Shapes:
             def inside(index):
                 return sum([((i - r) / o) ** 2 for i, r, o in zip(index, radii, offs)]) <= 1
 
-            return _solid(counts, inside, char, filled, thickness, surface, axes, step)
+            return _solid(counts, inside, char, filled, thickness, surface, axes, step, _on_planes(radii))
         rx, ry = radii
         rx = round(rx)
         ry = round(ry)
@@ -607,8 +631,11 @@ class Shapes:
             width = sizes[0]
             height = sizes[1] if len(sizes) > 1 else None
             if len(sizes) > 2:
-                counts = [max(1, round(n)) for n in sizes]
-                return _solid(counts, lambda index: True, char, filled, thickness, surface, axes, step)
+                steps = _per_axis(step, len(sizes) - 2)
+                counts = [max(1, round(sizes[0] / aspect)), max(1, round(sizes[1]))]
+                counts += [max(1, round(n / s)) for n, s in zip(sizes[2:], steps)]
+                return _solid(counts, lambda index: True, char, filled, thickness, surface, axes, step,
+                              _near_extremes(counts))
         width = max(1, round(width))
         height = max(1, round(width * aspect) if height is None else round(height))
         thickness = max(1, round(thickness))
@@ -630,7 +657,8 @@ class Shapes:
             steps = _per_axis(step, rank - 2)
             bases += [None] * (rank - 1 - len(bases))
             defaults = [height / aspect] + [height / s for s in steps]
-            bases = [d if b is None else b for b, d in zip(bases, defaults)]
+            scales = [1 / aspect] + [1 / s for s in steps]
+            bases = [d if b is None else b * f for b, d, f in zip(bases, defaults, scales)]
             halves = [max(0, round((b - 1) / 2)) for b in bases]
             counts = [2 * halves[0] + 1, height] + [2 * h + 1 for h in halves[1:]]
 
@@ -640,7 +668,15 @@ class Shapes:
                 spans = [index[0]] + list(index[2:])
                 return all(abs(i - h) <= round(h * reach) for i, h in zip(spans, halves))
 
-            return _solid(counts, inside, char, filled, thickness, surface, axes, step)
+            cross = [0] + list(range(2, rank))
+
+            def edge(cell, span, thick):
+                depth = height - 1 - cell[1] if direction == 'down' else cell[1]
+                reach = depth / (height - 1) if height > 1 else 0
+                hits = sum([1 for k, h in zip(cross, halves) if abs(cell[k] - h) >= round(h * reach) - thick + 1])
+                return hits == len(cross) or (depth >= height - thick and hits >= len(cross) - 1)
+
+            return _solid(counts, inside, char, filled, thickness, surface, axes, step, edge)
         base = bases[0]
         thickness = max(1, round(thickness))
         if base is None:
@@ -671,7 +707,7 @@ class Shapes:
             def inside(index):
                 return sum([abs(i - r) / r for i, r in zip(index, radii)]) <= 1 + 1e-9
 
-            return _solid(counts, inside, char, filled, thickness, surface, axes, step)
+            return _solid(counts, inside, char, filled, thickness, surface, axes, step, _on_planes(radii))
         ry = max(1, round(radius))
         rx = max(1, round(radius * (1 / aspect)))
         thickness = max(1, round(thickness))
